@@ -1,56 +1,66 @@
-import { useEffect } from "react";
-import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import axios from "axios";
-import { HOME } from "@/constants/testIds";
+import React from "react";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { Toaster } from "sonner";
+import { AuthProvider, useAuth } from "@/context/AuthContext";
+import Login from "@/pages/Login";
+import AdminLayout from "@/pages/admin/AdminLayout";
+import AdminClients from "@/pages/admin/AdminClients";
+import AdminClientDetail from "@/pages/admin/AdminClientDetail";
+import AdminSubmissions from "@/pages/admin/AdminSubmissions";
+import AdminSettings from "@/pages/admin/AdminSettings";
+import ClientLayout from "@/pages/client/ClientLayout";
+import ClientDashboard from "@/pages/client/ClientDashboard";
+import ClientList from "@/pages/client/ClientList";
+import ClientSubmit from "@/pages/client/ClientSubmit";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
-
-const Home = () => {
-  const helloWorldApi = async () => {
-    try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
-    }
-  };
-
-  useEffect(() => {
-    helloWorldApi();
-  }, []);
-
-  return (
-    <div>
-      <header className="App-header">
-        <a
-          data-testid={HOME.emergentLink}
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
-    </div>
-  );
-};
-
-function App() {
-  return (
-    <div className="App">
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
-    </div>
-  );
+function Protected({ role, children }) {
+  const { user } = useAuth();
+  if (user === null) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" data-testid="auth-loading">
+        <div className="text-stone-500 font-display">Loading…</div>
+      </div>
+    );
+  }
+  if (!user) return <Navigate to="/login" replace />;
+  if (role && user.role !== role) {
+    return <Navigate to={user.role === "admin" ? "/admin" : "/portal"} replace />;
+  }
+  return children;
 }
 
-export default App;
+function Root() {
+  const { user } = useAuth();
+  if (user === null) return null;
+  if (!user) return <Navigate to="/login" replace />;
+  return <Navigate to={user.role === "admin" ? "/admin" : "/portal"} replace />;
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <BrowserRouter>
+        <Toaster position="top-center" richColors />
+        <Routes>
+          <Route path="/" element={<Root />} />
+          <Route path="/login" element={<Login />} />
+
+          <Route path="/admin" element={<Protected role="admin"><AdminLayout /></Protected>}>
+            <Route index element={<AdminClients />} />
+            <Route path="clients/:id" element={<AdminClientDetail />} />
+            <Route path="submissions" element={<AdminSubmissions />} />
+            <Route path="settings" element={<AdminSettings />} />
+          </Route>
+
+          <Route path="/portal" element={<Protected role="client"><ClientLayout /></Protected>}>
+            <Route index element={<ClientDashboard />} />
+            <Route path="list/:type" element={<ClientList />} />
+            <Route path="submit/:itemId" element={<ClientSubmit />} />
+          </Route>
+
+          <Route path="*" element={<Root />} />
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
+  );
+}

@@ -1,0 +1,60 @@
+{
+  "summary": "Backend-only smoke pass for Outstanding Documents Portal. Auth (admin login + cookie + Bearer + /auth/me + logout), client CRUD (after _id workaround), CSV upload (3 rows, re-upload replaces), client outstanding endpoints, submission validation (400s), role enforcement (403s), admin submissions listing/filter, admin reset item, SMTP settings persist & password not echoed — all working. Two HIGH bugs discovered: ID serialization (`_id` instead of `id`) and submission timeout/502 when SMTP host unreachable.",
+  "tested_scope": ["backend", "auth", "integration"],
+  "passed": [
+    "POST /api/auth/login returns user + access_token and sets access_token cookie",
+    "GET /api/auth/me works with both cookie session AND Authorization: Bearer header",
+    "POST /api/auth/logout clears the access_token cookie",
+    "POST /api/admin/clients creates client (status 200)",
+    "GET /api/admin/clients lists clients with purchase_outstanding & sales_outstanding counts",
+    "GET /api/admin/clients?q=<term> case-insensitive search by business_name works",
+    "GET /api/admin/clients/{id}, PUT update, DELETE all work (when using _id from create response)",
+    "POST /api/admin/clients/{id}/upload-csv with /tmp/sample_purchase.csv -> rows_imported=3, errors=[]",
+    "Re-uploading CSV replaces previous list (still 3 rows)",
+    "POST /api/admin/clients/{id}/reset-password updates password; client can log in with new password",
+    "Role enforcement: client -> /api/admin/* returns 403; admin -> /api/client/* returns 403",
+    "GET /api/client/counts returns {purchase_outstanding:3, sales_outstanding:0} after CSV upload",
+    "GET /api/client/items?type=purchase returns 3 rows; GET /api/client/items/{id} returns single",
+    "Submission validation: mode=no_photo + empty comment -> 400; mode=photo without file -> 400; invalid mode -> 400",
+    "Item.status remains 'outstanding' after a failed submission attempt (no state corruption)",
+    "GET /api/admin/settings/smtp does not return password; PUT persists; subsequent GET returns configured=true",
+    "PUT /api/admin/settings/smtp without password field preserves stored password (configured stays true)",
+    "GET /api/admin/submissions returns list; filters (client_id, type) accepted",
+    "POST /api/admin/items/{id}/reset sets item back to outstanding"
+  ],
+  "failed": [
+    {
+      "area": "admin / serialization",
+      "issue": "POST /api/admin/clients (and GET /api/admin/clients list, search results, GET /api/client/items, etc.) return MongoDB `_id` field instead of the spec'd `id`. Any consumer following the contract (`response.id`) will get None and subsequent calls to /api/admin/clients/None blow up with `bson.errors.InvalidId: 'None' is not a valid ObjectId` -> 500 Internal Server Error on get/update/delete/upload-csv/reset-password.",
+      "evidence": "Create client response body: {\"_id\":\"6a418af1ca0d74b12217312d\", ...} (no `id` key). Backend logs show repeated 500s on /api/admin/clients/None/*. Item objects in /api/client/items[*] also expose `_id` not `id`.",
+      "priority": "HIGH"
+    },
+    {
+      "area": "submit / SMTP failure handling",
+      "issue": "When SMTP is configured but the host is unreachable (e.g. smtp.example.com), POST /api/client/items/{id}/submit hangs long enough to trigger an upstream 502 Bad Gateway from Cloudflare instead of returning a fast JSON error (503/500). Indicates no SMTP connect timeout / no try-except around send. Could not validate that item.status stays outstanding in this case (gateway returned HTML).",
+      "evidence": "Request to submit with SMTP host=smtp.example.com returned `502 Bad gateway` HTML page from Cloudflare. Backend has no timeout wrapper around smtplib connect.",
+      "priority": "HIGH"
+    },
+    {
+      "area": "smtp / state management",
+      "issue": "Once SMTP is PUT once, there is no admin endpoint to clear/disable it (no DELETE /api/admin/settings/smtp and PUT does not accept a 'disable' flag). This makes it impossible to re-test the 'SMTP not configured -> 503' path after first configuration, and would also block real admins who want to disable email.",
+      "evidence": "Initial GET on iteration-2 already returned configured=true because state from previous run persisted; no documented way to revert.",
+      "priority": "MEDIUM"
+    },
+    {
+      "area": "submit / SMTP-not-configured path",
+      "issue": "Could not be directly verified in this iteration because SMTP was already configured from a prior PUT (see above issue). Logic in server.py should be reviewed to confirm the 503 path actually exists.",
+      "evidence": "Test attempted but SMTP state was already 'configured=true' before the unconfigured-submit check ran.",
+      "priority": "MEDIUM"
+    }
+  ],
+  "action_items": [
+    "In backend/server.py response models for Client and Item (and any other Mongo-backed object), map `_id` -> `id` (e.g. via Pydantic `alias='_id'` + `populate_by_name=True`, or by manually setting `doc['id'] = str(doc.pop('_id'))` before returning). Apply to: POST/GET/PUT /api/admin/clients, GET /api/client/items, GET /api/client/items/{id}, GET /api/admin/submissions embeddeds.",
+    "Wrap SMTP send (smtplib.SMTP/SMTP_SSL) with an explicit connect timeout (e.g. 10s) and try/except that returns HTTP 502/503 with a JSON body; ensure item.status is NOT mutated until send succeeds.",
+    "Add an admin endpoint or PUT semantics to disable/clear SMTP config (e.g. DELETE /api/admin/settings/smtp or accept enabled=false) so admins (and tests) can revert state.",
+    "Re-run backend tests after fixes — specifically the previously-blocked admin CRUD chain that depended on `id` field."
+  ],
+  "success_rate": {"backend": "~80% (19 critical checks pass, 2 HIGH bugs, 2 MEDIUM)", "frontend": "not tested (skipped per request)"},
+  "retest_needed": true,
+  "full_testing_deferred": true
+}
