@@ -1,0 +1,30 @@
+{
+  "summary": "Iteration 3 regression smoke after frontend code-quality refactor (no-localStorage tokens, useMemo/useCallback, console.error in catches). Backend smoke: admin login (Bearer + httpOnly cookie), GET /api/auth/me via both, GET /api/admin/clients (3 clients, returns both id and _id with purchase/sales counts), POST /api/admin/clients (200, returns id+_id), and 401 on unauthenticated admin route. Frontend E2E: admin login -> admin-shell -> Clients list -> add-client-btn opens New client dialog; reload preserves admin session via httpOnly cookie. Client login (newly created E2E client) -> client-shell -> btn-purchase + btn-sales visible -> tap btn-purchase routes to /portal/list/purchase showing the list view; reload preserves client session. Verified localStorage contains NO access/token keys (only posthog analytics), confirming the in-memory-only Bearer refactor.",
+  "tested_scope": ["backend", "frontend", "auth", "integration"],
+  "passed": [
+    "POST /api/auth/login admin (Bearer + Set-Cookie access_token)",
+    "GET /api/auth/me via Bearer returns admin payload",
+    "GET /api/auth/me via httpOnly cookie returns admin payload",
+    "GET /api/admin/clients returns list with id, _id, purchase_outstanding, sales_outstanding",
+    "POST /api/admin/clients returns 200 with id and _id",
+    "Unauthenticated GET /api/admin/clients returns 401 (RBAC enforced)",
+    "Admin login UI -> admin-shell renders (data-testid present)",
+    "Clients page renders add-client-btn; clicking opens New client dialog (role=dialog visible)",
+    "Page reload restores admin session (cookie-based session restoration confirmed)",
+    "Client login UI -> client-shell renders",
+    "Dashboard shows btn-purchase and btn-sales",
+    "Clicking btn-purchase navigates to /portal/list/purchase and renders Purchase Invoices list view",
+    "Page reload restores client session via httpOnly cookie",
+    "localStorage contains NO token/access_token keys (in-memory bearer refactor verified; only posthog key present)"
+  ],
+  "failed": [],
+  "action_items": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "retest_needed": false,
+  "full_testing_deferred": true,
+  "notes": [
+    "Console warnings observed (non-blocking): 'Missing Description or aria-describedby for DialogContent' on the New client dialog — accessibility-only, not a regression.",
+    "Initial 401s on /api/auth/me before login are expected (probing session on app boot).",
+    "Test client created via API for E2E: clienttest1782681609@example.com / Client12345!"
+  ]
+}

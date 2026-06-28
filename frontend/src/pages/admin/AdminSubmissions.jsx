@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { api, formatApiError, API } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,7 @@ export default function AdminSubmissions() {
   const [filters, setFilters] = useState({ client_id: "", type: "", status: "", q: "" });
   const [preview, setPreview] = useState(null);
 
-  async function load() {
+  const load = useCallback(async () => {
     try {
       const params = {};
       Object.entries(filters).forEach(([k, v]) => { if (v) params[k] = v; });
@@ -22,10 +22,14 @@ export default function AdminSubmissions() {
     } catch (e) {
       toast.error(formatApiError(e));
     }
-  }
+  }, [filters]);
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [filters]);
-  useEffect(() => { api.get("/admin/clients").then((r) => setClients(r.data)); }, []);
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    api.get("/admin/clients")
+      .then((r) => setClients(r.data))
+      .catch((e) => console.error("Failed to load clients filter:", formatApiError(e)));
+  }, []);
 
   async function resetItem(itemId) {
     try {

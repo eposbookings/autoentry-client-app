@@ -22,7 +22,12 @@ export default function ClientSubmit() {
   useEffect(() => {
     api.get(`/client/items/${itemId}`)
       .then((r) => setItem(r.data))
-      .catch((e) => { toast.error(formatApiError(e)); nav(-1); });
+      .catch((e) => {
+        const msg = formatApiError(e);
+        console.error("Item fetch failed:", msg);
+        toast.error(msg);
+        nav(-1);
+      });
   }, [itemId, nav]);
 
   function pickFile(f) {

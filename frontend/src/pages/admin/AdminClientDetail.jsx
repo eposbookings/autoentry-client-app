@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, formatApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -18,7 +18,7 @@ export default function AdminClientDetail() {
   const [tab, setTab] = useState("purchase");
   const [pwd, setPwd] = useState("");
 
-  async function load() {
+  const load = useCallback(async () => {
     try {
       const [c, p, s] = await Promise.all([
         api.get(`/admin/clients/${id}`),
@@ -30,8 +30,8 @@ export default function AdminClientDetail() {
     } catch (e) {
       toast.error(formatApiError(e));
     }
-  }
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [id]);
+  }, [id]);
+  useEffect(() => { load(); }, [load]);
 
   async function saveClient() {
     try {

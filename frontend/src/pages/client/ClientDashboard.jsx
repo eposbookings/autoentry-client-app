@@ -11,7 +11,13 @@ export default function ClientDashboard() {
   const nav = useNavigate();
 
   useEffect(() => {
-    api.get("/client/counts").then((r) => setCounts(r.data)).catch((e) => toast.error(formatApiError(e)));
+    api.get("/client/counts")
+      .then((r) => setCounts(r.data))
+      .catch((e) => {
+        const msg = formatApiError(e);
+        console.error("Counts fetch failed:", msg);
+        toast.error(msg);
+      });
   }, []);
 
   return (

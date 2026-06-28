@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { api, setAuthToken, formatApiError } from "@/lib/api";
 
 const AuthCtx = createContext(null);
@@ -8,17 +8,19 @@ export function AuthProvider({ children }) {
   const [error, setError] = useState("");
 
   useEffect(() => {
+    let alive = true;
     (async () => {
       try {
         const { data } = await api.get("/auth/me");
-        setUser(data);
-      } catch (_) {
-        setUser(false);
+        if (alive) setUser(data);
+      } catch (e) {
+        if (alive) setUser(false);
       }
     })();
+    return () => { alive = false; };
   }, []);
 
-  async function login(email, password) {
+  const login = useCallback(async (email, password) => {
     setError("");
     try {
       const { data } = await api.post("/auth/login", { email, password });
@@ -27,24 +29,28 @@ export function AuthProvider({ children }) {
       return data.user;
     } catch (e) {
       const msg = formatApiError(e);
+      console.error("Login failed:", msg);
       setError(msg);
       throw new Error(msg);
     }
-  }
+  }, []);
 
-  async function logout() {
+  const logout = useCallback(async () => {
     try {
       await api.post("/auth/logout");
-    } catch (_) {}
+    } catch (e) {
+      console.error("Logout request failed (continuing client-side):", formatApiError(e));
+    }
     setAuthToken(null);
     setUser(false);
-  }
+  }, []);
 
-  return (
-    <AuthCtx.Provider value={{ user, login, logout, error, setError }}>
-      {children}
-    </AuthCtx.Provider>
+  const value = useMemo(
+    () => ({ user, login, logout, error, setError }),
+    [user, login, logout, error]
   );
+
+  return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 }
 
 export const useAuth = () => useContext(AuthCtx);

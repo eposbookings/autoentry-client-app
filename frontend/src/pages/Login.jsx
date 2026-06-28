@@ -19,8 +19,9 @@ export default function Login() {
     try {
       const user = await login(email.trim(), password);
       nav(user.role === "admin" ? "/admin" : "/portal", { replace: true });
-    } catch (_) {
-      // error already set by context
+    } catch (err) {
+      // Error is already set in AuthContext for UI display; log for debugging.
+      console.error("Login submit failed:", err?.message || err);
     } finally {
       setBusy(false);
     }

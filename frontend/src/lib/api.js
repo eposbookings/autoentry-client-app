@@ -8,23 +8,15 @@ export const api = axios.create({
   withCredentials: true,
 });
 
-// Also support Authorization header fallback (useful if cookies blocked)
+// In-memory bearer token (used as fallback when 3rd-party cookies are blocked).
+// Never persisted to localStorage to avoid XSS token theft.
 let bearerToken = null;
-try {
-  bearerToken = localStorage.getItem("access_token");
-} catch (_) {}
-
-if (bearerToken) {
-  api.defaults.headers.common["Authorization"] = `Bearer ${bearerToken}`;
-}
 
 export function setAuthToken(token) {
   bearerToken = token;
   if (token) {
-    localStorage.setItem("access_token", token);
     api.defaults.headers.common["Authorization"] = `Bearer ${token}`;
   } else {
-    localStorage.removeItem("access_token");
     delete api.defaults.headers.common["Authorization"];
   }
 }

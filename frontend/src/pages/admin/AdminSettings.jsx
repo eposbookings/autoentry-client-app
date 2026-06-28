@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { api, formatApiError } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,14 +15,14 @@ export default function AdminSettings() {
   const [configured, setConfigured] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  async function load() {
+  const load = useCallback(async () => {
     try {
       const { data } = await api.get("/admin/settings/smtp");
       setForm({ ...data, password: "" });
       setConfigured(!!data.configured);
     } catch (e) { toast.error(formatApiError(e)); }
-  }
-  useEffect(() => { load(); }, []);
+  }, []);
+  useEffect(() => { load(); }, [load]);
 
   async function save(e) {
     e.preventDefault();

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, formatApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -21,15 +21,15 @@ export default function AdminClients() {
     email: "", autoentry_email: "", password: "", status: "active",
   });
 
-  async function load() {
+  const load = useCallback(async () => {
     try {
       const { data } = await api.get("/admin/clients", { params: q ? { q } : {} });
       setClients(data);
     } catch (e) {
       toast.error(formatApiError(e));
     }
-  }
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [q]);
+  }, [q]);
+  useEffect(() => { load(); }, [load]);
 
   async function onCreate(e) {
     e.preventDefault();

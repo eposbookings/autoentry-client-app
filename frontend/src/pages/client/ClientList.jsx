@@ -15,7 +15,11 @@ export default function ClientList() {
   useEffect(() => {
     api.get("/client/items", { params: { type } })
       .then((r) => setItems(r.data))
-      .catch((e) => toast.error(formatApiError(e)));
+      .catch((e) => {
+        const msg = formatApiError(e);
+        console.error("Items fetch failed:", msg);
+        toast.error(msg);
+      });
   }, [type]);
 
   const filtered = useMemo(() => {
