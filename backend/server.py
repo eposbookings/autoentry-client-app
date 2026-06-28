@@ -505,7 +505,7 @@ def stamp_image(image_bytes: bytes, comment: str, submitted_at: datetime) -> byt
 async def send_submission_email(client_user: dict, item: dict, comment: str, image_path: Optional[str]):
     smtp = await get_smtp_settings()
     if not smtp:
-        raise HTTPException(status_code=503, detail="SMTP is not configured. Ask your administrator to configure email settings.")
+        raise HTTPException(status_code=400, detail="SMTP is not configured. Ask your administrator to configure email settings.")
 
     msg = EmailMessage()
     msg["Subject"] = "Outstanding Document Submission"
@@ -546,10 +546,13 @@ async def send_submission_email(client_user: dict, item: dict, comment: str, ima
         await asyncio.wait_for(asyncio.to_thread(_send_sync), timeout=15)
     except asyncio.TimeoutError:
         logger.error("SMTP send timed out")
-        raise HTTPException(status_code=502, detail="Email server did not respond in time. Please try again or contact your administrator.")
-    except Exception as e:
+        raise HTTPException(status_code=400, detail="Email server did not respond in time. Please try again or contact your administrator.")
+    except (smtplib.SMTPException, socket.gaierror, OSError, ConnectionError) as e:
         logger.exception("SMTP send failed")
-        raise HTTPException(status_code=502, detail=f"Failed to send email: {e}")
+        raise HTTPException(status_code=400, detail=f"Unable to deliver email: {e}")
+    except Exception as e:
+        logger.exception("SMTP send failed (unexpected)")
+        raise HTTPException(status_code=400, detail=f"Failed to send email: {e}")
 
 
 @api.post("/client/items/{item_id}/submit")
