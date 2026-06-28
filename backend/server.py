@@ -10,6 +10,8 @@ import jwt
 import bcrypt
 import logging
 import smtplib
+import asyncio
+import socket
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Annotated
 from email.message import EmailMessage
@@ -165,8 +167,10 @@ async def require_client(user: dict = Depends(get_current_user)) -> dict:
 
 
 def serialize_user(u: dict) -> dict:
+    uid = str(u["_id"])
     return {
-        "_id": str(u["_id"]),
+        "id": uid,
+        "_id": uid,
         "email": u["email"],
         "role": u["role"],
         "first_name": u.get("first_name"),
@@ -175,6 +179,13 @@ def serialize_user(u: dict) -> dict:
         "autoentry_email": u.get("autoentry_email"),
         "status": u.get("status", "active"),
     }
+
+
+def serialize_item(d: dict) -> dict:
+    d = dict(d)
+    d["_id"] = str(d["_id"])
+    d["id"] = d["_id"]
+    return d
 
 
 # ---------- Auth ----------
@@ -395,6 +406,12 @@ async def update_smtp(payload: SMTPSettingsIn, user: dict = Depends(require_admi
     return {"ok": True}
 
 
+@api.delete("/admin/settings/smtp")
+async def clear_smtp(user: dict = Depends(require_admin)):
+    await db.settings.delete_one({"key": "smtp"})
+    return {"ok": True}
+
+
 async def get_smtp_settings() -> Optional[dict]:
     s = await db.settings.find_one({"key": "smtp"})
     if not s or not s.get("password_enc"):
@@ -417,9 +434,7 @@ async def client_items(type: str, user: dict = Depends(require_client)):
     if type not in ("purchase", "sales"):
         raise HTTPException(status_code=400, detail="invalid type")
     docs = await db.outstanding_items.find({"client_id": user["_id"], "type": type}).sort("invoice_date", -1).to_list(2000)
-    for d in docs:
-        d["_id"] = str(d["_id"])
-    return docs
+    return [serialize_item(d) for d in docs]
 
 
 @api.get("/client/items/{item_id}")
@@ -427,8 +442,7 @@ async def client_item(item_id: str, user: dict = Depends(require_client)):
     d = await db.outstanding_items.find_one({"_id": ObjectId(item_id), "client_id": user["_id"]})
     if not d:
         raise HTTPException(status_code=404, detail="Item not found")
-    d["_id"] = str(d["_id"])
-    return d
+    return serialize_item(d)
 
 
 def stamp_image(image_bytes: bytes, comment: str, submitted_at: datetime) -> bytes:
@@ -513,19 +527,26 @@ async def send_submission_email(client_user: dict, item: dict, comment: str, ima
         with open(image_path, "rb") as f:
             msg.add_attachment(f.read(), maintype="image", subtype="jpeg", filename=Path(image_path).name)
 
-    try:
+    def _send_sync():
+        socket.setdefaulttimeout(10)
         if int(smtp["port"]) == 465:
-            with smtplib.SMTP_SSL(smtp["host"], int(smtp["port"]), timeout=20) as s:
+            with smtplib.SMTP_SSL(smtp["host"], int(smtp["port"]), timeout=10) as s:
                 s.login(smtp["username"], smtp["password"])
                 s.send_message(msg)
         else:
-            with smtplib.SMTP(smtp["host"], int(smtp["port"]), timeout=20) as s:
+            with smtplib.SMTP(smtp["host"], int(smtp["port"]), timeout=10) as s:
                 s.ehlo()
                 if smtp.get("use_tls", True):
                     s.starttls()
                     s.ehlo()
                 s.login(smtp["username"], smtp["password"])
                 s.send_message(msg)
+
+    try:
+        await asyncio.wait_for(asyncio.to_thread(_send_sync), timeout=15)
+    except asyncio.TimeoutError:
+        logger.error("SMTP send timed out")
+        raise HTTPException(status_code=502, detail="Email server did not respond in time. Please try again or contact your administrator.")
     except Exception as e:
         logger.exception("SMTP send failed")
         raise HTTPException(status_code=502, detail=f"Failed to send email: {e}")
@@ -615,8 +636,9 @@ async def list_submissions(
 
     client_map = {}
     sub_map = {}
+    result = []
     for d in docs:
-        d["_id"] = str(d["_id"])
+        d = serialize_item(d)
         cid = d.get("client_id")
         if cid and cid not in client_map:
             cu = await db.users.find_one({"_id": ObjectId(cid)})
@@ -627,9 +649,11 @@ async def list_submissions(
             su = await db.submissions.find_one({"_id": ObjectId(sid)})
             if su:
                 su["_id"] = str(su["_id"])
+                su["id"] = su["_id"]
                 sub_map[sid] = su
         d["submission"] = sub_map.get(sid) if sid else None
-    return docs
+        result.append(d)
+    return result
 
 
 @api.post("/admin/items/{item_id}/reset")
