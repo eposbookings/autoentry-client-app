@@ -91,12 +91,10 @@ export default function ClientSubmit() {
 
       <div className="bg-white border border-stone-200 rounded-2xl p-6">
         <div className="text-xs uppercase tracking-wider text-stone-500 font-semibold">{item.type === "purchase" ? "Purchase invoice" : "Sales invoice"}</div>
-        <div className="font-display text-2xl font-bold text-stone-900 mt-1">{item.invoice_number}</div>
-        <div className="text-stone-700 mt-1">{item.party || "—"}</div>
+        <div className="font-display text-2xl font-bold text-stone-900 mt-1">{item.description}</div>
         <div className="text-sm text-stone-500 mt-2 flex flex-wrap gap-x-3 gap-y-1">
-          {item.invoice_date && <span>Date · {item.invoice_date}</span>}
+          {item.date && <span>Date · {item.date}</span>}
           {item.amount && <span>Amount · {item.amount}</span>}
-          {item.reference && <span>Ref · {item.reference}</span>}
         </div>
       </div>
 

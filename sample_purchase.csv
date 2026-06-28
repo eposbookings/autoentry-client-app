@@ -1,4 +1,4 @@
-Invoice Number,Supplier,Invoice Date,Amount,Reference
-INV-001,Acme Office Supplies,2025-12-01,£120.00,REF-A1
-INV-002,Northern Coffee Ltd,2025-12-05,£42.50,REF-A2
-INV-003,Velocity Telecoms,2025-12-10,£89.99,REF-A3
+Description,Date,Amount
+Acme Office Supplies invoice,2025-12-01,£120.00
+Northern Coffee Ltd bill,2025-12-05,£42.50
+Velocity Telecoms monthly,2025-12-10,£89.99

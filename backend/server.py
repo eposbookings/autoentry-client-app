@@ -227,10 +227,10 @@ async def list_clients(q: Optional[str] = None, user: dict = Depends(require_adm
     for d in docs:
         s = serialize_user(d)
         s["purchase_outstanding"] = await db.outstanding_items.count_documents(
-            {"client_id": str(d["_id"]), "type": "purchase", "status": "outstanding"}
+            {"client_id": str(d["_id"]), "type": "purchase"}
         )
         s["sales_outstanding"] = await db.outstanding_items.count_documents(
-            {"client_id": str(d["_id"]), "type": "sales", "status": "outstanding"}
+            {"client_id": str(d["_id"]), "type": "sales"}
         )
         result.append(s)
     return result
@@ -309,6 +309,14 @@ async def reset_client_password(client_id: str, payload: PasswordReset, user: di
 
 
 # ---------- Admin: CSV Upload ----------
+@api.get("/admin/clients/{client_id}/items")
+async def admin_client_items(client_id: str, type: str, user: dict = Depends(require_admin)):
+    if type not in ("purchase", "sales"):
+        raise HTTPException(status_code=400, detail="invalid type")
+    docs = await db.outstanding_items.find({"client_id": client_id, "type": type}).sort("date", -1).to_list(2000)
+    return [serialize_item(d) for d in docs]
+
+
 @api.post("/admin/clients/{client_id}/upload-csv")
 async def upload_csv(
     client_id: str,
@@ -334,30 +342,25 @@ async def upload_csv(
                     return fn
         return None
 
-    f_inv = find_field(["Invoice Number", "invoice_number", "Invoice", "InvoiceNo", "Invoice No"])
-    f_party = find_field(["Supplier", "Customer", "Supplier / Customer", "supplier_customer", "Party"])
-    f_date = find_field(["Invoice Date", "Date", "invoice_date"])
+    f_desc = find_field(["Description", "Desc", "description"])
+    f_date = find_field(["Date", "Invoice Date", "date"])
     f_amount = find_field(["Amount", "Total", "amount"])
-    f_ref = find_field(["Reference", "Ref", "reference"])
 
     rows_imported = 0
     errors = []
     items = []
     for i, row in enumerate(reader, start=2):
-        inv = (row.get(f_inv) or "").strip() if f_inv else ""
-        if not inv:
-            errors.append(f"Row {i}: missing Invoice Number")
+        desc = (row.get(f_desc) or "").strip() if f_desc else ""
+        if not desc:
+            errors.append(f"Row {i}: missing Description")
             continue
         items.append({
             "client_id": client_id,
             "type": type,
-            "invoice_number": inv,
-            "party": (row.get(f_party) or "").strip() if f_party else "",
-            "invoice_date": (row.get(f_date) or "").strip() if f_date else "",
+            "description": desc,
+            "date": (row.get(f_date) or "").strip() if f_date else "",
             "amount": (row.get(f_amount) or "").strip() if f_amount else "",
-            "reference": (row.get(f_ref) or "").strip() if f_ref else "",
             "status": "outstanding",
-            "submission_id": None,
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
         rows_imported += 1
@@ -424,8 +427,8 @@ async def get_smtp_settings() -> Optional[dict]:
 @api.get("/client/counts")
 async def client_counts(user: dict = Depends(require_client)):
     cid = user["_id"]
-    p = await db.outstanding_items.count_documents({"client_id": cid, "type": "purchase", "status": "outstanding"})
-    s = await db.outstanding_items.count_documents({"client_id": cid, "type": "sales", "status": "outstanding"})
+    p = await db.outstanding_items.count_documents({"client_id": cid, "type": "purchase"})
+    s = await db.outstanding_items.count_documents({"client_id": cid, "type": "sales"})
     return {"purchase_outstanding": p, "sales_outstanding": s}
 
 
@@ -433,7 +436,7 @@ async def client_counts(user: dict = Depends(require_client)):
 async def client_items(type: str, user: dict = Depends(require_client)):
     if type not in ("purchase", "sales"):
         raise HTTPException(status_code=400, detail="invalid type")
-    docs = await db.outstanding_items.find({"client_id": user["_id"], "type": type}).sort("invoice_date", -1).to_list(2000)
+    docs = await db.outstanding_items.find({"client_id": user["_id"], "type": type}).sort("date", -1).to_list(2000)
     return [serialize_item(d) for d in docs]
 
 
@@ -515,8 +518,9 @@ async def send_submission_email(client_user: dict, item: dict, comment: str, ima
     body = (
         f"Business Name: {client_user.get('business_name','')}\n"
         f"Client Name: {client_user.get('first_name','')} {client_user.get('last_name','')}\n"
-        f"Invoice Number: {item.get('invoice_number','')}\n"
-        f"Supplier / Customer: {item.get('party','')}\n"
+        f"Description: {item.get('description','')}\n"
+        f"Date: {item.get('date','')}\n"
+        f"Amount: {item.get('amount','')}\n"
         f"Type: {item.get('type','').title()}\n"
         f"Submission Date: {datetime.now(timezone.utc).strftime('%d %b %Y %H:%M UTC')}\n"
         f"Comment: {comment or '(none)'}\n"
@@ -598,19 +602,20 @@ async def submit_item(
 
     sub_doc = {
         "client_id": user["_id"],
-        "item_id": item_id,
         "type": item["type"],
-        "invoice_number": item["invoice_number"],
-        "party": item.get("party", ""),
+        "description": item.get("description", ""),
+        "date": item.get("date", ""),
+        "amount": item.get("amount", ""),
         "comment": comment,
         "image_filename": Path(image_path).name if image_path else None,
         "submitted_at": datetime.now(timezone.utc).isoformat(),
+        "client_business_name": user.get("business_name", ""),
+        "client_first_name": user.get("first_name", ""),
+        "client_last_name": user.get("last_name", ""),
     }
     r = await db.submissions.insert_one(sub_doc)
-    await db.outstanding_items.update_one(
-        {"_id": ObjectId(item_id)},
-        {"$set": {"status": "submitted", "submission_id": str(r.inserted_id), "submitted_at": sub_doc["submitted_at"]}},
-    )
+    # Remove the item from the outstanding list once successfully submitted
+    await db.outstanding_items.delete_one({"_id": ObjectId(item_id)})
     return {"ok": True, "submission_id": str(r.inserted_id)}
 
 
@@ -619,55 +624,41 @@ async def submit_item(
 async def list_submissions(
     client_id: Optional[str] = None,
     type: Optional[str] = None,
-    status: Optional[str] = None,
     q: Optional[str] = None,
     user: dict = Depends(require_admin),
 ):
+    """List historical submissions from the submissions collection."""
     query: dict = {}
     if client_id:
         query["client_id"] = client_id
     if type in ("purchase", "sales"):
         query["type"] = type
-    if status in ("submitted", "outstanding"):
-        query["status"] = status
     if q:
         query["$or"] = [
-            {"invoice_number": {"$regex": q, "$options": "i"}},
-            {"party": {"$regex": q, "$options": "i"}},
+            {"description": {"$regex": q, "$options": "i"}},
+            {"comment": {"$regex": q, "$options": "i"}},
         ]
-    docs = await db.outstanding_items.find(query).sort("submitted_at", -1).to_list(2000)
+    docs = await db.submissions.find(query).sort("submitted_at", -1).to_list(2000)
 
     client_map = {}
-    sub_map = {}
     result = []
     for d in docs:
-        d = serialize_item(d)
+        d["_id"] = str(d["_id"])
+        d["id"] = d["_id"]
         cid = d.get("client_id")
         if cid and cid not in client_map:
             cu = await db.users.find_one({"_id": ObjectId(cid)})
             client_map[cid] = serialize_user(cu) if cu else None
         d["client"] = client_map.get(cid)
-        sid = d.get("submission_id")
-        if sid and sid not in sub_map:
-            su = await db.submissions.find_one({"_id": ObjectId(sid)})
-            if su:
-                su["_id"] = str(su["_id"])
-                su["id"] = su["_id"]
-                sub_map[sid] = su
-        d["submission"] = sub_map.get(sid) if sid else None
         result.append(d)
     return result
 
 
-@api.post("/admin/items/{item_id}/reset")
-async def reset_item(item_id: str, user: dict = Depends(require_admin)):
-    item = await db.outstanding_items.find_one({"_id": ObjectId(item_id)})
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
-    await db.outstanding_items.update_one(
-        {"_id": ObjectId(item_id)},
-        {"$set": {"status": "outstanding", "submission_id": None}, "$unset": {"submitted_at": ""}},
-    )
+@api.delete("/admin/submissions/{submission_id}")
+async def delete_submission(submission_id: str, user: dict = Depends(require_admin)):
+    r = await db.submissions.delete_one({"_id": ObjectId(submission_id)})
+    if r.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Submission not found")
     return {"ok": True}
 
 

@@ -22,8 +22,8 @@ export default function AdminClientDetail() {
     try {
       const [c, p, s] = await Promise.all([
         api.get(`/admin/clients/${id}`),
-        api.get(`/admin/submissions`, { params: { client_id: id, type: "purchase" } }),
-        api.get(`/admin/submissions`, { params: { client_id: id, type: "sales" } }),
+        api.get(`/admin/clients/${id}/items`, { params: { type: "purchase" } }),
+        api.get(`/admin/clients/${id}/items`, { params: { type: "sales" } }),
       ]);
       setClient(c.data);
       setItems({ purchase: p.data, sales: s.data });
@@ -184,33 +184,17 @@ export default function AdminClientDetail() {
                   <table className="w-full text-sm">
                     <thead className="bg-stone-50 text-left text-stone-600 text-xs uppercase tracking-wider">
                       <tr>
-                        <th className="px-3 py-3">Invoice #</th>
-                        <th className="px-3 py-3">Party</th>
+                        <th className="px-3 py-3">Description</th>
                         <th className="px-3 py-3">Date</th>
                         <th className="px-3 py-3">Amount</th>
-                        <th className="px-3 py-3">Status</th>
-                        <th className="px-3 py-3 text-right">Action</th>
                       </tr>
                     </thead>
                     <tbody>
                       {items[t].map((it) => (
                         <tr key={it._id} className="border-t border-stone-100" data-testid={`admin-item-${it._id}`}>
-                          <td className="px-3 py-3 font-medium text-stone-900">{it.invoice_number}</td>
-                          <td className="px-3 py-3 text-stone-700">{it.party}</td>
-                          <td className="px-3 py-3 text-stone-600">{it.invoice_date}</td>
+                          <td className="px-3 py-3 font-medium text-stone-900">{it.description}</td>
+                          <td className="px-3 py-3 text-stone-600">{it.date}</td>
                           <td className="px-3 py-3 text-stone-700">{it.amount}</td>
-                          <td className="px-3 py-3">
-                            {it.status === "submitted" ? (
-                              <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">Submitted</Badge>
-                            ) : (
-                              <Badge style={{ background: "var(--outstanding-bg)", color: "var(--outstanding)" }} className="hover:opacity-80">Outstanding</Badge>
-                            )}
-                          </td>
-                          <td className="px-3 py-3 text-right">
-                            {it.status === "submitted" && (
-                              <Button size="sm" variant="ghost" onClick={() => resetItem(it._id)} data-testid={`reset-item-${it._id}`}>Reset</Button>
-                            )}
-                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -240,7 +224,7 @@ function CsvUploader({ type, onUpload }) {
     <div className="border border-dashed border-stone-300 rounded-xl p-5 bg-stone-50/50 flex flex-col sm:flex-row items-start sm:items-center gap-3">
       <div className="flex-1">
         <p className="font-semibold text-stone-800 text-sm">Upload {type === "purchase" ? "Purchase Invoices" : "Sales Invoices"} CSV</p>
-        <p className="text-xs text-stone-500 mt-1">Columns: Invoice Number, Supplier/Customer, Invoice Date, Amount, Reference. Replaces the existing list.</p>
+        <p className="text-xs text-stone-500 mt-1">Columns: <strong>Description, Date, Amount</strong>. Uploading replaces the existing list.</p>
       </div>
       <label htmlFor={inputId} className="cursor-pointer">
         <span className="inline-flex items-center gap-2 px-4 h-10 rounded-lg text-sm font-medium text-white" style={{ background: "var(--brand)" }} data-testid={`upload-csv-${type}-btn`}>
