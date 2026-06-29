@@ -75,11 +75,16 @@ export default function AdminClientDetail() {
     fd.append("file", file);
     try {
       const { data } = await api.post(`/admin/clients/${id}/upload-csv`, fd, { headers: { "Content-Type": "multipart/form-data" } });
-      toast.success(`Imported ${data.rows_imported} rows${data.errors.length ? `, ${data.errors.length} errors` : ""}`);
-      if (data.errors.length) console.warn("CSV errors:", data.errors);
+      if (data.errors && data.errors.length) {
+        const preview = data.errors.slice(0, 8).join("\n");
+        toast.error(`Imported ${data.rows_imported} rows, ${data.errors.length} row(s) skipped:\n${preview}${data.errors.length > 8 ? `\n…and ${data.errors.length - 8} more` : ""}`, { duration: 12000 });
+        console.warn("CSV row errors:", data.errors);
+      } else {
+        toast.success(`Imported ${data.rows_imported} rows successfully`);
+      }
       load();
     } catch (e) {
-      toast.error(formatApiError(e));
+      toast.error(formatApiError(e), { duration: 10000 });
     }
   }
 
@@ -224,7 +229,7 @@ function CsvUploader({ type, onUpload }) {
     <div className="border border-dashed border-stone-300 rounded-xl p-5 bg-stone-50/50 flex flex-col sm:flex-row items-start sm:items-center gap-3">
       <div className="flex-1">
         <p className="font-semibold text-stone-800 text-sm">Upload {type === "purchase" ? "Purchase Invoices" : "Sales Invoices"} CSV</p>
-        <p className="text-xs text-stone-500 mt-1">Columns: <strong>Description, Date, Amount</strong>. Uploading replaces the existing list.</p>
+        <p className="text-xs text-stone-500 mt-1">Columns: <strong>Description, Date, Amount</strong>. Date must be DD/MM/YYYY. Uploading replaces the existing list.</p>
       </div>
       <label htmlFor={inputId} className="cursor-pointer">
         <span className="inline-flex items-center gap-2 px-4 h-10 rounded-lg text-sm font-medium text-white" style={{ background: "var(--brand)" }} data-testid={`upload-csv-${type}-btn`}>

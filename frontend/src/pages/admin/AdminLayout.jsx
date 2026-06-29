@@ -1,7 +1,8 @@
 import React from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
-import { Users, FileText, Settings, LogOut, FileCheck2 } from "lucide-react";
+import { EposLogo } from "@/components/Brand";
+import { Users, FileText, Settings, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 const linkBase =
@@ -20,12 +21,10 @@ export default function AdminLayout() {
     <div className="min-h-screen flex flex-col md:flex-row" data-testid="admin-shell">
       <aside className="md:w-64 md:min-h-screen border-b md:border-b-0 md:border-r border-stone-200 bg-white">
         <div className="px-6 py-6 flex items-center gap-3">
-          <div className="h-9 w-9 rounded-xl bg-[var(--brand)] flex items-center justify-center">
-            <FileCheck2 className="h-5 w-5 text-white" />
-          </div>
+          <EposLogo size={42} />
           <div>
-            <div className="font-display font-bold text-stone-900 leading-tight">Practice Admin</div>
-            <div className="text-xs text-stone-500">{user?.email}</div>
+            <div className="font-display font-bold text-stone-900 leading-tight">EPOS Accountancy</div>
+            <div className="text-[10px] uppercase tracking-[0.18em] text-stone-500 font-semibold">Practice Admin</div>
           </div>
         </div>
 

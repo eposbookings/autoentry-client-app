@@ -4,7 +4,7 @@ import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { FileCheck2 } from "lucide-react";
+import { EposLogo } from "@/components/Brand";
 
 export default function Login() {
   const { login, error } = useAuth();
@@ -37,10 +37,8 @@ export default function Login() {
         <div className="absolute inset-0 bg-gradient-to-tr from-stone-900/30 via-stone-900/10 to-transparent" />
         <div className="relative z-10 flex flex-col justify-between h-full p-12 text-white">
           <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-xl bg-white/95 flex items-center justify-center">
-              <FileCheck2 className="h-6 w-6" style={{ color: "var(--brand)" }} />
-            </div>
-            <div className="font-display font-bold text-2xl tracking-tight">Outstanding Documents</div>
+            <EposLogo size={44} />
+            <div className="font-display font-bold text-2xl tracking-tight">EPOS Accountancy</div>
           </div>
           <div className="space-y-4 max-w-md">
             <h2 className="font-display text-4xl font-bold leading-tight">
@@ -57,10 +55,8 @@ export default function Login() {
       <div className="flex items-center justify-center p-6 sm:p-12 bg-[var(--bg)]">
         <div className="w-full max-w-md fade-up">
           <div className="mb-10 md:hidden flex items-center gap-3">
-            <div className="h-10 w-10 rounded-xl bg-[var(--brand)] flex items-center justify-center">
-              <FileCheck2 className="h-6 w-6 text-white" />
-            </div>
-            <div className="font-display font-bold text-xl">Outstanding Documents</div>
+            <EposLogo size={40} />
+            <div className="font-display font-bold text-xl">EPOS Accountancy</div>
           </div>
           <h1 className="font-display text-4xl sm:text-5xl font-bold tracking-tight text-stone-900">
             Welcome back

@@ -346,20 +346,59 @@ async def upload_csv(
     f_date = find_field(["Date", "Invoice Date", "date"])
     f_amount = find_field(["Amount", "Total", "amount"])
 
+    missing_cols = []
+    if not f_desc: missing_cols.append("Description")
+    if not f_date: missing_cols.append("Date")
+    if not f_amount: missing_cols.append("Amount")
+    if missing_cols:
+        raise HTTPException(
+            status_code=400,
+            detail=f"CSV is missing required column(s): {', '.join(missing_cols)}. Your file must have a header row with: Description, Date, Amount.",
+        )
+
+    def normalize_date(s: str) -> Optional[str]:
+        s = (s or "").strip()
+        if not s:
+            return None
+        for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d/%m/%y", "%d.%m.%Y", "%Y/%m/%d", "%m/%d/%Y"):
+            try:
+                return datetime.strptime(s, fmt).strftime("%d/%m/%Y")
+            except ValueError:
+                continue
+        return None  # unparseable
+
     rows_imported = 0
     errors = []
     items = []
     for i, row in enumerate(reader, start=2):
-        desc = (row.get(f_desc) or "").strip() if f_desc else ""
+        desc = (row.get(f_desc) or "").strip()
+        raw_date = (row.get(f_date) or "").strip()
+        raw_amount = (row.get(f_amount) or "").strip()
+
+        row_errors = []
         if not desc:
-            errors.append(f"Row {i}: missing Description")
+            row_errors.append("Description is empty")
+        if not raw_date:
+            row_errors.append("Date is empty")
+            norm_date = ""
+        else:
+            norm_date = normalize_date(raw_date)
+            if norm_date is None:
+                row_errors.append(f"Date '{raw_date}' is not a recognised format (expected DD/MM/YYYY)")
+                norm_date = ""
+        if not raw_amount:
+            row_errors.append("Amount is empty")
+
+        if row_errors:
+            errors.append(f"Row {i}: {'; '.join(row_errors)}")
             continue
+
         items.append({
             "client_id": client_id,
             "type": type,
             "description": desc,
-            "date": (row.get(f_date) or "").strip() if f_date else "",
-            "amount": (row.get(f_amount) or "").strip() if f_amount else "",
+            "date": norm_date,
+            "amount": raw_amount,
             "status": "outstanding",
             "created_at": datetime.now(timezone.utc).isoformat(),
         })

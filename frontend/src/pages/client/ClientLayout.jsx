@@ -2,7 +2,8 @@ import React from "react";
 import { Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
-import { FileCheck2, LogOut } from "lucide-react";
+import { EposLogo, EposWordmark } from "@/components/Brand";
+import { LogOut } from "lucide-react";
 
 export default function ClientLayout() {
   const { user, logout } = useAuth();
@@ -18,12 +19,10 @@ export default function ClientLayout() {
       <header className="border-b border-stone-200 bg-white">
         <div className="max-w-3xl mx-auto px-5 py-4 flex items-center justify-between">
           <button onClick={() => nav("/portal")} className="flex items-center gap-2.5" data-testid="brand-link">
-            <div className="h-9 w-9 rounded-xl bg-[var(--brand)] flex items-center justify-center">
-              <FileCheck2 className="h-5 w-5 text-white" />
-            </div>
-            <div className="text-left">
-              <div className="font-display font-bold leading-tight text-stone-900">{user?.business_name}</div>
-              <div className="text-[11px] uppercase tracking-wider text-stone-500">Documents portal</div>
+            <EposLogo size={40} />
+            <div className="text-left leading-tight">
+              <div className="font-display font-bold text-stone-900">{user?.business_name}</div>
+              <div className="text-[10px] uppercase tracking-[0.18em] text-stone-500 font-semibold">EPOS Accountancy · Portal</div>
             </div>
           </button>
           <Button variant="ghost" onClick={onLogout} className="gap-2" data-testid="logout-btn">
