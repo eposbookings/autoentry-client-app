@@ -709,6 +709,31 @@ async def admin_upload(filename: str, user: dict = Depends(require_admin)):
     return FileResponse(p)
 
 
+DOWNLOADS_DIR = ROOT_DIR / "downloads"
+DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+@api.get("/downloads/status")
+async def downloads_status():
+    return {
+        "android": (DOWNLOADS_DIR / "epos-docs.apk").exists(),
+        "ios": (DOWNLOADS_DIR / "epos-docs.ipa").exists(),
+    }
+
+@api.get("/downloads/android")
+async def download_android():
+    p = DOWNLOADS_DIR / "epos-docs.apk"
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="Android app not yet available")
+    return FileResponse(p, media_type="application/vnd.android.package-archive", filename="epos-docs.apk")
+
+@api.get("/downloads/ios")
+async def download_ios():
+    p = DOWNLOADS_DIR / "epos-docs.ipa"
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="iOS app not yet available")
+    return FileResponse(p, media_type="application/octet-stream", filename="epos-docs.ipa")
+
+
 app.include_router(api)
 
 app.add_middleware(
