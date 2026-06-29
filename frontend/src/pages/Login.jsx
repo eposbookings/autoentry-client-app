@@ -125,35 +125,17 @@ export default function Login() {
             <div className="grid grid-cols-2 gap-3">
               <a
                 href={`${process.env.REACT_APP_BACKEND_URL}/api/downloads/android`}
-                onClick={async (e) => {
-                  e.preventDefault();
-                  try {
-                    const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/downloads/status`);
-                    const j = await r.json();
-                    if (j.android) window.location.href = `${process.env.REACT_APP_BACKEND_URL}/api/downloads/android`;
-                    else alert("Android app — Coming soon");
-                  } catch { alert("Android app — Coming soon"); }
-                }}
                 className="flex items-center justify-center gap-2 h-12 rounded-xl border border-stone-300 hover:border-stone-900 text-sm font-semibold text-stone-800 bg-white transition-colors"
                 data-testid="download-android-btn"
               >
-                <span aria-hidden>🤖</span> Download for Android
+                Download for Android
               </a>
               <a
                 href={`${process.env.REACT_APP_BACKEND_URL}/api/downloads/ios`}
-                onClick={async (e) => {
-                  e.preventDefault();
-                  try {
-                    const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/downloads/status`);
-                    const j = await r.json();
-                    if (j.ios) window.location.href = `${process.env.REACT_APP_BACKEND_URL}/api/downloads/ios`;
-                    else alert("iPhone app — Coming soon");
-                  } catch { alert("iPhone app — Coming soon"); }
-                }}
                 className="flex items-center justify-center gap-2 h-12 rounded-xl border border-stone-300 hover:border-stone-900 text-sm font-semibold text-stone-800 bg-white transition-colors"
                 data-testid="download-ios-btn"
               >
-                <span aria-hidden></span> Download for iPhone
+                Download for iPhone
               </a>
             </div>
           </div>
