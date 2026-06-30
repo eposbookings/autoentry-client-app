@@ -9,8 +9,8 @@ services:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
     volumes:
-      - mongo_data:/data/db
-      - mongo_logs:/var/log/mongodb/
+      - ./mongodb/data/db:/data/db
+      - ./mongodb/var/log/mongodb:/var/log/mongodb/
   nginx:
     restart: always
     build:
@@ -31,8 +31,12 @@ services:
       dockerfile: Dockerfile
       args:
         JWT_SECRET: ${JWT_SECRET}
-        MONGO_URL: ${MONGO_URL}
         DB_NAME: ${DB_NAME}
+        MONGO_USER: ${MONGO_USER}
+        MONGO_PASSWORD: ${MONGO_PASSWORD}
+        FERNET_KEY: ${FERNET_KEY}
+    env_file:
+      - ./.env
     ports:
       - "${APP_PORT}:4000"
     depends_on:

@@ -1,10 +1,10 @@
 # --- STAGE 1: Build the React Application ---
-FROM node:24-alpine AS build
+FROM node:24-alpine AS builder
 WORKDIR /app
 
 # Install dependencies using wildcard to catch both package.json & package-lock.json
 COPY package*.json ./
-RUN yarn i
+RUN yarn install
 
 # Copy application source code and compile static production files
 COPY . .

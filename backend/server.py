@@ -32,7 +32,7 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 fernet = Fernet(os.environ["FERNET_KEY"].encode())
 
-mongo_url = os.environ["MONGO_URL"]
+mongo_url = "mongodb://{}:{}@localhost:27017/{}?authSource=admin".format(os.environ["MONGO_USER"],os.environ["MONGO_PASSWORD"],os.environ["DB_NAME"])
 mongo_client = AsyncIOMotorClient(mongo_url)
 db = mongo_client[os.environ["DB_NAME"]]
 
