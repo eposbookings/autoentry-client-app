@@ -26,7 +26,11 @@ Responsive web app for an accounting practice to let clients see their outstandi
 - Image stamping (semi-transparent watermark with date/time/comment).
 - Email submission only marks item submitted on success.
 
+## Updates (Jun 2026)
+- Watermark text enlarged (~2x): bold title `W//24` and bold comment `W//30`, taller semi-transparent band, more padding/leading. Verified with a generated test image. Awaiting user review.
+
 ## Backlog (P1/P2 — deferred for first finish)
+- P1 — Capacitor project setup (Android + iOS platforms, config, permissions/icons) — files only, no binary builds (per user).
 - P1 — CSV duplicate detection summary on upload (count of identical invoice numbers).
 - P1 — CSV export of submissions.
 - P1 — Audit log of admin actions.

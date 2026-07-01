@@ -499,9 +499,11 @@ def stamp_image(image_bytes: bytes, comment: str, submitted_at: datetime) -> byt
     draw = ImageDraw.Draw(overlay)
 
     timestamp = submitted_at.strftime("%d %b %Y · %H:%M UTC")
+    title_size = max(40, W // 24)
+    body_size = max(34, W // 30)
     try:
-        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", max(18, W // 50))
-        font_body = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", max(16, W // 60))
+        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", title_size)
+        font_body = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", body_size)
     except Exception:
         font_title = ImageFont.load_default()
         font_body = ImageFont.load_default()
@@ -522,21 +524,23 @@ def stamp_image(image_bytes: bytes, comment: str, submitted_at: datetime) -> byt
             lines.append(cur)
         return lines or [""]
 
-    pad = max(20, W // 60)
+    pad = max(28, W // 40)
     inner_w = W - 2 * pad
     comment_lines = wrap(comment or "", font_body, inner_w)
-    line_h = max(20, W // 50)
-    block_h = pad + line_h + 8 + len(comment_lines) * line_h + pad
+    title_h = int(title_size * 1.2)
+    body_h = int(body_size * 1.35)
+    gap = max(12, body_size // 2)
+    block_h = pad + title_h + gap + len(comment_lines) * body_h + pad
 
-    draw.rectangle([(0, H - block_h), (W, H)], fill=(0, 0, 0, 165))
-    draw.rectangle([(pad, H - block_h + pad - 6), (pad + 60, H - block_h + pad - 2)], fill=(192, 94, 68, 230))
+    draw.rectangle([(0, H - block_h), (W, H)], fill=(0, 0, 0, 180))
+    draw.rectangle([(pad, H - block_h + pad - 10), (pad + 90, H - block_h + pad - 4)], fill=(192, 94, 68, 235))
 
     y = H - block_h + pad
     draw.text((pad, y), timestamp, font=font_title, fill=(255, 255, 255, 255))
-    y += line_h + 8
+    y += title_h + gap
     for line in comment_lines:
         draw.text((pad, y), line, font=font_body, fill=(245, 245, 245, 245))
-        y += line_h
+        y += body_h
 
     composed = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
     out = io.BytesIO()
