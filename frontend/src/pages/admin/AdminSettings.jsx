@@ -10,7 +10,7 @@ import { toast } from "sonner";
 export default function AdminSettings() {
   const [form, setForm] = useState({
     host: "", port: 587, username: "", password: "",
-    sender_email: "", sender_name: "", use_tls: true,
+    sender_email: "", sender_name: "", use_tls: true, aws_iam_secret: false,
   });
   const [configured, setConfigured] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -18,7 +18,7 @@ export default function AdminSettings() {
   const load = useCallback(async () => {
     try {
       const { data } = await api.get("/admin/settings/smtp");
-      setForm({ ...data, password: "" });
+      setForm({ ...data, password: "", aws_iam_secret: false });
       setConfigured(!!data.configured);
     } catch (e) { toast.error(formatApiError(e)); }
   }, []);
@@ -61,13 +61,27 @@ export default function AdminSettings() {
           <Field label="SMTP Host" value={form.host} onChange={(v)=>setForm({...form, host:v})} placeholder="email-smtp.eu-west-2.amazonaws.com" testid="smtp-host" />
           <Field label="Port" type="number" value={form.port} onChange={(v)=>setForm({...form, port: Number(v)})} placeholder="587" testid="smtp-port" />
           <Field label="Username" value={form.username} onChange={(v)=>setForm({...form, username:v})} testid="smtp-username" />
-          <Field label={configured ? "Password (leave blank to keep)" : "Password"} type="password" required={!configured} placeholder={configured ? "•••••••• saved — leave blank to keep" : "Enter SMTP password"} value={form.password} onChange={(v)=>setForm({...form, password:v})} testid="smtp-password" />
+          <Field label={configured ? (form.aws_iam_secret ? "AWS IAM Secret Access Key (leave blank to keep)" : "Password (leave blank to keep)") : (form.aws_iam_secret ? "AWS IAM Secret Access Key" : "Password")} type="password" required={!configured} placeholder={configured ? "•••••••• saved — leave blank to keep" : (form.aws_iam_secret ? "Paste your IAM Secret Access Key" : "Enter SMTP password")} value={form.password} onChange={(v)=>setForm({...form, password:v})} testid="smtp-password" />
           <Field label="Sender Email" type="email" value={form.sender_email} onChange={(v)=>setForm({...form, sender_email:v})} testid="smtp-sender-email" />
           <Field label="Sender Name" value={form.sender_name} onChange={(v)=>setForm({...form, sender_name:v})} testid="smtp-sender-name" />
         </div>
         <div className="flex items-center gap-3 pt-1">
           <Switch checked={form.use_tls} onCheckedChange={(v)=>setForm({...form, use_tls:v})} data-testid="smtp-tls-switch" />
           <Label className="text-sm">Use STARTTLS (recommended for port 587)</Label>
+        </div>
+
+        <div className="rounded-xl border border-stone-200 bg-stone-50 p-4 space-y-2" data-testid="aws-iam-box">
+          <div className="flex items-center gap-3">
+            <Switch checked={form.aws_iam_secret} onCheckedChange={(v)=>setForm({...form, aws_iam_secret:v})} data-testid="aws-iam-switch" />
+            <Label className="text-sm font-semibold text-stone-800">I'm pasting an AWS IAM Secret Access Key</Label>
+          </div>
+          <p className="text-xs text-stone-600 leading-relaxed">
+            Amazon SES needs a special <strong>SMTP password</strong> — not your IAM secret access key. If you only have IAM keys
+            (an <code className="text-[11px]">AKIA…</code> access key + a secret), turn this on: enter the access key as the
+            <strong> Username</strong> and paste the <strong>Secret Access Key</strong> above, and we'll automatically convert it
+            to the correct SES SMTP password (region is detected from your host). The IAM user must have the
+            <em> ses:SendRawEmail</em> permission.
+          </p>
         </div>
         <div className="flex justify-end">
           <Button type="submit" disabled={busy} className="gap-2" style={{ background: "var(--brand)" }} data-testid="save-smtp-btn">

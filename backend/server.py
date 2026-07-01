@@ -8,6 +8,9 @@ import io
 import csv
 import jwt
 import bcrypt
+import hmac
+import base64
+import hashlib
 import logging
 import smtplib
 import asyncio
@@ -86,9 +89,30 @@ class SMTPSettingsIn(BaseModel):
     sender_email: EmailStr
     sender_name: str
     use_tls: bool = True
+    aws_iam_secret: bool = False
 
 
 # ---------- Helpers ----------
+def parse_ses_region(host: str) -> Optional[str]:
+    """Extract AWS region from an SES SMTP host like email-smtp.eu-west-2.amazonaws.com."""
+    parts = (host or "").lower().strip().split(".")
+    if len(parts) >= 4 and parts[0] == "email-smtp" and parts[-2] == "amazonaws" and parts[-1] == "com":
+        return parts[1]
+    return None
+
+
+def derive_ses_smtp_password(secret_access_key: str, region: str) -> str:
+    """Convert an AWS IAM secret access key into an Amazon SES SMTP password (AWS-documented algorithm)."""
+    def sign(key: bytes, msg: str) -> bytes:
+        return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
+    sig = sign(("AWS4" + secret_access_key).encode("utf-8"), "11111111")
+    sig = sign(sig, region)
+    sig = sign(sig, "ses")
+    sig = sign(sig, "aws4_request")
+    sig = sign(sig, "SendRawEmail")
+    return base64.b64encode(bytes([0x04]) + sig).decode("utf-8")
+
+
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
@@ -441,7 +465,13 @@ async def update_smtp(payload: SMTPSettingsIn, user: dict = Depends(require_admi
         "use_tls": payload.use_tls,
     }
     if payload.password:
-        doc["password_enc"] = fernet.encrypt(payload.password.encode()).decode()
+        pw = payload.password
+        if payload.aws_iam_secret:
+            region = parse_ses_region(payload.host)
+            if not region:
+                raise HTTPException(status_code=400, detail="Could not detect AWS region from the SMTP host. Use the Amazon SES host format 'email-smtp.<region>.amazonaws.com' (e.g. email-smtp.eu-west-2.amazonaws.com).")
+            pw = derive_ses_smtp_password(payload.password, region)
+        doc["password_enc"] = fernet.encrypt(pw.encode()).decode()
     elif existing.get("password_enc"):
         doc["password_enc"] = existing["password_enc"]
     await db.settings.update_one({"key": "smtp"}, {"$set": doc}, upsert=True)
