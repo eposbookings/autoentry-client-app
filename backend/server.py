@@ -573,6 +573,10 @@ def stamp_image(image_bytes: bytes, comment: str, submitted_at: datetime) -> byt
         y += body_h
 
     composed = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+    out = io.BytesIO()
+    composed.save(out, format="JPEG", quality=88)
+    return out.getvalue()
+
 
 def render_document_page(title: str, comment: str, submitted_at: datetime) -> bytes:
     """Render a clean white A4-style page containing the invoice description,
@@ -637,11 +641,6 @@ def render_document_page(title: str, comment: str, submitted_at: datetime) -> by
 
     out = io.BytesIO()
     img.save(out, format="JPEG", quality=90)
-    return out.getvalue()
-
-
-    out = io.BytesIO()
-    composed.save(out, format="JPEG", quality=88)
     return out.getvalue()
 
 
