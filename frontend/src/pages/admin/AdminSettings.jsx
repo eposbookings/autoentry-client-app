@@ -31,7 +31,7 @@ export default function AdminSettings() {
       const payload = { ...form };
       if (!payload.password) delete payload.password;
       await api.put("/admin/settings/smtp", payload);
-      toast.success("SMTP settings saved");
+      toast.success("SMTP settings saved — password stored securely");
       setForm({ ...form, password: "" });
       load();
     } catch (err) { toast.error(formatApiError(err)); }
@@ -61,7 +61,7 @@ export default function AdminSettings() {
           <Field label="SMTP Host" value={form.host} onChange={(v)=>setForm({...form, host:v})} placeholder="email-smtp.eu-west-2.amazonaws.com" testid="smtp-host" />
           <Field label="Port" type="number" value={form.port} onChange={(v)=>setForm({...form, port: Number(v)})} placeholder="587" testid="smtp-port" />
           <Field label="Username" value={form.username} onChange={(v)=>setForm({...form, username:v})} testid="smtp-username" />
-          <Field label={configured ? "Password (leave blank to keep)" : "Password"} type="password" required={!configured} value={form.password} onChange={(v)=>setForm({...form, password:v})} testid="smtp-password" />
+          <Field label={configured ? "Password (leave blank to keep)" : "Password"} type="password" required={!configured} placeholder={configured ? "•••••••• saved — leave blank to keep" : "Enter SMTP password"} value={form.password} onChange={(v)=>setForm({...form, password:v})} testid="smtp-password" />
           <Field label="Sender Email" type="email" value={form.sender_email} onChange={(v)=>setForm({...form, sender_email:v})} testid="smtp-sender-email" />
           <Field label="Sender Name" value={form.sender_name} onChange={(v)=>setForm({...form, sender_name:v})} testid="smtp-sender-name" />
         </div>
