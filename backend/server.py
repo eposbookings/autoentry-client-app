@@ -50,6 +50,7 @@ def load_font(bold: bool, size: int):
                 return ImageFont.truetype(alt, size)
             except Exception:
                 continue
+        logger.warning("DejaVu fonts not found; watermark falling back to tiny default bitmap font. Expected at %s", FONT_BOLD_PATH)
         return ImageFont.load_default()
 
 
