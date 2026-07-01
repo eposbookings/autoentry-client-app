@@ -33,6 +33,26 @@ JWT_ALGORITHM = "HS256"
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", str(ROOT_DIR / "uploads")))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
+FONTS_DIR = ROOT_DIR / "assets" / "fonts"
+FONT_BOLD_PATH = str(FONTS_DIR / "DejaVuSans-Bold.ttf")
+FONT_REGULAR_PATH = str(FONTS_DIR / "DejaVuSans.ttf")
+
+
+def load_font(bold: bool, size: int):
+    """Load a bundled TrueType font at the requested size, with graceful fallback."""
+    path = FONT_BOLD_PATH if bold else FONT_REGULAR_PATH
+    try:
+        return ImageFont.truetype(path, size)
+    except Exception:
+        for alt in ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"):
+            try:
+                return ImageFont.truetype(alt, size)
+            except Exception:
+                continue
+        return ImageFont.load_default()
+
+
 fernet = Fernet(os.environ["FERNET_KEY"].encode())
 
 mongo_url = os.environ["MONGO_URL"]
@@ -529,14 +549,10 @@ def stamp_image(image_bytes: bytes, comment: str, submitted_at: datetime) -> byt
     draw = ImageDraw.Draw(overlay)
 
     timestamp = submitted_at.strftime("%d %b %Y · %H:%M UTC")
-    title_size = max(40, W // 24)
-    body_size = max(34, W // 30)
-    try:
-        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", title_size)
-        font_body = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", body_size)
-    except Exception:
-        font_title = ImageFont.load_default()
-        font_body = ImageFont.load_default()
+    title_size = max(48, W // 18)
+    body_size = max(40, W // 24)
+    font_title = load_font(True, title_size)
+    font_body = load_font(True, body_size)
 
     def wrap(text: str, font, max_width: int) -> List[str]:
         words = text.split()
@@ -587,10 +603,10 @@ def render_document_page(title: str, comment: str, submitted_at: datetime) -> by
     draw = ImageDraw.Draw(img)
 
     try:
-        font_h1 = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 64)
-        font_label = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 30)
-        font_body = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 40)
-        font_meta = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 34)
+        font_h1 = load_font(True, 64)
+        font_label = load_font(True, 30)
+        font_body = load_font(False, 40)
+        font_meta = load_font(False, 34)
     except Exception:
         font_h1 = font_label = font_body = font_meta = ImageFont.load_default()
 
