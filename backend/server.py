@@ -543,6 +543,73 @@ def stamp_image(image_bytes: bytes, comment: str, submitted_at: datetime) -> byt
         y += body_h
 
     composed = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+
+def render_document_page(title: str, comment: str, submitted_at: datetime) -> bytes:
+    """Render a clean white A4-style page containing the invoice description,
+    the submission timestamp and the client's comment. Used when the client
+    submits without a photo so an image attachment is always produced."""
+    W, H = 1240, 1754  # ~A4 at 150dpi
+    img = Image.new("RGB", (W, H), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+
+    try:
+        font_h1 = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 64)
+        font_label = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 30)
+        font_body = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 40)
+        font_meta = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 34)
+    except Exception:
+        font_h1 = font_label = font_body = font_meta = ImageFont.load_default()
+
+    def wrap(text: str, font, max_width: int) -> List[str]:
+        lines, cur = [], ""
+        for w in (text or "").split():
+            test = (cur + " " + w).strip()
+            if draw.textlength(test, font=font) <= max_width:
+                cur = test
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = w
+        if cur:
+            lines.append(cur)
+        return lines or [""]
+
+    margin = 90
+    inner_w = W - 2 * margin
+
+    # Brand accent bar at top
+    draw.rectangle([(0, 0), (W, 18)], fill=(23, 43, 38))
+    draw.rectangle([(margin, 90), (margin + 120, 100)], fill=(192, 94, 68))
+
+    y = 130
+    for line in wrap(title or "Additional invoice", font_h1, inner_w):
+        draw.text((margin, y), line, font=font_h1, fill=(23, 43, 38))
+        y += 78
+
+    y += 30
+    draw.line([(margin, y), (W - margin, y)], fill=(220, 216, 208), width=2)
+    y += 40
+
+    draw.text((margin, y), "SUBMITTED", font=font_label, fill=(150, 145, 135))
+    y += 42
+    draw.text((margin, y), submitted_at.strftime("%d %b %Y · %H:%M UTC"), font=font_meta, fill=(60, 60, 60))
+    y += 80
+
+    draw.text((margin, y), "COMMENT", font=font_label, fill=(150, 145, 135))
+    y += 50
+    for line in wrap(comment or "(no comment provided)", font_body, inner_w):
+        draw.text((margin, y), line, font=font_body, fill=(40, 40, 40))
+        y += 56
+
+    # Footer note
+    draw.text((margin, H - 90), "No photo was provided — this page was generated automatically.",
+              font=font_meta, fill=(170, 165, 158))
+
+    out = io.BytesIO()
+    img.save(out, format="JPEG", quality=90)
+    return out.getvalue()
+
+
     out = io.BytesIO()
     composed.save(out, format="JPEG", quality=88)
     return out.getvalue()
@@ -553,8 +620,9 @@ async def send_submission_email(client_user: dict, item: dict, comment: str, ima
     if not smtp:
         raise HTTPException(status_code=400, detail="SMTP is not configured. Ask your administrator to configure email settings.")
 
+    is_additional = bool(item.get("additional"))
     msg = EmailMessage()
-    msg["Subject"] = "Outstanding Document Submission"
+    msg["Subject"] = "Additional Document Submission" if is_additional else "Outstanding Document Submission"
     msg["From"] = f'{smtp["sender_name"]} <{smtp["sender_email"]}>'
     msg["To"] = client_user["autoentry_email"]
 
@@ -565,6 +633,7 @@ async def send_submission_email(client_user: dict, item: dict, comment: str, ima
         f"Date: {item.get('date','')}\n"
         f"Amount: {item.get('amount','')}\n"
         f"Type: {item.get('type','').title()}\n"
+        f"Additional (not on outstanding list): {'Yes' if is_additional else 'No'}\n"
         f"Submission Date: {datetime.now(timezone.utc).strftime('%d %b %Y %H:%M UTC')}\n"
         f"Comment: {comment or '(none)'}\n"
     )
@@ -618,16 +687,21 @@ async def submit_item(
 
     comment = (comment or "").strip()
     image_path = None
+    now = datetime.now(timezone.utc)
     if mode == "no_photo":
         if not comment:
             raise HTTPException(status_code=400, detail="Comment is required when no photo is provided")
+        fname = f"{user['_id']}_{item_id}_{int(now.timestamp())}.jpg"
+        fpath = UPLOAD_DIR / fname
+        with open(fpath, "wb") as f:
+            f.write(render_document_page(item.get("description", ""), comment, now))
+        image_path = str(fpath)
     elif mode == "photo":
         if not file:
             raise HTTPException(status_code=400, detail="Photo file is required")
         raw = await file.read()
         if not raw:
             raise HTTPException(status_code=400, detail="Empty file")
-        now = datetime.now(timezone.utc)
         fname = f"{user['_id']}_{item_id}_{int(now.timestamp())}.jpg"
         fpath = UPLOAD_DIR / fname
         if comment:
@@ -660,6 +734,69 @@ async def submit_item(
     # Remove the item from the outstanding list once successfully submitted
     await db.outstanding_items.delete_one({"_id": ObjectId(item_id)})
     return {"ok": True, "submission_id": str(r.inserted_id)}
+
+
+@api.post("/client/submit-additional")
+async def submit_additional(
+    type: str = Form(...),
+    description: str = Form(...),
+    comment: str = Form(""),
+    mode: str = Form(...),
+    file: Optional[UploadFile] = File(None),
+    user: dict = Depends(require_client),
+):
+    """Submit an invoice that is NOT in the client's outstanding list."""
+    if type not in ("purchase", "sales"):
+        raise HTTPException(status_code=400, detail="Invalid invoice type")
+    description = (description or "").strip()
+    if not description:
+        raise HTTPException(status_code=400, detail="Description is required")
+
+    comment = (comment or "").strip()
+    now = datetime.now(timezone.utc)
+    fname = f"{user['_id']}_additional_{int(now.timestamp())}.jpg"
+    fpath = UPLOAD_DIR / fname
+
+    if mode == "no_photo":
+        if not comment:
+            raise HTTPException(status_code=400, detail="Comment is required when no photo is provided")
+        with open(fpath, "wb") as f:
+            f.write(render_document_page(description, comment, now))
+    elif mode == "photo":
+        if not file:
+            raise HTTPException(status_code=400, detail="Photo file is required")
+        raw = await file.read()
+        if not raw:
+            raise HTTPException(status_code=400, detail="Empty file")
+        if comment:
+            with open(fpath, "wb") as f:
+                f.write(stamp_image(raw, comment, now))
+        else:
+            Image.open(io.BytesIO(raw)).convert("RGB").save(fpath, format="JPEG", quality=88)
+    else:
+        raise HTTPException(status_code=400, detail="Invalid mode")
+
+    image_path = str(fpath)
+    item = {"description": description, "date": "", "amount": "", "type": type, "additional": True}
+    await send_submission_email(user, item, comment, image_path)
+
+    sub_doc = {
+        "client_id": user["_id"],
+        "type": type,
+        "description": description,
+        "date": "",
+        "amount": "",
+        "comment": comment,
+        "image_filename": fname,
+        "is_additional": True,
+        "submitted_at": now.isoformat(),
+        "client_business_name": user.get("business_name", ""),
+        "client_first_name": user.get("first_name", ""),
+        "client_last_name": user.get("last_name", ""),
+    }
+    r = await db.submissions.insert_one(sub_doc)
+    return {"ok": True, "submission_id": str(r.inserted_id)}
+
 
 
 # ---------- Admin: Submissions ----------

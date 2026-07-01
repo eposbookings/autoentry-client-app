@@ -27,7 +27,9 @@ Responsive web app for an accounting practice to let clients see their outstandi
 - Email submission only marks item submitted on success.
 
 ## Updates (Jun 2026)
-- Watermark text enlarged (~2x): bold title `W//24` and bold comment `W//30`, taller semi-transparent band, more padding/leading. Verified with a generated test image. Awaiting user review.
+- Watermark text enlarged (~2x): bold title `W//24` and bold comment `W//30`, taller semi-transparent band, more padding/leading. Verified with a generated test image.
+- **Additional invoice submission**: clients can submit invoices not on their outstanding list from the Purchase/Sales list pages ("Add another invoice" → `/portal/submit-additional/:type`). Requires a description + photo/comment. Backend `POST /api/client/submit-additional`; logged in Submissions with `is_additional` flag (shown as "Additional" badge in admin) and emailed (subject/body flag it).
+- **White-page image for no-photo submissions**: the "No photo needed" flow (existing items AND additional) now auto-generates a clean white A4-style JPEG containing the description, timestamp and comment (`render_document_page`), so an image attachment is always emailed. Verified via curl + admin submissions (image_filename now populated for no-photo).
 
 ## Backlog (P1/P2 — deferred for first finish)
 - P1 — Capacitor project setup (Android + iOS platforms, config, permissions/icons) — files only, no binary builds (per user).

@@ -80,7 +80,14 @@ export default function AdminSubmissions() {
                   <td className="px-4 py-3 capitalize text-stone-700">
                     <Badge variant="secondary" className="capitalize">{s.type}</Badge>
                   </td>
-                  <td className="px-4 py-3 font-medium text-stone-900">{s.description || "—"}</td>
+                  <td className="px-4 py-3 font-medium text-stone-900">
+                    <div className="flex items-center gap-2">
+                      <span>{s.description || "—"}</span>
+                      {s.is_additional && (
+                        <Badge className="bg-amber-100 text-amber-800 hover:bg-amber-100" data-testid={`additional-badge-${s.id}`}>Additional</Badge>
+                      )}
+                    </div>
+                  </td>
                   <td className="px-4 py-3 text-stone-700">{s.date || "—"}</td>
                   <td className="px-4 py-3 text-stone-700">{s.amount || "—"}</td>
                   <td className="px-4 py-3 text-stone-700 max-w-xs truncate">{s.comment || "—"}</td>
