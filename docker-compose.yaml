@@ -20,8 +20,10 @@ services:
       - "443:443"
     depends_on:
       - api
+      - frontend
     links:
       - "api:api"
+      - "frontend:frontend"
     volumes:
       - /var/www/.well-known/pki-validation:/var/www/.well-known/pki-validation
   api:
@@ -35,6 +37,7 @@ services:
         MONGO_USER: ${MONGO_USER}
         MONGO_PASSWORD: ${MONGO_PASSWORD}
         FERNET_KEY: ${FERNET_KEY}
+        APP_PORT: ${APP_PORT}
     env_file:
       - ./.env
     ports:
@@ -50,3 +53,9 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        REACT_APP_BACKEND_URL: ${REACT_APP_BACKEND_URL}
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./.env

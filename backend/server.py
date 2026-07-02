@@ -8,6 +8,7 @@ import io
 import csv
 import jwt
 import bcrypt
+from contextlib import asynccontextmanager
 import logging
 import smtplib
 import asyncio
@@ -32,14 +33,44 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 fernet = Fernet(os.environ["FERNET_KEY"].encode())
 
-mongo_url = "mongodb://{}:{}@localhost:27017/{}?authSource=admin".format(os.environ["MONGO_USER"],os.environ["MONGO_PASSWORD"],os.environ["DB_NAME"])
+mongo_url = "mongodb://{}:{}@mongodb:27017/{}?authSource=admin".format(os.environ["MONGO_USER"],os.environ["MONGO_PASSWORD"],os.environ["DB_NAME"])
 mongo_client = AsyncIOMotorClient(mongo_url)
 db = mongo_client[os.environ["DB_NAME"]]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("portal")
 
-app = FastAPI()
+# 1. Define your setup and teardown logic in one place
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- STARTUP LOGIC ---
+    await db.users.create_index("email", unique=True)
+    await db.outstanding_items.create_index([("client_id", 1), ("type", 1), ("status", 1)])
+    await db.submissions.create_index("client_id")
+    await db.settings.create_index("key", unique=True)
+
+    admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com").lower().strip()
+    admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
+    existing = await db.users.find_one({"email": admin_email})
+    if existing is None:
+        await db.users.insert_one({
+            "email": admin_email,
+            "password_hash": hash_password(admin_password),
+            "role": "admin",
+            "first_name": "Practice",
+            "last_name": "Admin",
+            "status": "active",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        logger.info("Admin seeded: %s", admin_email)
+    elif not verify_password(admin_password, existing["password_hash"]):
+        await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_password), "role": "admin"}})
+        logger.info("Admin password updated.")
+    yield
+    # --- SHUTDOWN LOGIC ---
+    mongo_client.close()
+
+app = FastAPI(lifespan=lifespan)
 api = APIRouter(prefix="/api")
 
 
@@ -743,34 +774,3 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-async def startup():
-    await db.users.create_index("email", unique=True)
-    await db.outstanding_items.create_index([("client_id", 1), ("type", 1), ("status", 1)])
-    await db.submissions.create_index("client_id")
-    await db.settings.create_index("key", unique=True)
-
-    admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com").lower().strip()
-    admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
-    existing = await db.users.find_one({"email": admin_email})
-    if existing is None:
-        await db.users.insert_one({
-            "email": admin_email,
-            "password_hash": hash_password(admin_password),
-            "role": "admin",
-            "first_name": "Practice",
-            "last_name": "Admin",
-            "status": "active",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        })
-        logger.info("Admin seeded: %s", admin_email)
-    elif not verify_password(admin_password, existing["password_hash"]):
-        await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_password), "role": "admin"}})
-        logger.info("Admin password updated.")
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    mongo_client.close()

@@ -14,4 +14,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Specify the command to execute when the container starts
-CMD ["python", "server.py"]
+CMD ["uvicorn", "server:app", "--host=0.0.0.0", "--port=8000", "--reload"]
