@@ -82,4 +82,4 @@ See `memory/test_credentials.md`.
 ## Current Git Flow
 Development changes are committed locally, pushed to the `deployment` branch on
 GitHub, and then deployed to the VPS separately. The VPS deploy workflow is currently
-manual-only while SSH deployment is being stabilised.
+manual-only while SSH deployment is being stabilised..
