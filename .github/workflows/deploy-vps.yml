@@ -2,6 +2,11 @@ name: Deploy to 20i VPS
 
 on:
   workflow_dispatch:
+    inputs:
+      deploy_branch:
+        description: "Git branch to deploy to the VPS"
+        required: true
+        default: "main"
 
 concurrency:
   group: deploy-vps
@@ -25,9 +30,11 @@ jobs:
             set -e
             cd /opt/autoentry-client-app
 
-            git fetch origin deployment
-            git checkout deployment
-            git reset --hard origin/deployment
+            DEPLOY_BRANCH="${{ inputs.deploy_branch }}"
+
+            git fetch origin "$DEPLOY_BRANCH"
+            git checkout "$DEPLOY_BRANCH"
+            git reset --hard "origin/$DEPLOY_BRANCH"
 
             if ! docker compose up -d --build --remove-orphans; then
               echo "Docker compose build/startup failed."
