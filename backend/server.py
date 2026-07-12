@@ -39,8 +39,10 @@ from sqlalchemy import (
     delete,
     func,
     insert,
+    inspect,
     or_,
     select,
+    text,
     update,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -160,12 +162,57 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger("portal")
 
 
+def quote_ident(name: str, dialect_name: str) -> str:
+    quote = "`" if dialect_name == "mysql" else '"'
+    return f"{quote}{name}{quote}"
+
+
+def column_sql_type(column: Column) -> str:
+    if isinstance(column.type, String):
+        return f"VARCHAR({column.type.length or 255})"
+    if isinstance(column.type, Integer):
+        return "INTEGER"
+    if isinstance(column.type, Boolean):
+        return "BOOLEAN"
+    return "TEXT"
+
+
+async def ensure_schema_columns(conn):
+    """Add columns introduced after the first SQL deployment.
+
+    SQLAlchemy's create_all creates missing tables, but it will not alter an
+    existing table. This keeps early VPS databases compatible without a full
+    migration framework yet.
+    """
+    dialect_name = conn.dialect.name
+    for table in (users, outstanding_items, submissions, settings):
+        existing_columns = await conn.run_sync(
+            lambda sync_conn, table_name=table.name: {
+                col["name"] for col in inspect(sync_conn).get_columns(table_name)
+            }
+        )
+        for column in table.columns:
+            if column.primary_key or column.name in existing_columns:
+                continue
+            column_def = f"{quote_ident(column.name, dialect_name)} {column_sql_type(column)}"
+            if column.name == "status":
+                column_def += " DEFAULT 'active'"
+            await conn.execute(
+                text(
+                    f"ALTER TABLE {quote_ident(table.name, dialect_name)} "
+                    f"ADD COLUMN {column_def}"
+                )
+            )
+            logger.info("Added missing column %s.%s", table.name, column.name)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     for attempt in range(1, 31):
         try:
             async with engine.begin() as conn:
                 await conn.run_sync(metadata.create_all)
+                await ensure_schema_columns(conn)
             break
         except OperationalError:
             if attempt == 30:
