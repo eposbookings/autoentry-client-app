@@ -12,13 +12,17 @@ services:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
     volumes:
       - ./mysql/data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
   nginx:
     restart: always
     build:
       context: ./nginx
     ports:
       - "80:80"
-      - "443:443"
     depends_on:
       - api
       - frontend
@@ -41,7 +45,8 @@ services:
     ports:
       - "${APP_PORT:-8000}:8000"
     depends_on:
-      - mysql
+      mysql:
+        condition: service_healthy
     volumes:
       - ./backend/uploads:/app/uploads
   frontend:
