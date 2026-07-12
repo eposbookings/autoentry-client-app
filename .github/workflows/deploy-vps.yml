@@ -33,13 +33,20 @@ jobs:
             git reset --hard origin/deployment
 
             docker compose up -d --build --remove-orphans
+            docker compose ps
+            docker compose logs api --tail=40
+            docker compose logs mysql --tail=30
 
-            for i in $(seq 1 30); do
+            for i in $(seq 1 60); do
               if curl -fsS http://localhost:8000/api/health; then
                 echo "API health check passed."
                 exit 0
               fi
-              echo "Waiting for API health check ($i/30)..."
+              echo "Waiting for API health check ($i/60)..."
+              if [ "$i" = "20" ] || [ "$i" = "40" ]; then
+                docker compose ps
+                docker compose logs api --tail=60
+              fi
               sleep 5
             done
 
