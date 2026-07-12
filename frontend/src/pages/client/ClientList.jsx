@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { api, formatApiError } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, Search, ChevronRight } from "lucide-react";
+import { ArrowLeft, Search, ChevronRight, Plus } from "lucide-react";
 import { toast } from "sonner";
 
 export default function ClientList() {
@@ -47,6 +47,14 @@ export default function ClientList() {
         <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" />
         <Input placeholder="Search description…" value={q} onChange={(e) => setQ(e.target.value)} className="h-12 pl-10" data-testid="items-search" />
       </div>
+
+      <button
+        onClick={() => nav(`/portal/submit-additional/${type}`)}
+        className="w-full rounded-2xl border-2 border-dashed border-[var(--brand)]/40 bg-[var(--brand)]/5 p-4 flex items-center justify-center gap-2 text-[var(--brand)] font-semibold card-hover"
+        data-testid="add-additional-btn"
+      >
+        <Plus className="h-5 w-5" /> Add another invoice
+      </button>
 
       {filtered.length === 0 ? (
         <div className="bg-white border border-dashed border-stone-300 rounded-2xl p-10 text-center" data-testid="no-items">

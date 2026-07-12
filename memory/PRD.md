@@ -26,7 +26,15 @@ Responsive web app for an accounting practice to let clients see their outstandi
 - Image stamping (semi-transparent watermark with date/time/comment).
 - Email submission only marks item submitted on success.
 
+## Updates (Jun 2026)
+- **AWS SES SMTP fix**: Added an "I'm pasting an AWS IAM Secret Access Key" toggle on Admin → SMTP Settings. When ON, the backend auto-converts the pasted IAM secret into the correct Amazon SES SMTP password (AWS HMAC-SHA256 algorithm), detecting the region from the SES host (`email-smtp.<region>.amazonaws.com`). Resolves the "535 Authentication Credentials Invalid" error caused by users entering raw IAM keys instead of SES SMTP credentials. Verified: stored password is the derived value, region-detection returns 400 on non-SES hosts, normal saves unchanged.
+- SMTP password UX: masked placeholder + clearer save toast; password never returned by GET (by design).
+- Watermark text enlarged (~2x): bold title `W//24` and bold comment `W//30`, taller semi-transparent band, more padding/leading. Verified with a generated test image.
+- **Additional invoice submission**: clients can submit invoices not on their outstanding list from the Purchase/Sales list pages ("Add another invoice" → `/portal/submit-additional/:type`). Requires a description + photo/comment. Backend `POST /api/client/submit-additional`; logged in Submissions with `is_additional` flag (shown as "Additional" badge in admin) and emailed (subject/body flag it).
+- **White-page image for no-photo submissions**: the "No photo needed" flow (existing items AND additional) now auto-generates a clean white A4-style JPEG containing the description, timestamp and comment (`render_document_page`), so an image attachment is always emailed. Verified via curl + admin submissions (image_filename now populated for no-photo).
+
 ## Backlog (P1/P2 — deferred for first finish)
+- P1 — Capacitor project setup (Android + iOS platforms, config, permissions/icons) — files only, no binary builds (per user).
 - P1 — CSV duplicate detection summary on upload (count of identical invoice numbers).
 - P1 — CSV export of submissions.
 - P1 — Audit log of admin actions.

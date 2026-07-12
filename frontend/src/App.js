@@ -12,6 +12,7 @@ import ClientLayout from "@/pages/client/ClientLayout";
 import ClientDashboard from "@/pages/client/ClientDashboard";
 import ClientList from "@/pages/client/ClientList";
 import ClientSubmit from "@/pages/client/ClientSubmit";
+import ClientSubmitAdditional from "@/pages/client/ClientSubmitAdditional";
 
 function Protected({ role, children }) {
   const { user } = useAuth();
@@ -55,6 +56,7 @@ export default function App() {
           <Route path="/portal" element={<Protected role="client"><ClientLayout /></Protected>}>
             <Route index element={<ClientDashboard />} />
             <Route path="list/:type" element={<ClientList />} />
+            <Route path="submit-additional/:type" element={<ClientSubmitAdditional />} />
             <Route path="submit/:itemId" element={<ClientSubmit />} />
           </Route>
 
