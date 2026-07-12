@@ -32,20 +32,28 @@ jobs:
             git checkout deployment
             git reset --hard origin/deployment
 
-            docker compose up -d --build --remove-orphans
+            if ! docker compose up -d --build --remove-orphans; then
+              echo "Docker compose build/startup failed."
+              docker compose ps
+              docker compose logs --tail=160
+              exit 1
+            fi
+
             docker compose ps
             docker compose logs api --tail=40
             docker compose logs mysql --tail=30
 
             for i in $(seq 1 60); do
-              if curl -fsS http://localhost:8000/api/health; then
-                echo "API health check passed."
+              if docker compose exec -T api python -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/api/health', timeout=3).read().decode())"; then
+                echo "API container health check passed."
+                curl -fsS http://localhost:8000/api/health || true
                 exit 0
               fi
               echo "Waiting for API health check ($i/60)..."
-              if [ "$i" = "20" ] || [ "$i" = "40" ]; then
+              if [ "$i" = "5" ] || [ "$i" = "20" ] || [ "$i" = "40" ]; then
                 docker compose ps
                 docker compose logs api --tail=60
+                docker compose logs mysql --tail=30
               fi
               sleep 5
             done
