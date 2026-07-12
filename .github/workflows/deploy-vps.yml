@@ -1,0 +1,64 @@
+name: Deploy to 20i VPS
+
+on:
+  push:
+    branches:
+      - deployment
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Pull latest code and restart Docker stack
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -e
+            cd /opt/autoentry-client-app
+
+            git fetch origin deployment
+            git checkout deployment
+            git reset --hard origin/deployment
+
+            if ! docker compose up -d --build --remove-orphans; then
+              echo "Docker compose build/startup failed."
+              docker compose ps
+              docker compose logs --tail=160
+              exit 1
+            fi
+
+            docker compose ps
+            docker compose logs api --tail=40
+            docker compose logs mysql --tail=30
+
+            for i in $(seq 1 60); do
+              if docker compose exec -T api python -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/api/health', timeout=3).read().decode())"; then
+                echo "API container health check passed."
+                curl -fsS http://localhost:8000/api/health || true
+                exit 0
+              fi
+              echo "Waiting for API health check ($i/60)..."
+              if [ "$i" = "5" ] || [ "$i" = "20" ] || [ "$i" = "40" ]; then
+                docker compose ps
+                docker compose logs api --tail=60
+                docker compose logs mysql --tail=30
+              fi
+              sleep 5
+            done
+
+            echo "API health check failed."
+            docker compose ps
+            docker compose logs api --tail=120
+            exit 1
