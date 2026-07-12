@@ -1,16 +1,17 @@
 
 services:
-  mongodb:
-    image: mongo:latest
+  mysql:
+    image: mysql:8.4
     restart: always
     ports:
-      - "27017:27017"
+      - "3306:3306"
     environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-autoentry_portal}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
     volumes:
-      - ./mongodb/data/db:/data/db
-      - ./mongodb/var/log/mongodb:/var/log/mongodb/
+      - ./mysql/data:/var/lib/mysql
   nginx:
     restart: always
     build:
@@ -33,21 +34,16 @@ services:
       dockerfile: Dockerfile
       args:
         JWT_SECRET: ${JWT_SECRET}
-        DB_NAME: ${DB_NAME}
-        MONGO_USER: ${MONGO_USER}
-        MONGO_PASSWORD: ${MONGO_PASSWORD}
         FERNET_KEY: ${FERNET_KEY}
         APP_PORT: ${APP_PORT}
     env_file:
       - ./.env
     ports:
-      - "${APP_PORT}:4000"
+      - "${APP_PORT:-8000}:8000"
     depends_on:
-      - mongodb
-    links:
-      - "mongodb:mongodb"
+      - mysql
     volumes:
-    - ./uploads:/usr/app/uploads
+      - ./backend/uploads:/app/uploads
   frontend:
     restart: always
     build:

@@ -1,84 +1,177 @@
 from dotenv import load_dotenv
 from pathlib import Path
+
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
-import os
-import io
-import csv
-import jwt
-import bcrypt
-from contextlib import asynccontextmanager
-import logging
-import smtplib
 import asyncio
+import csv
+import io
+import logging
+import os
+import smtplib
 import socket
-from datetime import datetime, timezone, timedelta
-from typing import Optional, List, Annotated
+import uuid
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
+from typing import List, Optional
 
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, UploadFile, File, Form
-from fastapi.responses import FileResponse
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
-from pydantic import BaseModel, BeforeValidator, EmailStr, Field, ConfigDict
-from bson import ObjectId
+import bcrypt
+import jwt
 from cryptography.fernet import Fernet
+from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi.responses import FileResponse
 from PIL import Image, ImageDraw, ImageFont
+from pydantic import BaseModel, EmailStr
+from sqlalchemy import (
+    Boolean,
+    Column,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    Text,
+    and_,
+    delete,
+    func,
+    insert,
+    or_,
+    select,
+    update,
+)
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from starlette.middleware.cors import CORSMiddleware
 
 # ---------- Config ----------
 JWT_ALGORITHM = "HS256"
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", str(ROOT_DIR / "uploads")))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+DOWNLOADS_DIR = ROOT_DIR / "downloads"
+DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 fernet = Fernet(os.environ["FERNET_KEY"].encode())
 
-mongo_url = "mongodb://{}:{}@mongodb:27017/{}?authSource=admin".format(os.environ["MONGO_USER"],os.environ["MONGO_PASSWORD"],os.environ["DB_NAME"])
-mongo_client = AsyncIOMotorClient(mongo_url)
-db = mongo_client[os.environ["DB_NAME"]]
+
+def get_database_url() -> str:
+    url = (
+        os.environ.get("DATABASE_URL")
+        or os.environ.get("MYSQL_URL")
+        or os.environ.get("SQLALCHEMY_DATABASE_URL")
+    )
+    if not url:
+        url = "sqlite+aiosqlite:///./autoentry_portal.db"
+    if url.startswith("mysql://"):
+        url = "mysql+asyncmy://" + url[len("mysql://") :]
+    return url
+
+
+DATABASE_URL = get_database_url()
+engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+
+metadata = MetaData()
+
+users = Table(
+    "users",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("email", String(255), nullable=False, unique=True, index=True),
+    Column("password_hash", String(255), nullable=False),
+    Column("role", String(32), nullable=False, index=True),
+    Column("first_name", String(255)),
+    Column("last_name", String(255)),
+    Column("business_name", String(255), index=True),
+    Column("autoentry_email", String(255)),
+    Column("status", String(32), nullable=False, default="active"),
+    Column("created_at", String(64)),
+)
+
+outstanding_items = Table(
+    "outstanding_items",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("type", String(32), nullable=False, index=True),
+    Column("description", Text, nullable=False),
+    Column("date", String(32)),
+    Column("amount", String(64)),
+    Column("status", String(32), nullable=False, default="outstanding", index=True),
+    Column("created_at", String(64)),
+)
+
+submissions = Table(
+    "submissions",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("type", String(32), nullable=False, index=True),
+    Column("description", Text),
+    Column("date", String(32)),
+    Column("amount", String(64)),
+    Column("comment", Text),
+    Column("image_filename", String(255)),
+    Column("submitted_at", String(64), index=True),
+    Column("client_business_name", String(255)),
+    Column("client_first_name", String(255)),
+    Column("client_last_name", String(255)),
+)
+
+settings = Table(
+    "settings",
+    metadata,
+    Column("key", String(64), primary_key=True),
+    Column("host", String(255)),
+    Column("port", Integer),
+    Column("username", String(255)),
+    Column("password_enc", Text),
+    Column("sender_email", String(255)),
+    Column("sender_name", String(255)),
+    Column("use_tls", Boolean, default=True),
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("portal")
 
-# 1. Define your setup and teardown logic in one place
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # --- STARTUP LOGIC ---
-    await db.users.create_index("email", unique=True)
-    await db.outstanding_items.create_index([("client_id", 1), ("type", 1), ("status", 1)])
-    await db.submissions.create_index("client_id")
-    await db.settings.create_index("key", unique=True)
+    async with engine.begin() as conn:
+        await conn.run_sync(metadata.create_all)
 
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com").lower().strip()
     admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
-    existing = await db.users.find_one({"email": admin_email})
-    if existing is None:
-        await db.users.insert_one({
-            "email": admin_email,
-            "password_hash": hash_password(admin_password),
-            "role": "admin",
-            "first_name": "Practice",
-            "last_name": "Admin",
-            "status": "active",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        })
-        logger.info("Admin seeded: %s", admin_email)
-    elif not verify_password(admin_password, existing["password_hash"]):
-        await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_password), "role": "admin"}})
-        logger.info("Admin password updated.")
+    async with SessionLocal() as session:
+        existing = await get_user_by_email(session, admin_email)
+        if existing is None:
+            await session.execute(
+                insert(users).values(
+                    id=new_id(),
+                    email=admin_email,
+                    password_hash=hash_password(admin_password),
+                    role="admin",
+                    first_name="Practice",
+                    last_name="Admin",
+                    status="active",
+                    created_at=utc_now_iso(),
+                )
+            )
+            await session.commit()
+            logger.info("Admin seeded: %s", admin_email)
+        elif not verify_password(admin_password, existing["password_hash"]):
+            await session.execute(
+                update(users)
+                .where(users.c.id == existing["id"])
+                .values(password_hash=hash_password(admin_password), role="admin")
+            )
+            await session.commit()
+            logger.info("Admin password updated.")
     yield
-    # --- SHUTDOWN LOGIC ---
-    mongo_client.close()
+    await engine.dispose()
+
 
 app = FastAPI(lifespan=lifespan)
 api = APIRouter(prefix="/api")
-
-
-def _to_str(v) -> str:
-    return str(v)
-
-
-PyObjectId = Annotated[str, BeforeValidator(_to_str)]
 
 
 class LoginIn(BaseModel):
@@ -120,6 +213,49 @@ class SMTPSettingsIn(BaseModel):
 
 
 # ---------- Helpers ----------
+def new_id() -> str:
+    return str(uuid.uuid4())
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def row_dict(row) -> Optional[dict]:
+    return dict(row) if row else None
+
+
+async def get_db():
+    async with SessionLocal() as session:
+        yield session
+
+
+async def one(session: AsyncSession, stmt) -> Optional[dict]:
+    result = await session.execute(stmt)
+    return row_dict(result.mappings().first())
+
+
+async def many(session: AsyncSession, stmt) -> list[dict]:
+    result = await session.execute(stmt)
+    return [dict(row) for row in result.mappings().all()]
+
+
+async def count_rows(session: AsyncSession, table: Table, *conditions) -> int:
+    stmt = select(func.count()).select_from(table)
+    if conditions:
+        stmt = stmt.where(and_(*conditions))
+    result = await session.execute(stmt)
+    return int(result.scalar_one())
+
+
+async def get_user_by_email(session: AsyncSession, email: str) -> Optional[dict]:
+    return await one(session, select(users).where(users.c.email == email.lower().strip()))
+
+
+async def get_user_by_id(session: AsyncSession, user_id: str) -> Optional[dict]:
+    return await one(session, select(users).where(users.c.id == user_id))
+
+
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
@@ -146,12 +282,13 @@ def create_access_token(user_id: str, role: str) -> str:
 
 
 def set_auth_cookie(response: Response, token: str):
+    secure_cookie = os.environ.get("COOKIE_SECURE", "false").lower() == "true"
     response.set_cookie(
         key="access_token",
         value=token,
         httponly=True,
-        secure=True,
-        samesite="none",
+        secure=secure_cookie,
+        samesite="none" if secure_cookie else "lax",
         max_age=8 * 3600,
         path="/",
     )
@@ -161,7 +298,7 @@ def clear_auth_cookie(response: Response):
     response.delete_cookie("access_token", path="/")
 
 
-async def get_current_user(request: Request) -> dict:
+async def get_current_user(request: Request, session: AsyncSession = Depends(get_db)) -> dict:
     token = request.cookies.get("access_token")
     if not token:
         auth = request.headers.get("Authorization", "")
@@ -173,10 +310,9 @@ async def get_current_user(request: Request) -> dict:
         payload = jwt.decode(token, get_jwt_secret(), algorithms=[JWT_ALGORITHM])
         if payload.get("type") != "access":
             raise HTTPException(status_code=401, detail="Invalid token type")
-        user = await db.users.find_one({"_id": ObjectId(payload["sub"])})
+        user = await get_user_by_id(session, payload["sub"])
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
-        user["_id"] = str(user["_id"])
         user.pop("password_hash", None)
         return user
     except jwt.ExpiredSignatureError:
@@ -198,7 +334,7 @@ async def require_client(user: dict = Depends(get_current_user)) -> dict:
 
 
 def serialize_user(u: dict) -> dict:
-    uid = str(u["_id"])
+    uid = str(u["id"])
     return {
         "id": uid,
         "_id": uid,
@@ -214,21 +350,26 @@ def serialize_user(u: dict) -> dict:
 
 def serialize_item(d: dict) -> dict:
     d = dict(d)
-    d["_id"] = str(d["_id"])
-    d["id"] = d["_id"]
+    d["_id"] = str(d["id"])
+    return d
+
+
+def serialize_submission(d: dict) -> dict:
+    d = dict(d)
+    d["_id"] = str(d["id"])
     return d
 
 
 # ---------- Auth ----------
 @api.post("/auth/login")
-async def login(payload: LoginIn, response: Response):
+async def login(payload: LoginIn, response: Response, session: AsyncSession = Depends(get_db)):
     email = payload.email.lower().strip()
-    user = await db.users.find_one({"email": email})
+    user = await get_user_by_email(session, email)
     if not user or not verify_password(payload.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if user.get("status") == "inactive":
         raise HTTPException(status_code=403, detail="Account is inactive. Contact your administrator.")
-    token = create_access_token(str(user["_id"]), user["role"])
+    token = create_access_token(str(user["id"]), user["role"])
     set_auth_cookie(response, token)
     return {"user": serialize_user(user), "access_token": token}
 
@@ -241,40 +382,60 @@ async def logout(response: Response):
 
 @api.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
-    return serialize_user({"_id": user["_id"], **user})
+    return serialize_user(user)
 
 
 # ---------- Admin: Clients ----------
 @api.get("/admin/clients")
-async def list_clients(q: Optional[str] = None, user: dict = Depends(require_admin)):
-    query: dict = {"role": "client"}
+async def list_clients(
+    q: Optional[str] = None,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    stmt = select(users).where(users.c.role == "client")
     if q:
-        rgx = {"$regex": q, "$options": "i"}
-        query["$or"] = [
-            {"first_name": rgx}, {"last_name": rgx}, {"business_name": rgx}, {"email": rgx},
-        ]
-    docs = await db.users.find(query).sort("business_name", 1).to_list(1000)
+        like = f"%{q}%"
+        stmt = stmt.where(
+            or_(
+                users.c.first_name.ilike(like),
+                users.c.last_name.ilike(like),
+                users.c.business_name.ilike(like),
+                users.c.email.ilike(like),
+            )
+        )
+    docs = await many(session, stmt.order_by(users.c.business_name.asc()))
     result = []
     for d in docs:
         s = serialize_user(d)
-        s["purchase_outstanding"] = await db.outstanding_items.count_documents(
-            {"client_id": str(d["_id"]), "type": "purchase"}
+        s["purchase_outstanding"] = await count_rows(
+            session,
+            outstanding_items,
+            outstanding_items.c.client_id == str(d["id"]),
+            outstanding_items.c.type == "purchase",
         )
-        s["sales_outstanding"] = await db.outstanding_items.count_documents(
-            {"client_id": str(d["_id"]), "type": "sales"}
+        s["sales_outstanding"] = await count_rows(
+            session,
+            outstanding_items,
+            outstanding_items.c.client_id == str(d["id"]),
+            outstanding_items.c.type == "sales",
         )
         result.append(s)
     return result
 
 
 @api.post("/admin/clients")
-async def create_client(payload: ClientCreate, user: dict = Depends(require_admin)):
+async def create_client(
+    payload: ClientCreate,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
     email = payload.email.lower().strip()
-    if await db.users.find_one({"email": email}):
+    if await get_user_by_email(session, email):
         raise HTTPException(status_code=400, detail="A user with this email already exists")
     if len(payload.password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
     doc = {
+        "id": new_id(),
         "email": email,
         "password_hash": hash_password(payload.password),
         "role": "client",
@@ -283,68 +444,110 @@ async def create_client(payload: ClientCreate, user: dict = Depends(require_admi
         "business_name": payload.business_name.strip(),
         "autoentry_email": payload.autoentry_email.lower().strip(),
         "status": payload.status or "active",
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": utc_now_iso(),
     }
-    r = await db.users.insert_one(doc)
-    doc["_id"] = r.inserted_id
+    await session.execute(insert(users).values(**doc))
+    await session.commit()
     return serialize_user(doc)
 
 
 @api.get("/admin/clients/{client_id}")
-async def get_client(client_id: str, user: dict = Depends(require_admin)):
-    d = await db.users.find_one({"_id": ObjectId(client_id), "role": "client"})
+async def get_client(
+    client_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    d = await one(session, select(users).where(users.c.id == client_id, users.c.role == "client"))
     if not d:
         raise HTTPException(status_code=404, detail="Client not found")
     return serialize_user(d)
 
 
 @api.put("/admin/clients/{client_id}")
-async def update_client(client_id: str, payload: ClientUpdate, user: dict = Depends(require_admin)):
-    update = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
-    if "email" in update:
-        update["email"] = update["email"].lower().strip()
-        other = await db.users.find_one({"email": update["email"], "_id": {"$ne": ObjectId(client_id)}})
+async def update_client(
+    client_id: str,
+    payload: ClientUpdate,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    values = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    if "email" in values:
+        values["email"] = values["email"].lower().strip()
+        other = await one(
+            session,
+            select(users).where(users.c.email == values["email"], users.c.id != client_id),
+        )
         if other:
             raise HTTPException(status_code=400, detail="Email already in use")
-    if "autoentry_email" in update:
-        update["autoentry_email"] = update["autoentry_email"].lower().strip()
-    if update:
-        await db.users.update_one({"_id": ObjectId(client_id), "role": "client"}, {"$set": update})
-    d = await db.users.find_one({"_id": ObjectId(client_id)})
+    if "autoentry_email" in values:
+        values["autoentry_email"] = values["autoentry_email"].lower().strip()
+    if values:
+        result = await session.execute(
+            update(users).where(users.c.id == client_id, users.c.role == "client").values(**values)
+        )
+        if result.rowcount == 0:
+            await session.rollback()
+            raise HTTPException(status_code=404, detail="Client not found")
+        await session.commit()
+    d = await get_user_by_id(session, client_id)
     if not d:
         raise HTTPException(status_code=404, detail="Client not found")
     return serialize_user(d)
 
 
 @api.delete("/admin/clients/{client_id}")
-async def delete_client(client_id: str, user: dict = Depends(require_admin)):
-    r = await db.users.delete_one({"_id": ObjectId(client_id), "role": "client"})
-    if r.deleted_count == 0:
+async def delete_client(
+    client_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    result = await session.execute(delete(users).where(users.c.id == client_id, users.c.role == "client"))
+    if result.rowcount == 0:
+        await session.rollback()
         raise HTTPException(status_code=404, detail="Client not found")
-    await db.outstanding_items.delete_many({"client_id": client_id})
-    await db.submissions.delete_many({"client_id": client_id})
+    await session.execute(delete(outstanding_items).where(outstanding_items.c.client_id == client_id))
+    await session.execute(delete(submissions).where(submissions.c.client_id == client_id))
+    await session.commit()
     return {"ok": True}
 
 
 @api.post("/admin/clients/{client_id}/reset-password")
-async def reset_client_password(client_id: str, payload: PasswordReset, user: dict = Depends(require_admin)):
+async def reset_client_password(
+    client_id: str,
+    payload: PasswordReset,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
     if len(payload.new_password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
-    r = await db.users.update_one(
-        {"_id": ObjectId(client_id), "role": "client"},
-        {"$set": {"password_hash": hash_password(payload.new_password)}},
+    result = await session.execute(
+        update(users)
+        .where(users.c.id == client_id, users.c.role == "client")
+        .values(password_hash=hash_password(payload.new_password))
     )
-    if r.matched_count == 0:
+    if result.rowcount == 0:
+        await session.rollback()
         raise HTTPException(status_code=404, detail="Client not found")
+    await session.commit()
     return {"ok": True}
 
 
 # ---------- Admin: CSV Upload ----------
 @api.get("/admin/clients/{client_id}/items")
-async def admin_client_items(client_id: str, type: str, user: dict = Depends(require_admin)):
+async def admin_client_items(
+    client_id: str,
+    type: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
     if type not in ("purchase", "sales"):
         raise HTTPException(status_code=400, detail="invalid type")
-    docs = await db.outstanding_items.find({"client_id": client_id, "type": type}).sort("date", -1).to_list(2000)
+    docs = await many(
+        session,
+        select(outstanding_items)
+        .where(outstanding_items.c.client_id == client_id, outstanding_items.c.type == type)
+        .order_by(outstanding_items.c.date.desc()),
+    )
     return [serialize_item(d) for d in docs]
 
 
@@ -354,10 +557,11 @@ async def upload_csv(
     type: str = Form(...),
     file: UploadFile = File(...),
     user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
 ):
     if type not in ("purchase", "sales"):
         raise HTTPException(status_code=400, detail="type must be 'purchase' or 'sales'")
-    client = await db.users.find_one({"_id": ObjectId(client_id), "role": "client"})
+    client = await one(session, select(users).where(users.c.id == client_id, users.c.role == "client"))
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
 
@@ -378,9 +582,12 @@ async def upload_csv(
     f_amount = find_field(["Amount", "Total", "amount"])
 
     missing_cols = []
-    if not f_desc: missing_cols.append("Description")
-    if not f_date: missing_cols.append("Date")
-    if not f_amount: missing_cols.append("Amount")
+    if not f_desc:
+        missing_cols.append("Description")
+    if not f_date:
+        missing_cols.append("Date")
+    if not f_amount:
+        missing_cols.append("Amount")
     if missing_cols:
         raise HTTPException(
             status_code=400,
@@ -396,7 +603,7 @@ async def upload_csv(
                 return datetime.strptime(s, fmt).strftime("%d/%m/%Y")
             except ValueError:
                 continue
-        return None  # unparseable
+        return None
 
     rows_imported = 0
     errors = []
@@ -424,28 +631,32 @@ async def upload_csv(
             errors.append(f"Row {i}: {'; '.join(row_errors)}")
             continue
 
-        items.append({
-            "client_id": client_id,
-            "type": type,
-            "description": desc,
-            "date": norm_date,
-            "amount": raw_amount,
-            "status": "outstanding",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        })
+        items.append(
+            {
+                "id": new_id(),
+                "client_id": client_id,
+                "type": type,
+                "description": desc,
+                "date": norm_date,
+                "amount": raw_amount,
+                "status": "outstanding",
+                "created_at": utc_now_iso(),
+            }
+        )
         rows_imported += 1
 
-    await db.outstanding_items.delete_many({"client_id": client_id, "type": type})
+    await session.execute(delete(outstanding_items).where(outstanding_items.c.client_id == client_id, outstanding_items.c.type == type))
     if items:
-        await db.outstanding_items.insert_many(items)
+        await session.execute(insert(outstanding_items), items)
+    await session.commit()
 
     return {"rows_imported": rows_imported, "errors": errors}
 
 
 # ---------- Admin: SMTP Settings ----------
 @api.get("/admin/settings/smtp")
-async def get_smtp(user: dict = Depends(require_admin)):
-    s = await db.settings.find_one({"key": "smtp"})
+async def get_smtp(user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    s = await one(session, select(settings).where(settings.c.key == "smtp"))
     if not s:
         return {"host": "", "port": 587, "username": "", "sender_email": "", "sender_name": "", "use_tls": True, "configured": False}
     return {
@@ -454,15 +665,19 @@ async def get_smtp(user: dict = Depends(require_admin)):
         "username": s.get("username", ""),
         "sender_email": s.get("sender_email", ""),
         "sender_name": s.get("sender_name", ""),
-        "use_tls": s.get("use_tls", True),
+        "use_tls": bool(s.get("use_tls", True)),
         "configured": bool(s.get("password_enc")),
     }
 
 
 @api.put("/admin/settings/smtp")
-async def update_smtp(payload: SMTPSettingsIn, user: dict = Depends(require_admin)):
-    existing = await db.settings.find_one({"key": "smtp"}) or {}
-    doc = {
+async def update_smtp(
+    payload: SMTPSettingsIn,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    existing = await one(session, select(settings).where(settings.c.key == "smtp")) or {}
+    values = {
         "key": "smtp",
         "host": payload.host.strip(),
         "port": int(payload.port),
@@ -472,21 +687,30 @@ async def update_smtp(payload: SMTPSettingsIn, user: dict = Depends(require_admi
         "use_tls": payload.use_tls,
     }
     if payload.password:
-        doc["password_enc"] = fernet.encrypt(payload.password.encode()).decode()
+        values["password_enc"] = fernet.encrypt(payload.password.encode()).decode()
     elif existing.get("password_enc"):
-        doc["password_enc"] = existing["password_enc"]
-    await db.settings.update_one({"key": "smtp"}, {"$set": doc}, upsert=True)
+        values["password_enc"] = existing["password_enc"]
+    else:
+        values["password_enc"] = None
+
+    if existing:
+        await session.execute(update(settings).where(settings.c.key == "smtp").values(**values))
+    else:
+        await session.execute(insert(settings).values(**values))
+    await session.commit()
     return {"ok": True}
 
 
 @api.delete("/admin/settings/smtp")
-async def clear_smtp(user: dict = Depends(require_admin)):
-    await db.settings.delete_one({"key": "smtp"})
+async def clear_smtp(user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    await session.execute(delete(settings).where(settings.c.key == "smtp"))
+    await session.commit()
     return {"ok": True}
 
 
 async def get_smtp_settings() -> Optional[dict]:
-    s = await db.settings.find_one({"key": "smtp"})
+    async with SessionLocal() as session:
+        s = await one(session, select(settings).where(settings.c.key == "smtp"))
     if not s or not s.get("password_enc"):
         return None
     pw = fernet.decrypt(s["password_enc"].encode()).decode()
@@ -495,24 +719,32 @@ async def get_smtp_settings() -> Optional[dict]:
 
 # ---------- Client: Outstanding & Submissions ----------
 @api.get("/client/counts")
-async def client_counts(user: dict = Depends(require_client)):
-    cid = user["_id"]
-    p = await db.outstanding_items.count_documents({"client_id": cid, "type": "purchase"})
-    s = await db.outstanding_items.count_documents({"client_id": cid, "type": "sales"})
+async def client_counts(user: dict = Depends(require_client), session: AsyncSession = Depends(get_db)):
+    cid = user["id"]
+    p = await count_rows(session, outstanding_items, outstanding_items.c.client_id == cid, outstanding_items.c.type == "purchase")
+    s = await count_rows(session, outstanding_items, outstanding_items.c.client_id == cid, outstanding_items.c.type == "sales")
     return {"purchase_outstanding": p, "sales_outstanding": s}
 
 
 @api.get("/client/items")
-async def client_items(type: str, user: dict = Depends(require_client)):
+async def client_items(type: str, user: dict = Depends(require_client), session: AsyncSession = Depends(get_db)):
     if type not in ("purchase", "sales"):
         raise HTTPException(status_code=400, detail="invalid type")
-    docs = await db.outstanding_items.find({"client_id": user["_id"], "type": type}).sort("date", -1).to_list(2000)
+    docs = await many(
+        session,
+        select(outstanding_items)
+        .where(outstanding_items.c.client_id == user["id"], outstanding_items.c.type == type)
+        .order_by(outstanding_items.c.date.desc()),
+    )
     return [serialize_item(d) for d in docs]
 
 
 @api.get("/client/items/{item_id}")
-async def client_item(item_id: str, user: dict = Depends(require_client)):
-    d = await db.outstanding_items.find_one({"_id": ObjectId(item_id), "client_id": user["_id"]})
+async def client_item(item_id: str, user: dict = Depends(require_client), session: AsyncSession = Depends(get_db)):
+    d = await one(
+        session,
+        select(outstanding_items).where(outstanding_items.c.id == item_id, outstanding_items.c.client_id == user["id"]),
+    )
     if not d:
         raise HTTPException(status_code=404, detail="Item not found")
     return serialize_item(d)
@@ -529,7 +761,7 @@ def stamp_image(image_bytes: bytes, comment: str, submitted_at: datetime) -> byt
     overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
 
-    timestamp = submitted_at.strftime("%d %b %Y · %H:%M UTC")
+    timestamp = submitted_at.strftime("%d %b %Y - %H:%M UTC")
     try:
         font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", max(18, W // 50))
         font_body = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", max(16, W // 60))
@@ -636,8 +868,12 @@ async def submit_item(
     mode: str = Form(...),
     file: Optional[UploadFile] = File(None),
     user: dict = Depends(require_client),
+    session: AsyncSession = Depends(get_db),
 ):
-    item = await db.outstanding_items.find_one({"_id": ObjectId(item_id), "client_id": user["_id"]})
+    item = await one(
+        session,
+        select(outstanding_items).where(outstanding_items.c.id == item_id, outstanding_items.c.client_id == user["id"]),
+    )
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     if item["status"] == "submitted":
@@ -655,7 +891,7 @@ async def submit_item(
         if not raw:
             raise HTTPException(status_code=400, detail="Empty file")
         now = datetime.now(timezone.utc)
-        fname = f"{user['_id']}_{item_id}_{int(now.timestamp())}.jpg"
+        fname = f"{user['id']}_{item_id}_{int(now.timestamp())}.jpg"
         fpath = UPLOAD_DIR / fname
         if comment:
             final_bytes = stamp_image(raw, comment, now)
@@ -670,23 +906,26 @@ async def submit_item(
 
     await send_submission_email(user, item, comment, image_path)
 
-    sub_doc = {
-        "client_id": user["_id"],
-        "type": item["type"],
-        "description": item.get("description", ""),
-        "date": item.get("date", ""),
-        "amount": item.get("amount", ""),
-        "comment": comment,
-        "image_filename": Path(image_path).name if image_path else None,
-        "submitted_at": datetime.now(timezone.utc).isoformat(),
-        "client_business_name": user.get("business_name", ""),
-        "client_first_name": user.get("first_name", ""),
-        "client_last_name": user.get("last_name", ""),
-    }
-    r = await db.submissions.insert_one(sub_doc)
-    # Remove the item from the outstanding list once successfully submitted
-    await db.outstanding_items.delete_one({"_id": ObjectId(item_id)})
-    return {"ok": True, "submission_id": str(r.inserted_id)}
+    submission_id = new_id()
+    await session.execute(
+        insert(submissions).values(
+            id=submission_id,
+            client_id=user["id"],
+            type=item["type"],
+            description=item.get("description", ""),
+            date=item.get("date", ""),
+            amount=item.get("amount", ""),
+            comment=comment,
+            image_filename=Path(image_path).name if image_path else None,
+            submitted_at=utc_now_iso(),
+            client_business_name=user.get("business_name", ""),
+            client_first_name=user.get("first_name", ""),
+            client_last_name=user.get("last_name", ""),
+        )
+    )
+    await session.execute(delete(outstanding_items).where(outstanding_items.c.id == item_id))
+    await session.commit()
+    return {"ok": True, "submission_id": submission_id}
 
 
 # ---------- Admin: Submissions ----------
@@ -696,28 +935,28 @@ async def list_submissions(
     type: Optional[str] = None,
     q: Optional[str] = None,
     user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
 ):
-    """List historical submissions from the submissions collection."""
-    query: dict = {}
+    stmt = select(submissions)
+    conditions = []
     if client_id:
-        query["client_id"] = client_id
+        conditions.append(submissions.c.client_id == client_id)
     if type in ("purchase", "sales"):
-        query["type"] = type
+        conditions.append(submissions.c.type == type)
     if q:
-        query["$or"] = [
-            {"description": {"$regex": q, "$options": "i"}},
-            {"comment": {"$regex": q, "$options": "i"}},
-        ]
-    docs = await db.submissions.find(query).sort("submitted_at", -1).to_list(2000)
+        like = f"%{q}%"
+        conditions.append(or_(submissions.c.description.ilike(like), submissions.c.comment.ilike(like)))
+    if conditions:
+        stmt = stmt.where(and_(*conditions))
+    docs = await many(session, stmt.order_by(submissions.c.submitted_at.desc()).limit(2000))
 
     client_map = {}
     result = []
     for d in docs:
-        d["_id"] = str(d["_id"])
-        d["id"] = d["_id"]
+        d = serialize_submission(d)
         cid = d.get("client_id")
         if cid and cid not in client_map:
-            cu = await db.users.find_one({"_id": ObjectId(cid)})
+            cu = await get_user_by_id(session, cid)
             client_map[cid] = serialize_user(cu) if cu else None
         d["client"] = client_map.get(cid)
         result.append(d)
@@ -725,10 +964,16 @@ async def list_submissions(
 
 
 @api.delete("/admin/submissions/{submission_id}")
-async def delete_submission(submission_id: str, user: dict = Depends(require_admin)):
-    r = await db.submissions.delete_one({"_id": ObjectId(submission_id)})
-    if r.deleted_count == 0:
+async def delete_submission(
+    submission_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    result = await session.execute(delete(submissions).where(submissions.c.id == submission_id))
+    if result.rowcount == 0:
+        await session.rollback()
         raise HTTPException(status_code=404, detail="Submission not found")
+    await session.commit()
     return {"ok": True}
 
 
@@ -740,9 +985,6 @@ async def admin_upload(filename: str, user: dict = Depends(require_admin)):
     return FileResponse(p)
 
 
-DOWNLOADS_DIR = ROOT_DIR / "downloads"
-DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
-
 @api.get("/downloads/status")
 async def downloads_status():
     return {
@@ -750,12 +992,14 @@ async def downloads_status():
         "ios": (DOWNLOADS_DIR / "epos-docs.ipa").exists(),
     }
 
+
 @api.get("/downloads/android")
 async def download_android():
     p = DOWNLOADS_DIR / "epos-docs.apk"
     if not p.exists():
         raise HTTPException(status_code=404, detail="Android app not yet available")
     return FileResponse(p, media_type="application/vnd.android.package-archive", filename="epos-docs.apk")
+
 
 @api.get("/downloads/ios")
 async def download_ios():
@@ -765,12 +1009,18 @@ async def download_ios():
     return FileResponse(p, media_type="application/octet-stream", filename="epos-docs.ipa")
 
 
+@api.get("/health")
+async def health(session: AsyncSession = Depends(get_db)):
+    await session.execute(select(func.count()).select_from(users))
+    return {"ok": True, "database": "sql"}
+
+
 app.include_router(api)
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_origins=os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
