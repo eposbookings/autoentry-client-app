@@ -1,9 +1,6 @@
 name: Deploy to 20i VPS
 
 on:
-  push:
-    branches:
-      - deployment
   workflow_dispatch:
 
 concurrency:
