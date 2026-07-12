@@ -1,0 +1,57 @@
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: always
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-autoentry_portal}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    volumes:
+      - ./mysql/data:/var/lib/mysql
+  nginx:
+    restart: always
+    build:
+      context: ./nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - api
+      - frontend
+    links:
+      - "api:api"
+      - "frontend:frontend"
+    volumes:
+      - /var/www/.well-known/pki-validation:/var/www/.well-known/pki-validation
+  api:
+    restart: always
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        JWT_SECRET: ${JWT_SECRET}
+        FERNET_KEY: ${FERNET_KEY}
+        APP_PORT: ${APP_PORT}
+    env_file:
+      - ./.env
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    depends_on:
+      - mysql
+    volumes:
+      - ./backend/uploads:/app/uploads
+  frontend:
+    restart: always
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        REACT_APP_BACKEND_URL: ${REACT_APP_BACKEND_URL}
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./.env
