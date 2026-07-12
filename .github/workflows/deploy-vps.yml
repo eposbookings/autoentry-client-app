@@ -1,0 +1,49 @@
+name: Deploy to 20i VPS
+
+on:
+  push:
+    branches:
+      - deployment
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Pull latest code and restart Docker stack
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -e
+            cd /opt/autoentry-client-app
+
+            git fetch origin deployment
+            git checkout deployment
+            git reset --hard origin/deployment
+
+            docker compose up -d --build --remove-orphans
+
+            for i in $(seq 1 30); do
+              if curl -fsS http://localhost:8000/api/health; then
+                echo "API health check passed."
+                exit 0
+              fi
+              echo "Waiting for API health check ($i/30)..."
+              sleep 5
+            done
+
+            echo "API health check failed."
+            docker compose ps
+            docker compose logs api --tail=120
+            exit 1
