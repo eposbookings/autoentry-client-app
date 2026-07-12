@@ -44,6 +44,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.exc import OperationalError
 from starlette.middleware.cors import CORSMiddleware
 
 # ---------- Config ----------
@@ -161,8 +162,16 @@ logger = logging.getLogger("portal")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    async with engine.begin() as conn:
-        await conn.run_sync(metadata.create_all)
+    for attempt in range(1, 31):
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(metadata.create_all)
+            break
+        except OperationalError:
+            if attempt == 30:
+                raise
+            logger.info("Database not ready yet; retrying startup (%s/30)", attempt)
+            await asyncio.sleep(2)
 
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com").lower().strip()
     admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")

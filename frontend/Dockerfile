@@ -4,7 +4,8 @@ WORKDIR /app
 
 # Install dependencies using wildcard to catch both package.json & package-lock.json
 COPY package*.json ./
-RUN yarn install
+RUN yarn config set registry https://registry.npmjs.org/ \
+    && yarn install --network-timeout 600000
 
 # Copy application source code and compile static production files
 COPY . .
@@ -20,7 +21,8 @@ ENV NODE_ENV=production
 
 WORKDIR /app
 
-RUN yarn add serve@^14.2.6 --omit=dev
+RUN yarn config set registry https://registry.npmjs.org/ \
+    && yarn add serve@^14.2.6 --omit=dev --network-timeout 600000
 
 # Copy only the production build output from the builder stage
 COPY --link --from=builder /app/build ./build
