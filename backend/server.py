@@ -178,6 +178,8 @@ def quote_ident(name: str, dialect_name: str) -> str:
 
 
 def column_sql_type(column: Column) -> str:
+    if isinstance(column.type, Text):
+        return "TEXT"
     if isinstance(column.type, String):
         return f"VARCHAR({column.type.length or 255})"
     if isinstance(column.type, Integer):
@@ -196,11 +198,12 @@ async def ensure_schema_columns(conn):
     """
     dialect_name = conn.dialect.name
     for table in (users, outstanding_items, submissions, settings):
-        existing_columns = await conn.run_sync(
+        existing_column_info = await conn.run_sync(
             lambda sync_conn, table_name=table.name: {
-                col["name"] for col in inspect(sync_conn).get_columns(table_name)
+                col["name"]: col for col in inspect(sync_conn).get_columns(table_name)
             }
         )
+        existing_columns = set(existing_column_info)
         for column in table.columns:
             if column.primary_key or column.name in existing_columns:
                 continue
@@ -214,6 +217,20 @@ async def ensure_schema_columns(conn):
                 )
             )
             logger.info("Added missing column %s.%s", table.name, column.name)
+        if dialect_name == "mysql":
+            for column in table.columns:
+                if column.name not in existing_column_info or not isinstance(column.type, Text):
+                    continue
+                existing_type = str(existing_column_info[column.name]["type"]).lower()
+                if "text" in existing_type:
+                    continue
+                await conn.execute(
+                    text(
+                        f"ALTER TABLE {quote_ident(table.name, dialect_name)} "
+                        f"MODIFY COLUMN {quote_ident(column.name, dialect_name)} TEXT"
+                    )
+                )
+                logger.info("Widened column %s.%s to TEXT", table.name, column.name)
 
 
 @asynccontextmanager
