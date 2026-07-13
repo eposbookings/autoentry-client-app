@@ -63,6 +63,6 @@ services:
       args:
         REACT_APP_BACKEND_URL: ${REACT_APP_BACKEND_URL}
     ports:
-      - "3000:3000"
+      - "3000:80"
     env_file:
       - ./.env
