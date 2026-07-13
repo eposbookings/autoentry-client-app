@@ -122,4 +122,16 @@ jobs:
             docker compose up -d frontend nginx
 
             echo "Health check"
-            curl -i http://localhost:8000/api/health
+            for attempt in $(seq 1 30); do
+              if curl -fsS http://localhost:8000/api/health; then
+                echo
+                echo "API is healthy"
+                exit 0
+              fi
+              echo "API not ready yet ($attempt/30); waiting..."
+              sleep 3
+            done
+
+            echo "API did not become healthy. Recent logs:"
+            docker compose logs --tail=120 api
+            exit 1
