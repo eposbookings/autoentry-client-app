@@ -119,7 +119,7 @@ jobs:
             fi
 
             echo "Restarting lightweight web containers"
-            docker compose up -d frontend nginx
+            docker compose up -d --force-recreate frontend nginx
 
             echo "Health check"
             for attempt in $(seq 1 30); do
