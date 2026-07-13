@@ -6,15 +6,17 @@ item. Submissions are watermarked with a timestamp + comment and emailed to the
 client's dedicated AutoEntry inbox via Amazon SES. Admins manage clients, upload CSVs
 of outstanding items, configure SMTP, and review submissions.
 
+> Current handover: see **[`PROJECT_NOTES.md`](./PROJECT_NOTES.md)** first.
+> The app has since moved to MySQL on the 20i VPS, so older MongoDB/Emergent notes in this README may be stale.
+
 > For full status, architecture, and roadmap see **[`PROJECT_STATE.md`](./PROJECT_STATE.md)**
 > and **[`memory/PRD.md`](./memory/PRD.md)**.
 
 ## Tech Stack
 - **Frontend:** React, React Router, Tailwind CSS, shadcn/ui, Axios, sonner.
-- **Backend:** FastAPI, Motor (async MongoDB), Pillow (image watermarking),
+- **Backend:** FastAPI, SQLAlchemy/async MySQL, Pillow (image watermarking),
   smtplib (Amazon SES email), Fernet (SMTP password encryption at rest).
-- **Database:** MongoDB (collections: `users`, `outstanding_items`, `submissions`,
-  `settings`).
+- **Database:** MySQL / SQL.
 
 ## Repository Layout
 ```
