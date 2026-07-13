@@ -12,6 +12,7 @@ export default function AdminSubmissions() {
   const [clients, setClients] = useState([]);
   const [filters, setFilters] = useState({ client_id: "", type: "", q: "" });
   const [preview, setPreview] = useState(null);
+  const previewUrl = preview ? `${API}/admin/uploads/${preview}` : "";
 
   const load = useCallback(async () => {
     try {
@@ -122,10 +123,18 @@ export default function AdminSubmissions() {
         <DialogContent className="max-w-3xl">
           <DialogHeader><DialogTitle>Submitted document</DialogTitle></DialogHeader>
           {preview && (
-            <img src={`${API}/admin/uploads/${preview}`} alt="Submitted" className="rounded-lg w-full" />
+            isPdfFile(preview) ? (
+              <iframe src={previewUrl} title="Submitted PDF" className="rounded-lg w-full h-[75vh] border border-stone-200" />
+            ) : (
+              <img src={previewUrl} alt="Submitted" className="rounded-lg w-full" />
+            )
           )}
         </DialogContent>
       </Dialog>
     </div>
   );
+}
+
+function isPdfFile(filename) {
+  return filename?.toLowerCase().endsWith(".pdf");
 }

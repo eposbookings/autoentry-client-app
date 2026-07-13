@@ -12,9 +12,11 @@ import csv
 import io
 import json
 import logging
+import mimetypes
 import os
 import smtplib
 import socket
+import textwrap
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -57,6 +59,16 @@ UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", str(ROOT_DIR / "uploads")))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 DOWNLOADS_DIR = ROOT_DIR / "downloads"
 DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(25 * 1024 * 1024)))
+SUPPORTED_DOCUMENT_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "application/pdf": ".pdf",
+}
+SUPPORTED_DOCUMENT_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".pdf"}
+SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
+SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 
 FONTS_DIR = ROOT_DIR / "assets" / "fonts"
 FONT_BOLD_PATH = str(FONTS_DIR / "DejaVuSans-Bold.ttf")
@@ -1048,6 +1060,154 @@ def stamp_image(image_bytes: bytes, comment: str, submitted_at: datetime) -> byt
     return out.getvalue()
 
 
+def stamp_pdf(pdf_bytes: bytes, comment: str, submitted_at: datetime) -> bytes:
+    from pypdf import PdfReader, PdfWriter
+    from reportlab.lib.colors import Color, black
+    from reportlab.pdfgen import canvas
+
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    writer = PdfWriter()
+    stamp_lines = [
+        "CLIENT SUBMISSION",
+        f"Submitted: {submitted_at.strftime('%d %b %Y %H:%M UTC')}",
+    ]
+    for line in (comment or "").splitlines():
+        text = line.strip()
+        if text:
+            stamp_lines.append(text[:120])
+    stamp_lines = stamp_lines[:7]
+
+    for page in reader.pages:
+        width = float(page.mediabox.width)
+        height = float(page.mediabox.height)
+        packet = io.BytesIO()
+        c = canvas.Canvas(packet, pagesize=(width, height))
+        margin = 24
+        box_height = 18 + (len(stamp_lines) * 13)
+        y = margin
+
+        c.setFillColor(Color(1, 0.97, 0.84, alpha=0.92))
+        c.setStrokeColor(Color(0.84, 0.45, 0.04, alpha=0.95))
+        c.roundRect(margin, y, width - (margin * 2), box_height, 6, fill=1, stroke=1)
+        c.setFillColor(black)
+        c.setFont("Helvetica-Bold", 9)
+        line_y = y + box_height - 16
+        c.drawString(margin + 10, line_y, stamp_lines[0])
+        c.setFont("Helvetica", 8)
+        for text in stamp_lines[1:]:
+            line_y -= 13
+            c.drawString(margin + 10, line_y, text)
+        c.save()
+
+        packet.seek(0)
+        overlay = PdfReader(packet)
+        page.merge_page(overlay.pages[0])
+        writer.add_page(page)
+
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+def render_submission_note_pdf(comment: str, submitted_at: datetime) -> bytes:
+    from reportlab.lib.colors import HexColor
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+
+    packet = io.BytesIO()
+    width, height = A4
+    c = canvas.Canvas(packet, pagesize=A4)
+    margin = 56
+    y = height - 72
+
+    c.setFillColor(HexColor("#172b26"))
+    c.setFont("Helvetica-Bold", 22)
+    c.drawString(margin, y, "Client submission note")
+
+    y -= 34
+    c.setFillColor(HexColor("#5f5a52"))
+    c.setFont("Helvetica", 11)
+    c.drawString(margin, y, f"Submitted: {submitted_at.strftime('%d %b %Y - %H:%M UTC')}")
+
+    y -= 34
+    c.setStrokeColor(HexColor("#c05e44"))
+    c.setLineWidth(3)
+    c.line(margin, y, margin + 110, y)
+
+    y -= 42
+    c.setFillColor(HexColor("#2f2b26"))
+    c.setFont("Helvetica-Bold", 13)
+    c.drawString(margin, y, "Comment / approval note")
+
+    y -= 26
+    c.setFont("Helvetica", 11)
+    note = (comment or "(no comment provided)").strip()
+    for raw_line in note.splitlines() or [note]:
+        lines = textwrap.wrap(raw_line.strip(), width=88) or [""]
+        for line in lines:
+            if y < 70:
+                c.showPage()
+                y = height - 72
+                c.setFillColor(HexColor("#2f2b26"))
+                c.setFont("Helvetica", 11)
+            c.drawString(margin, y, line)
+            y -= 17
+        y -= 6
+
+    c.save()
+    packet.seek(0)
+    return packet.getvalue()
+
+
+def append_submission_note_page(pdf_bytes: bytes, comment: str, submitted_at: datetime) -> bytes:
+    from pypdf import PdfReader, PdfWriter
+
+    writer = PdfWriter()
+    original = PdfReader(io.BytesIO(pdf_bytes))
+    for page in original.pages:
+        writer.add_page(page)
+
+    note_pdf = PdfReader(io.BytesIO(render_submission_note_pdf(comment, submitted_at)))
+    for page in note_pdf.pages:
+        writer.add_page(page)
+
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+def render_image_with_note_pdf(image_bytes: bytes, comment: str, submitted_at: datetime) -> bytes:
+    from reportlab.lib.colors import HexColor
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas
+
+    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    image_buffer = io.BytesIO()
+    image.save(image_buffer, format="JPEG", quality=90)
+    image_buffer.seek(0)
+
+    packet = io.BytesIO()
+    page_w, page_h = A4
+    margin = 36
+    max_w = page_w - (margin * 2)
+    max_h = page_h - (margin * 2)
+    scale = min(max_w / image.width, max_h / image.height)
+    draw_w = image.width * scale
+    draw_h = image.height * scale
+    x = (page_w - draw_w) / 2
+    y = (page_h - draw_h) / 2
+
+    c = canvas.Canvas(packet, pagesize=A4)
+    c.setFillColor(HexColor("#ffffff"))
+    c.rect(0, 0, page_w, page_h, fill=1, stroke=0)
+    c.drawImage(ImageReader(image_buffer), x, y, width=draw_w, height=draw_h)
+    c.save()
+    packet.seek(0)
+
+    return append_submission_note_page(packet.getvalue(), comment, submitted_at)
+
+
 def render_document_page(title: str, comment: str, submitted_at: datetime) -> bytes:
     """Render a clean white A4-style page containing the invoice description,
     the submission timestamp and the client's comment. Used when the client
@@ -1114,6 +1274,47 @@ def render_document_page(title: str, comment: str, submitted_at: datetime) -> by
     return out.getvalue()
 
 
+def upload_content_type(file: UploadFile) -> str:
+    guessed, _ = mimetypes.guess_type(file.filename or "")
+    return (file.content_type or guessed or "application/octet-stream").split(";")[0].lower()
+
+
+def is_supported_document(file: UploadFile) -> bool:
+    content_type = upload_content_type(file)
+    if content_type in SUPPORTED_DOCUMENT_TYPES:
+        return True
+    suffix = Path(file.filename or "").suffix.lower()
+    return suffix in SUPPORTED_DOCUMENT_SUFFIXES
+
+
+def is_image_document(file: UploadFile) -> bool:
+    content_type = upload_content_type(file)
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix == ".pdf" or content_type == "application/pdf":
+        return False
+    return content_type in SUPPORTED_IMAGE_TYPES or suffix in SUPPORTED_IMAGE_SUFFIXES
+
+
+def is_pdf_document(file: UploadFile) -> bool:
+    content_type = upload_content_type(file)
+    suffix = Path(file.filename or "").suffix.lower()
+    return content_type == "application/pdf" or suffix == ".pdf"
+
+
+def upload_extension(file: UploadFile, fallback: str = ".bin") -> str:
+    content_type = upload_content_type(file)
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix in SUPPORTED_DOCUMENT_SUFFIXES:
+        return ".jpg" if suffix == ".jpeg" else suffix
+    return SUPPORTED_DOCUMENT_TYPES.get(content_type, fallback)
+
+
+def attachment_mime(path: str) -> tuple[str, str]:
+    mime_type, _ = mimetypes.guess_type(path)
+    maintype, subtype = (mime_type or "application/octet-stream").split("/", 1)
+    return maintype, subtype
+
+
 def normalize_ai_review(data: dict) -> dict:
     status = str(data.get("status") or "").lower().strip()
     if status not in ("approved", "needs_review", "rejected"):
@@ -1130,7 +1331,7 @@ def normalize_ai_review(data: dict) -> dict:
 
 
 async def review_document_with_openai(
-    image_bytes: bytes,
+    document_bytes: bytes,
     content_type: str,
     item: dict,
     client_user: dict,
@@ -1141,7 +1342,8 @@ async def review_document_with_openai(
         raise HTTPException(status_code=400, detail="AI document check is enabled for this client, but OpenAI settings are not configured. Ask your administrator to add an API key.")
 
     is_vat_client = bool(client_user.get("is_vat_client"))
-    data_url = f"data:{content_type or 'image/jpeg'};base64,{base64.b64encode(image_bytes).decode('ascii')}"
+    safe_content_type = content_type or "application/octet-stream"
+    data_url = f"data:{safe_content_type};base64,{base64.b64encode(document_bytes).decode('ascii')}"
     invoice_kind = "purchase" if item.get("type") == "purchase" else "sales"
     vat_instruction = (
         "This is a VAT client. If the document is an invoice/receipt but VAT evidence is missing "
@@ -1151,7 +1353,7 @@ async def review_document_with_openai(
         else "This is not marked as a VAT client. Do not reject only because VAT details are absent."
     )
     prompt = (
-        "Check whether the uploaded image is a valid invoice or receipt for accounting submission. "
+        "Check whether the uploaded document is a valid invoice or receipt for accounting submission. "
         "Reject only documents that are clearly not invoices/receipts, such as statements, orders, "
         "remittance advice, quotes, delivery notes, or unrelated images. Use needs_review for unclear "
         "or partially valid cases. Keep the message short and client-friendly. "
@@ -1169,6 +1371,11 @@ async def review_document_with_openai(
         },
         "required": ["status", "document_type", "message", "confidence"],
     }
+    document_part = (
+        {"type": "input_file", "filename": "submitted-document.pdf", "file_data": data_url}
+        if safe_content_type == "application/pdf"
+        else {"type": "input_image", "image_url": data_url, "detail": "low"}
+    )
     payload = {
         "model": model,
         "input": [
@@ -1188,7 +1395,7 @@ async def review_document_with_openai(
                 "role": "user",
                 "content": [
                     {"type": "input_text", "text": prompt},
-                    {"type": "input_image", "image_url": data_url, "detail": "low"},
+                    document_part,
                 ],
             },
         ],
@@ -1261,8 +1468,9 @@ async def send_submission_email(client_user: dict, item: dict, comment: str, ima
     msg.set_content(body)
 
     if image_path:
+        maintype, subtype = attachment_mime(image_path)
         with open(image_path, "rb") as f:
-            msg.add_attachment(f.read(), maintype="image", subtype="jpeg", filename=Path(image_path).name)
+            msg.add_attachment(f.read(), maintype=maintype, subtype=subtype, filename=Path(image_path).name)
 
     def _send_sync():
         socket.setdefaulttimeout(10)
@@ -1327,11 +1535,17 @@ async def submit_item(
         image_path = str(fpath)
     elif mode == "photo":
         if not file:
-            raise HTTPException(status_code=400, detail="Photo file is required")
+            raise HTTPException(status_code=400, detail="Document file is required")
+        if not is_supported_document(file):
+            raise HTTPException(status_code=400, detail="Please upload an image or PDF document")
         raw = await file.read()
         if not raw:
             raise HTTPException(status_code=400, detail="Empty file")
-        if user.get("ai_analysis_enabled"):
+        if len(raw) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=400, detail="File is too large. Maximum upload size is 25 MB")
+        image_upload = is_image_document(file)
+        pdf_upload = is_pdf_document(file)
+        if user.get("ai_analysis_enabled") and (image_upload or pdf_upload):
             image_hash = hashlib.sha256(raw).hexdigest()
             ai_token_verified = False
             if client_approved_ai_warning and ai_review_token:
@@ -1341,7 +1555,7 @@ async def submit_item(
                 ai_settings = await get_openai_runtime_settings(session)
                 ai_review = await review_document_with_openai(
                     raw,
-                    file.content_type or "image/jpeg",
+                    upload_content_type(file),
                     item,
                     user,
                     ai_settings["api_key"],
@@ -1357,15 +1571,19 @@ async def submit_item(
                 }
             ai_client_approved = ai_review["status"] in ("needs_review", "rejected") and ai_token_verified
         watermark_comment = append_client_approval_note(comment, ai_review) if ai_client_approved else comment
-        fname = f"{user['id']}_{item_id}_{int(now.timestamp())}.jpg"
+        fname_ext = ".pdf" if watermark_comment else (".jpg" if image_upload else upload_extension(file, ".pdf"))
+        fname = f"{user['id']}_{item_id}_{int(now.timestamp())}{fname_ext}"
         fpath = UPLOAD_DIR / fname
-        if watermark_comment:
-            final_bytes = stamp_image(raw, watermark_comment, now)
-            with open(fpath, "wb") as f:
-                f.write(final_bytes)
+        if image_upload:
+            if watermark_comment:
+                with open(fpath, "wb") as f:
+                    f.write(render_image_with_note_pdf(raw, watermark_comment, now))
+            else:
+                img = Image.open(io.BytesIO(raw)).convert("RGB")
+                img.save(fpath, format="JPEG", quality=88)
         else:
-            img = Image.open(io.BytesIO(raw)).convert("RGB")
-            img.save(fpath, format="JPEG", quality=88)
+            with open(fpath, "wb") as f:
+                f.write(append_submission_note_page(raw, watermark_comment, now) if watermark_comment else raw)
         image_path = str(fpath)
     else:
         raise HTTPException(status_code=400, detail="Invalid mode")
@@ -1432,12 +1650,18 @@ async def submit_additional(
             f.write(render_document_page(description, comment, now))
     elif mode == "photo":
         if not file:
-            raise HTTPException(status_code=400, detail="Photo file is required")
+            raise HTTPException(status_code=400, detail="Document file is required")
+        if not is_supported_document(file):
+            raise HTTPException(status_code=400, detail="Please upload an image or PDF document")
         raw = await file.read()
         if not raw:
             raise HTTPException(status_code=400, detail="Empty file")
+        if len(raw) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=400, detail="File is too large. Maximum upload size is 25 MB")
         item = {"description": description, "date": "", "amount": "", "type": type, "additional": True}
-        if user.get("ai_analysis_enabled"):
+        image_upload = is_image_document(file)
+        pdf_upload = is_pdf_document(file)
+        if user.get("ai_analysis_enabled") and (image_upload or pdf_upload):
             image_hash = hashlib.sha256(raw).hexdigest()
             ai_token_verified = False
             if client_approved_ai_warning and ai_review_token:
@@ -1447,7 +1671,7 @@ async def submit_additional(
                 ai_settings = await get_openai_runtime_settings(session)
                 ai_review = await review_document_with_openai(
                     raw,
-                    file.content_type or "image/jpeg",
+                    upload_content_type(file),
                     item,
                     user,
                     ai_settings["api_key"],
@@ -1463,11 +1687,18 @@ async def submit_additional(
                 }
             ai_client_approved = ai_review["status"] in ("needs_review", "rejected") and ai_token_verified
         watermark_comment = append_client_approval_note(comment, ai_review) if ai_client_approved else comment
-        if watermark_comment:
-            with open(fpath, "wb") as f:
-                f.write(stamp_image(raw, watermark_comment, now))
+        fname_ext = ".pdf" if watermark_comment else (".jpg" if image_upload else upload_extension(file, ".pdf"))
+        fname = f"{user['id']}_additional_{int(now.timestamp())}{fname_ext}"
+        fpath = UPLOAD_DIR / fname
+        if image_upload:
+            if watermark_comment:
+                with open(fpath, "wb") as f:
+                    f.write(render_image_with_note_pdf(raw, watermark_comment, now))
+            else:
+                Image.open(io.BytesIO(raw)).convert("RGB").save(fpath, format="JPEG", quality=88)
         else:
-            Image.open(io.BytesIO(raw)).convert("RGB").save(fpath, format="JPEG", quality=88)
+            with open(fpath, "wb") as f:
+                f.write(append_submission_note_page(raw, watermark_comment, now) if watermark_comment else raw)
     else:
         raise HTTPException(status_code=400, detail="Invalid mode")
 
