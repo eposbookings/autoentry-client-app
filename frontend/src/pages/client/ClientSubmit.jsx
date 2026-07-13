@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { api, formatApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Camera, Upload, Ban, ArrowLeft, CheckCircle2, X, AlertTriangle } from "lucide-react";
+import { Camera, Upload, Ban, ArrowLeft, CheckCircle2, X, AlertTriangle, FileText } from "lucide-react";
 import { toast } from "sonner";
 
 export default function ClientSubmit() {
@@ -13,6 +13,7 @@ export default function ClientSubmit() {
   const [mode, setMode] = useState(null); // 'photo' | 'no_photo'
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState(null);
+  const [fileKind, setFileKind] = useState(null);
   const [comment, setComment] = useState("");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
@@ -36,12 +37,14 @@ export default function ClientSubmit() {
     setFile(f);
     setMode("photo");
     setPreview(URL.createObjectURL(f));
+    setFileKind(isPdfFile(f) ? "pdf" : "image");
     setReviewWarning(null);
   }
 
   function clearPhoto() {
     setFile(null);
     setPreview(null);
+    setFileKind(null);
     setMode(null);
     setReviewWarning(null);
   }
@@ -124,13 +127,13 @@ export default function ClientSubmit() {
 
         <ActionRow
           icon={<Upload className="h-5 w-5" />}
-          title="Upload photo"
-          subtitle="Choose from your device"
+          title="Upload document"
+          subtitle="Choose an image or PDF"
           active={mode === "photo" && file}
           onClick={() => fileRef.current?.click()}
           testid="action-upload"
         />
-        <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => pickFile(e.target.files?.[0])} data-testid="upload-input" />
+        <input ref={fileRef} type="file" accept="image/*,application/pdf,.pdf" className="hidden" onChange={(e) => pickFile(e.target.files?.[0])} data-testid="upload-input" />
 
         <ActionRow
           icon={<Ban className="h-5 w-5" />}
@@ -144,7 +147,15 @@ export default function ClientSubmit() {
 
       {preview && (
         <div className="relative bg-white border border-stone-200 rounded-2xl p-3" data-testid="photo-preview">
-          <img src={preview} alt="Preview" className="rounded-lg w-full max-h-80 object-contain bg-stone-50" />
+          {fileKind === "pdf" ? (
+            <div className="rounded-lg min-h-56 bg-stone-50 flex flex-col items-center justify-center text-center px-6">
+              <FileText className="h-12 w-12 text-stone-500" />
+              <div className="mt-3 font-semibold text-stone-900 break-all">{file?.name || "PDF document"}</div>
+              <div className="mt-1 text-sm text-stone-500">PDF document selected</div>
+            </div>
+          ) : (
+            <img src={preview} alt="Preview" className="rounded-lg w-full max-h-80 object-contain bg-stone-50" />
+          )}
           <button onClick={clearPhoto} className="absolute top-4 right-4 h-8 w-8 rounded-full bg-stone-900/80 text-white flex items-center justify-center" data-testid="clear-photo">
             <X className="h-4 w-4" />
           </button>
@@ -173,7 +184,7 @@ export default function ClientSubmit() {
               {reviewWarning.status === "rejected" ? "Document check warning" : "Quick check warning"}
             </div>
             <p className="mt-1 text-amber-900">{reviewWarning.message}</p>
-            <p className="mt-2 text-amber-800">You can choose a different photo, or submit anyway. If you continue, the image will be watermarked as client approved.</p>
+            <p className="mt-2 text-amber-800">You can choose a different document, or submit anyway. If you continue, the submission will be stamped as client approved.</p>
           </div>
         </div>
       )}
@@ -189,6 +200,10 @@ export default function ClientSubmit() {
       </Button>
     </div>
   );
+}
+
+function isPdfFile(file) {
+  return file?.type === "application/pdf" || file?.name?.toLowerCase().endsWith(".pdf");
 }
 
 function ActionRow({ icon, title, subtitle, active, onClick, testid }) {
