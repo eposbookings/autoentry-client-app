@@ -13,5 +13,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the application code
 COPY . .
 
-# Specify the command to execute when the container starts
-CMD ["uvicorn", "server:app", "--host=0.0.0.0", "--port=8000", "--reload"]
+# Specify the command to execute when the container starts.
+# Do not use --reload in production: it can leave the container "Up" while the app child process has crashed.
+CMD ["uvicorn", "server:app", "--host=0.0.0.0", "--port=8000"]

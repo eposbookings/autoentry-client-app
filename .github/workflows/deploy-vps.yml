@@ -7,6 +7,14 @@ on:
         description: "Git branch to deploy to the VPS"
         required: true
         default: "main"
+      build_frontend:
+        description: "Rebuild the frontend image as well as API/nginx"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 concurrency:
   group: deploy-vps
@@ -32,14 +40,21 @@ jobs:
             cd /opt/autoentry-client-app
 
             DEPLOY_BRANCH="${{ inputs.deploy_branch }}"
+            BUILD_FRONTEND="${{ inputs.build_frontend }}"
 
             echo "Deploying branch: $DEPLOY_BRANCH"
             git fetch origin "$DEPLOY_BRANCH"
             git checkout "$DEPLOY_BRANCH"
             git reset --hard "origin/$DEPLOY_BRANCH"
 
-            echo "Building Docker images..."
-            if ! docker compose build --progress=plain; then
+            if [ "$BUILD_FRONTEND" = "true" ]; then
+              BUILD_SERVICES="api nginx frontend"
+            else
+              BUILD_SERVICES="api nginx"
+            fi
+
+            echo "Building Docker images: $BUILD_SERVICES"
+            if ! docker compose --progress=plain build $BUILD_SERVICES; then
               echo "Docker compose build failed."
               docker compose ps
               docker compose logs --tail=160

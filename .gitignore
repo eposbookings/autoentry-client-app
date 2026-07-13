@@ -66,6 +66,7 @@ chainlit.md
 
 # Data and databases
 agenthub/agents/youtube/db
+mysql/
 *.db
 *.sqlite
 *.sqlite3
