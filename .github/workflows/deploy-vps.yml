@@ -59,10 +59,35 @@ jobs:
           path: frontend/build
           if-no-files-found: error
 
+  build-api:
+    name: Build API image on GitHub
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out selected branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.deploy_branch }}
+
+      - name: Build API Docker image
+        run: docker build -t autoentry-client-app-api:latest ./backend
+
+      - name: Save API Docker image
+        run: docker save autoentry-client-app-api:latest | gzip > api-image.tar.gz
+
+      - name: Upload API image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-image
+          path: api-image.tar.gz
+          if-no-files-found: error
+
   deploy:
     name: Sync code and deploy to VPS
     runs-on: ubuntu-latest
-    needs: build-frontend
+    needs:
+      - build-frontend
+      - build-api
 
     steps:
       - name: Download frontend build artifact
@@ -70,6 +95,12 @@ jobs:
         with:
           name: frontend-build
           path: frontend-build
+
+      - name: Download API image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: api-image
+          path: api-image
 
       - name: Copy frontend build to VPS
         uses: appleboy/scp-action@v0.1.7
@@ -83,6 +114,18 @@ jobs:
           rm: true
           strip_components: 1
 
+      - name: Copy API image to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          source: "api-image/api-image.tar.gz"
+          target: "/tmp/autoentry-client-app-api"
+          rm: true
+          strip_components: 1
+
       - name: Sync code and restart services
         uses: appleboy/ssh-action@v1.2.0
         with:
@@ -91,7 +134,7 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           port: 22
           script_stop: true
-          command_timeout: 15m
+          command_timeout: 20m
           script: |
             set -e
             cd /opt/autoentry-client-app
@@ -113,9 +156,9 @@ jobs:
             git status --short
 
             if [ "${{ inputs.rebuild_backend }}" = "true" ]; then
-              echo "Rebuilding API container"
-              docker compose build api
-              docker compose up -d api
+              echo "Loading prebuilt API image"
+              gzip -dc /tmp/autoentry-client-app-api/api-image.tar.gz | docker load
+              docker compose up -d --no-build api
             fi
 
             echo "Restarting lightweight web containers"
