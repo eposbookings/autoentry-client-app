@@ -3,7 +3,7 @@ FROM node:24-alpine AS builder
 WORKDIR /app
 
 # Install dependencies from the committed pnpm lockfile for repeatable VPS builds.
-COPY package.json pnpm-lock.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN npm install -g pnpm@9.15.9 \
     && pnpm install --frozen-lockfile --reporter=append-only
 
