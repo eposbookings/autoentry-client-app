@@ -1,32 +1,24 @@
-name: Deploy to 20i VPS
+name: Sync code to 20i VPS
 
 on:
   workflow_dispatch:
     inputs:
       deploy_branch:
-        description: "Git branch to deploy to the VPS"
+        description: "Git branch to sync to the VPS"
         required: true
         default: "main"
-      build_frontend:
-        description: "Rebuild the frontend image as well as API/nginx"
-        required: true
-        default: "false"
-        type: choice
-        options:
-          - "false"
-          - "true"
 
 concurrency:
-  group: deploy-vps
+  group: sync-vps-code
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: Pull latest code and restart Docker stack
+  sync:
+    name: Pull latest code only
     runs-on: ubuntu-latest
 
     steps:
-      - name: Deploy over SSH
+      - name: Sync code over SSH
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -34,62 +26,18 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           port: 22
           script_stop: true
-          command_timeout: 30m
+          command_timeout: 5m
           script: |
             set -e
             cd /opt/autoentry-client-app
 
             DEPLOY_BRANCH="${{ inputs.deploy_branch }}"
-            BUILD_FRONTEND="${{ inputs.build_frontend }}"
 
-            echo "Deploying branch: $DEPLOY_BRANCH"
+            echo "Syncing branch: $DEPLOY_BRANCH"
             git fetch origin "$DEPLOY_BRANCH"
             git checkout "$DEPLOY_BRANCH"
             git reset --hard "origin/$DEPLOY_BRANCH"
 
-            if [ "$BUILD_FRONTEND" = "true" ]; then
-              BUILD_SERVICES="api nginx frontend"
-            else
-              BUILD_SERVICES="api nginx"
-            fi
-
-            echo "Building Docker images: $BUILD_SERVICES"
-            if ! docker compose --progress=plain build $BUILD_SERVICES; then
-              echo "Docker compose build failed."
-              docker compose ps
-              docker compose logs --tail=160
-              exit 1
-            fi
-
-            echo "Starting Docker stack..."
-            if ! docker compose up -d --remove-orphans; then
-              echo "Docker compose startup failed."
-              docker compose ps
-              docker compose logs --tail=160
-              exit 1
-            fi
-
-            echo "Docker stack status:"
-            docker compose ps
-            docker compose logs api --tail=40
-            docker compose logs mysql --tail=30
-
-            for i in $(seq 1 60); do
-              if docker compose exec -T api python -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/api/health', timeout=3).read().decode())"; then
-                echo "API container health check passed."
-                curl -fsS http://localhost:8000/api/health || true
-                exit 0
-              fi
-              echo "Waiting for API health check ($i/60)..."
-              if [ "$i" = "5" ] || [ "$i" = "20" ] || [ "$i" = "40" ]; then
-                docker compose ps
-                docker compose logs api --tail=60
-                docker compose logs mysql --tail=30
-              fi
-              sleep 5
-            done
-
-            echo "API health check failed."
-            docker compose ps
-            docker compose logs api --tail=120
-            exit 1
+            echo "VPS is now on:"
+            git log --oneline -1
+            git status --short
