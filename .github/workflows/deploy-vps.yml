@@ -10,7 +10,7 @@ on:
       react_app_backend_url:
         description: "Public backend origin compiled into the React app"
         required: true
-        default: "http://eposbookings.net"
+        default: "https://eposbookings.net"
       rebuild_backend:
         description: "Rebuild and restart the API container after syncing code"
         required: true
