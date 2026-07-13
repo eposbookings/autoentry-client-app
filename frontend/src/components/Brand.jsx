@@ -1,18 +1,15 @@
 import React from "react";
+import eposLogo from "@/assets/epos-logo.png";
 
 export function EposLogo({ size = 40, className = "" }) {
   return (
-    <div
-      className={`rounded-xl flex items-center justify-center ${className}`}
-      style={{ width: size, height: size, background: "#1f2123" }}
+    <img
+      src={eposLogo}
+      alt="EPOS Accountancy"
+      className={`rounded-xl object-contain ${className}`}
+      style={{ width: size, height: size }}
       aria-label="EPOS Accountancy"
-    >
-      <svg width={size * 0.7} height={size * 0.7} viewBox="0 0 40 40" fill="none">
-        <path d="M14 20a6 6 0 1 1 12 0H14Zm0 0a6 6 0 0 0 6 6" stroke="#D6D3D1" strokeWidth="3.2" strokeLinecap="round" fill="none"/>
-        <circle cx="26" cy="20" r="6" fill="none" stroke="#2DD4BF" strokeWidth="3.2"/>
-        <circle cx="26" cy="20" r="1.6" fill="#D6D3D1"/>
-      </svg>
-    </div>
+    />
   );
 }
 

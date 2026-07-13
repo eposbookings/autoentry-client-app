@@ -1,7 +1,8 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "sonner";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
+import eposLogo from "@/assets/epos-logo.png";
 import Login from "@/pages/Login";
 import AdminLayout from "@/pages/admin/AdminLayout";
 import AdminClients from "@/pages/admin/AdminClients";
@@ -37,10 +38,27 @@ function Root() {
   return <Navigate to={user.role === "admin" ? "/admin" : "/portal"} replace />;
 }
 
+function BrowserBranding() {
+  useEffect(() => {
+    document.title = "EPOS Accountancy";
+    let icon = document.querySelector("link[rel~='icon']");
+    if (!icon) {
+      icon = document.createElement("link");
+      icon.rel = "icon";
+      document.head.appendChild(icon);
+    }
+    icon.type = "image/png";
+    icon.href = eposLogo;
+  }, []);
+
+  return null;
+}
+
 export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
+        <BrowserBranding />
         <Toaster position="top-center" richColors />
         <Routes>
           <Route path="/" element={<Root />} />

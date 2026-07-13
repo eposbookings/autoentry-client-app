@@ -1,87 +1,99 @@
-# EPOS Accountancy — Outstanding Documents Portal
+# EPOS Accountancy - Outstanding Documents Portal
 
-A full-stack portal for an accounting practice. Clients log in to view their
-outstanding purchase/sales invoices and submit a photo (or a comment) against each
-item. Submissions are watermarked with a timestamp + comment and emailed to the
-client's dedicated AutoEntry inbox via Amazon SES. Admins manage clients, upload CSVs
-of outstanding items, configure SMTP, and review submissions.
+A full-stack portal for EPOS Accountancy. Clients log in to view outstanding
+purchase/sales invoices and submit supporting documents. Admins manage clients,
+upload outstanding-item CSVs, configure SMTP/OpenAI settings, and review
+submissions.
 
-> Current handover: see **[`PROJECT_NOTES.md`](./PROJECT_NOTES.md)** first.
-> The app has since moved to MySQL on the 20i VPS, so older MongoDB/Emergent notes in this README may be stale.
-
-> For full status, architecture, and roadmap see **[`PROJECT_STATE.md`](./PROJECT_STATE.md)**
-> and **[`memory/PRD.md`](./memory/PRD.md)**.
+Current handover: see [PROJECT_NOTES.md](./PROJECT_NOTES.md) first.
 
 ## Tech Stack
-- **Frontend:** React, React Router, Tailwind CSS, shadcn/ui, Axios, sonner.
-- **Backend:** FastAPI, SQLAlchemy/async MySQL, Pillow (image watermarking),
-  smtplib (Amazon SES email), Fernet (SMTP password encryption at rest).
-- **Database:** MySQL / SQL.
+
+- Frontend: React, React Router, Tailwind CSS, shadcn/ui, Axios, sonner.
+- Backend: FastAPI, SQLAlchemy async, MySQL, Pillow, pypdf/reportlab, smtplib.
+- Database: MySQL / SQL.
+- Deployment: Docker Compose on the 20i VPS.
 
 ## Repository Layout
-```
-/app
-├── backend/
-│   ├── server.py            # FastAPI app: auth, clients, CSV, submissions, SMTP, image stamping
-│   ├── assets/fonts/        # Bundled DejaVu TTF fonts (used by watermark rendering)
-│   ├── uploads/             # Submitted/generated images (persistent, writable)
-│   ├── tests/               # pytest suites (SMTP conversion, watermark)
-│   ├── requirements.txt
-│   └── .env                 # backend env vars (not committed)
-├── frontend/
-│   ├── src/pages/{admin,client}/ ...
-│   └── .env                 # frontend env vars (not committed)
-├── memory/                  # PRD.md, test_credentials.md
-├── test_reports/            # QA iteration reports
-└── PROJECT_STATE.md         # Handoff / current state
+
+```text
+backend/
+  server.py              FastAPI app: auth, clients, CSV, submissions, settings
+  assets/fonts/          Bundled DejaVu fonts
+  uploads/               Submitted/generated documents
+  requirements.txt       Production API dependencies
+frontend/
+  src/pages/             Admin/client/login screens
+  src/components/Brand.jsx
+  src/assets/epos-logo.png
+  public/favicon.png
+.github/workflows/       Manual VPS deployment workflow
 ```
 
 ## Environment Variables
-**Backend (`backend/.env`):** `MONGO_URL`, `DB_NAME`, `CORS_ORIGINS`, `JWT_SECRET`,
-`FERNET_KEY` (⚠️ must be preserved — decrypts stored SMTP passwords), `ADMIN_EMAIL`,
-`ADMIN_PASSWORD`, `UPLOAD_DIR`.
 
-**Frontend (`frontend/.env`):** `REACT_APP_BACKEND_URL`, `WDS_SOCKET_PORT`,
-`ENABLE_HEALTH_CHECK`.
+Backend (`backend/.env`):
 
-> All backend API routes are prefixed with `/api`. The frontend must call the backend
-> via `REACT_APP_BACKEND_URL`. Do not hardcode URLs or secrets.
+- `DATABASE_URL`
+- `CORS_ORIGINS`
+- `JWT_SECRET`
+- `FERNET_KEY` - preserve this; it decrypts saved SMTP/OpenAI settings.
+- `ADMIN_EMAIL`
+- `ADMIN_PASSWORD`
+- `UPLOAD_DIR`
+- optional: `OPENAI_API_KEY`, `OPENAI_INVOICE_CHECK_MODEL`
+
+Frontend (`frontend/.env`):
+
+- `REACT_APP_BACKEND_URL`
+- `WDS_SOCKET_PORT`
+- `ENABLE_HEALTH_CHECK`
+
+All backend API routes are prefixed with `/api`.
 
 ## Local Development
+
+Frontend:
+
 ```bash
-# Backend
+cd frontend
+pnpm install
+pnpm start
+```
+
+Backend:
+
+```bash
 cd backend
 pip install -r requirements.txt
-uvicorn server:app --host 0.0.0.0 --port 8001 --reload
-
-# Frontend
-cd frontend
-yarn install
-yarn start
+uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 ```
-On Emergent, services are supervisor-managed (backend :8001, frontend :3000) with hot
-reload; restart only after `.env` or dependency changes:
-`sudo supervisorctl restart backend frontend`.
+
+Local frontend: `http://localhost:3000`
+
+Local API health: `http://localhost:8000/api/health`
 
 ## Deployment
-- **Production (Emergent managed):** https://outstanding-items.emergent.host — managed
-  MongoDB is provisioned automatically by the platform; set env vars in the deploy
-  settings. Redeploy from the Emergent chat after pushing changes.
-- **Self-hosting (VPS):** build the frontend (`yarn build`) and serve it via Nginx;
-  run the backend with `uvicorn server:app` behind Nginx (proxy `/api/*` → :8001);
-  provide your own MongoDB (Atlas or local) and set the env vars above; add SSL via
-  Let's Encrypt. Ensure `backend/assets/fonts/` is deployed (needed for watermarks).
+
+- Production VPS: `45.8.225.73`
+- Database: MySQL
+- Domain DNS: GoDaddy A record points to the VPS IP.
+- Deployment flow: GitHub Desktop -> PR -> manual merge -> GitHub Action
+  `Sync code to 20i VPS`.
+- The workflow builds the frontend and API Docker image on GitHub, copies artifacts
+  to the VPS, then restarts Docker services.
+
+Work locally first. Do not change the VPS unless explicitly requested.
+
+## Document Submission
+
+- Clients can upload images or PDFs.
+- Images and PDFs can run through OpenAI document review when enabled for the client.
+- Warnings can be approved by the client and submitted anyway.
+- Comments/approval notes are added as a separate PDF page, not over the invoice.
 
 ## Amazon SES SMTP Note
-SES does not accept a raw IAM Secret Access Key as an SMTP password. In Admin →
-SMTP Settings, enable **"I'm pasting an AWS IAM Secret Access Key"** and the app will
-derive the correct SES SMTP password automatically (region detected from the
-`email-smtp.<region>.amazonaws.com` host). The IAM user needs `ses:SendRawEmail`.
 
-## Test Credentials
-See `memory/test_credentials.md`.
-
-## Current Git Flow
-Development changes are committed locally, pushed to the `deployment` branch on
-GitHub, and then deployed to the VPS separately. The VPS deploy workflow is currently
-manual-only while SSH deployment is being stabilised..
+SES does not accept a raw IAM Secret Access Key as an SMTP password. In Admin ->
+SMTP Settings, enable "I'm pasting an AWS IAM Secret Access Key" and the app will
+derive the SES SMTP password automatically. The IAM user needs `ses:SendRawEmail`.
