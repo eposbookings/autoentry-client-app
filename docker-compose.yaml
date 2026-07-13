@@ -43,6 +43,8 @@ services:
         APP_PORT: ${APP_PORT}
     env_file:
       - ./.env
+    environment:
+      CORS_ORIGINS: "http://localhost:3000,http://45.8.225.73,http://eposbookings.net,http://www.eposbookings.net"
     ports:
       - "${APP_PORT:-8000}:8000"
     depends_on:
