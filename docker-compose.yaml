@@ -33,6 +33,7 @@ services:
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
   api:
     restart: always
+    image: autoentry-client-app-api:latest
     build:
       context: ./backend
       dockerfile: Dockerfile
