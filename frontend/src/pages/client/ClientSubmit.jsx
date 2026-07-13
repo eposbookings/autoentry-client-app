@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { api, formatApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Camera, Upload, Ban, ArrowLeft, CheckCircle2, X } from "lucide-react";
+import { Camera, Upload, Ban, ArrowLeft, CheckCircle2, X, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 
 export default function ClientSubmit() {
@@ -16,6 +16,7 @@ export default function ClientSubmit() {
   const [comment, setComment] = useState("");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  const [reviewWarning, setReviewWarning] = useState(null);
   const cameraRef = useRef();
   const fileRef = useRef();
 
@@ -35,12 +36,14 @@ export default function ClientSubmit() {
     setFile(f);
     setMode("photo");
     setPreview(URL.createObjectURL(f));
+    setReviewWarning(null);
   }
 
   function clearPhoto() {
     setFile(null);
     setPreview(null);
     setMode(null);
+    setReviewWarning(null);
   }
 
   async function submit() {
@@ -53,8 +56,17 @@ export default function ClientSubmit() {
       const fd = new FormData();
       fd.append("mode", mode);
       fd.append("comment", comment.trim());
+      if (reviewWarning) {
+        fd.append("client_approved_ai_warning", "true");
+        fd.append("ai_review_token", reviewWarning.token);
+      }
       if (mode === "photo" && file) fd.append("file", file);
-      await api.post(`/client/items/${itemId}/submit`, fd, { headers: { "Content-Type": "multipart/form-data" } });
+      const { data } = await api.post(`/client/items/${itemId}/submit`, fd, { headers: { "Content-Type": "multipart/form-data" } });
+      if (data?.ok === false && data?.ai_review?.token) {
+        setReviewWarning(data.ai_review);
+        toast.warning(data.ai_review.message);
+        return;
+      }
       setDone(true);
     } catch (e) {
       toast.error(formatApiError(e));
@@ -153,6 +165,19 @@ export default function ClientSubmit() {
         />
       </div>
 
+      {reviewWarning && (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 flex gap-3" data-testid="ai-review-warning">
+          <AlertTriangle className="h-5 w-5 text-amber-700 mt-0.5 flex-none" />
+          <div className="text-sm">
+            <div className="font-semibold text-amber-900">
+              {reviewWarning.status === "rejected" ? "Document check warning" : "Quick check warning"}
+            </div>
+            <p className="mt-1 text-amber-900">{reviewWarning.message}</p>
+            <p className="mt-2 text-amber-800">You can choose a different photo, or submit anyway. If you continue, the image will be watermarked as client approved.</p>
+          </div>
+        </div>
+      )}
+
       <Button
         onClick={submit}
         disabled={busy || !mode || (mode === "no_photo" && !comment.trim()) || (mode === "photo" && !file)}
@@ -160,7 +185,7 @@ export default function ClientSubmit() {
         style={{ background: "var(--brand)" }}
         data-testid="submit-btn"
       >
-        {busy ? "Submitting…" : "Submit document"}
+        {busy ? "Submitting…" : reviewWarning ? "Submit anyway" : "Submit document"}
       </Button>
     </div>
   );

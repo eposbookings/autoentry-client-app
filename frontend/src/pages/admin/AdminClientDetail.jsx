@@ -39,6 +39,8 @@ export default function AdminClientDetail() {
         first_name: client.first_name, last_name: client.last_name,
         business_name: client.business_name, email: client.email,
         autoentry_email: client.autoentry_email, status: client.status,
+        is_vat_client: !!client.is_vat_client,
+        ai_analysis_enabled: !!client.ai_analysis_enabled,
       });
       toast.success("Client updated");
       load();
@@ -139,6 +141,32 @@ export default function AdminClientDetail() {
           <Field label="Business name" value={client.business_name} onChange={(v)=>setClient({...client, business_name: v})} testid="edit-business-name" />
           <Field label="Login email" type="email" value={client.email} onChange={(v)=>setClient({...client, email: v})} testid="edit-email" />
           <Field label="AutoEntry email" type="email" value={client.autoentry_email} onChange={(v)=>setClient({...client, autoentry_email: v})} testid="edit-autoentry-email" />
+          <label className="flex items-start gap-3 rounded-xl border border-stone-200 bg-stone-50/60 p-3 text-sm sm:col-span-2">
+            <input
+              type="checkbox"
+              checked={!!client.is_vat_client}
+              onChange={(e) => setClient({ ...client, is_vat_client: e.target.checked })}
+              className="mt-1 h-4 w-4"
+              data-testid="edit-vat-client"
+            />
+            <span>
+              <span className="font-semibold text-stone-800">VAT client</span>
+              <span className="block text-stone-500">Document checks will look for VAT invoice details before email delivery.</span>
+            </span>
+          </label>
+          <label className="flex items-start gap-3 rounded-xl border border-stone-200 bg-stone-50/60 p-3 text-sm sm:col-span-2">
+            <input
+              type="checkbox"
+              checked={!!client.ai_analysis_enabled}
+              onChange={(e) => setClient({ ...client, ai_analysis_enabled: e.target.checked })}
+              className="mt-1 h-4 w-4"
+              data-testid="edit-ai-analysis"
+            />
+            <span>
+              <span className="font-semibold text-stone-800">AI analysis</span>
+              <span className="block text-stone-500">When enabled, invoice photos are checked before they are emailed. Clients can approve warnings and submit anyway.</span>
+            </span>
+          </label>
           <div>
             <Label className="text-sm font-semibold text-stone-700">Status</Label>
             <select

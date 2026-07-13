@@ -18,7 +18,7 @@ export default function AdminClients() {
 
   const [form, setForm] = useState({
     first_name: "", last_name: "", business_name: "",
-    email: "", autoentry_email: "", password: "", status: "active",
+    email: "", autoentry_email: "", password: "", status: "active", is_vat_client: false, ai_analysis_enabled: false,
   });
 
   const load = useCallback(async () => {
@@ -38,7 +38,7 @@ export default function AdminClients() {
       await api.post("/admin/clients", form);
       toast.success("Client created");
       setOpen(false);
-      setForm({ first_name: "", last_name: "", business_name: "", email: "", autoentry_email: "", password: "", status: "active" });
+      setForm({ first_name: "", last_name: "", business_name: "", email: "", autoentry_email: "", password: "", status: "active", is_vat_client: false, ai_analysis_enabled: false });
       load();
     } catch (err) {
       toast.error(formatApiError(err));
@@ -80,6 +80,32 @@ export default function AdminClients() {
               <Field label="Login email" id="email" type="email" value={form.email} onChange={(v)=>setForm({...form, email: v})} testid="client-email" />
               <Field label="AutoEntry email (where submissions go)" id="autoentry_email" type="email" value={form.autoentry_email} onChange={(v)=>setForm({...form, autoentry_email: v})} testid="client-autoentry-email" />
               <Field label="Initial password" id="password" type="password" value={form.password} onChange={(v)=>setForm({...form, password: v})} testid="client-password" />
+              <label className="flex items-start gap-3 rounded-xl border border-stone-200 bg-stone-50/60 p-3 text-sm">
+                <input
+                  type="checkbox"
+                  checked={form.is_vat_client}
+                  onChange={(e) => setForm({ ...form, is_vat_client: e.target.checked })}
+                  className="mt-1 h-4 w-4"
+                  data-testid="client-vat-client"
+                />
+                <span>
+                  <span className="font-semibold text-stone-800">VAT client</span>
+                  <span className="block text-stone-500">Ask the document check to look for VAT invoice details.</span>
+                </span>
+              </label>
+              <label className="flex items-start gap-3 rounded-xl border border-stone-200 bg-stone-50/60 p-3 text-sm">
+                <input
+                  type="checkbox"
+                  checked={form.ai_analysis_enabled}
+                  onChange={(e) => setForm({ ...form, ai_analysis_enabled: e.target.checked })}
+                  className="mt-1 h-4 w-4"
+                  data-testid="client-ai-analysis"
+                />
+                <span>
+                  <span className="font-semibold text-stone-800">AI analysis</span>
+                  <span className="block text-stone-500">Run invoice photos through AI review before emailing.</span>
+                </span>
+              </label>
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => setOpen(false)} data-testid="cancel-create-btn">Cancel</Button>
                 <Button type="submit" disabled={busy} style={{ background: "var(--brand)" }} data-testid="submit-create-btn">
@@ -125,6 +151,12 @@ export default function AdminClients() {
                   {c.status}
                 </Badge>
               </div>
+              {c.is_vat_client && (
+                <Badge className="mt-3 bg-sky-100 text-sky-800 hover:bg-sky-100">VAT client</Badge>
+              )}
+              {c.ai_analysis_enabled && (
+                <Badge className="mt-3 ml-2 bg-violet-100 text-violet-800 hover:bg-violet-100">AI analysis</Badge>
+              )}
               <div className="mt-5 grid grid-cols-2 gap-3">
                 <Stat label="Purchase" value={c.purchase_outstanding} />
                 <Stat label="Sales" value={c.sales_outstanding} />

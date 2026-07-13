@@ -10,6 +10,7 @@ import hashlib
 import asyncio
 import csv
 import io
+import json
 import logging
 import os
 import smtplib
@@ -21,6 +22,7 @@ from email.message import EmailMessage
 from typing import List, Optional
 
 import bcrypt
+import httpx
 import jwt
 from cryptography.fernet import Fernet
 from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
@@ -110,6 +112,8 @@ users = Table(
     Column("last_name", String(255)),
     Column("business_name", String(255), index=True),
     Column("autoentry_email", String(255)),
+    Column("is_vat_client", Boolean, default=False),
+    Column("ai_analysis_enabled", Boolean, default=False),
     Column("status", String(32), nullable=False, default="active"),
     Column("created_at", String(64)),
 )
@@ -139,6 +143,10 @@ submissions = Table(
     Column("comment", Text),
     Column("image_filename", String(255)),
     Column("is_additional", Boolean, default=False),
+    Column("ai_review_status", String(32)),
+    Column("ai_review_message", Text),
+    Column("ai_document_type", String(64)),
+    Column("ai_client_approved", Boolean, default=False),
     Column("submitted_at", String(64), index=True),
     Column("client_business_name", String(255)),
     Column("client_first_name", String(255)),
@@ -156,6 +164,8 @@ settings = Table(
     Column("sender_email", String(255)),
     Column("sender_name", String(255)),
     Column("use_tls", Boolean, default=True),
+    Column("openai_api_key_enc", Text),
+    Column("openai_model", String(128)),
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -268,6 +278,8 @@ class ClientCreate(BaseModel):
     autoentry_email: EmailStr
     password: str
     status: str = "active"
+    is_vat_client: bool = False
+    ai_analysis_enabled: bool = False
 
 
 class ClientUpdate(BaseModel):
@@ -277,6 +289,8 @@ class ClientUpdate(BaseModel):
     email: Optional[EmailStr] = None
     autoentry_email: Optional[EmailStr] = None
     status: Optional[str] = None
+    is_vat_client: Optional[bool] = None
+    ai_analysis_enabled: Optional[bool] = None
 
 
 class PasswordReset(BaseModel):
@@ -292,6 +306,11 @@ class SMTPSettingsIn(BaseModel):
     sender_name: str
     use_tls: bool = True
     aws_iam_secret: bool = False
+
+
+class OpenAISettingsIn(BaseModel):
+    api_key: Optional[str] = None
+    model: str = "gpt-5.6-luna"
 
 
 # ---------- Helpers ----------
@@ -383,6 +402,39 @@ def create_access_token(user_id: str, role: str) -> str:
     return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
 
 
+def create_ai_review_token(user_id: str, image_hash: str, review: dict) -> str:
+    payload = {
+        "sub": user_id,
+        "type": "ai_review",
+        "image_hash": image_hash,
+        "status": review.get("status"),
+        "message": review.get("message", ""),
+        "document_type": review.get("document_type", ""),
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=20),
+    }
+    return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
+
+
+def verify_ai_review_token(token: str, user_id: str, image_hash: str) -> Optional[dict]:
+    try:
+        payload = jwt.decode(token, get_jwt_secret(), algorithms=[JWT_ALGORITHM])
+    except jwt.InvalidTokenError:
+        return None
+    if (
+        payload.get("type") != "ai_review"
+        or payload.get("sub") != user_id
+        or payload.get("image_hash") != image_hash
+        or payload.get("status") not in ("needs_review", "rejected")
+    ):
+        return None
+    return {
+        "status": payload.get("status"),
+        "message": payload.get("message", ""),
+        "document_type": payload.get("document_type", ""),
+        "confidence": "medium",
+    }
+
+
 def set_auth_cookie(response: Response, token: str):
     secure_cookie = os.environ.get("COOKIE_SECURE", "false").lower() == "true"
     response.set_cookie(
@@ -446,6 +498,8 @@ def serialize_user(u: dict) -> dict:
         "last_name": u.get("last_name"),
         "business_name": u.get("business_name"),
         "autoentry_email": u.get("autoentry_email"),
+        "is_vat_client": bool(u.get("is_vat_client")),
+        "ai_analysis_enabled": bool(u.get("ai_analysis_enabled")),
         "status": u.get("status", "active"),
     }
 
@@ -545,6 +599,8 @@ async def create_client(
         "last_name": payload.last_name.strip(),
         "business_name": payload.business_name.strip(),
         "autoentry_email": payload.autoentry_email.lower().strip(),
+        "is_vat_client": bool(payload.is_vat_client),
+        "ai_analysis_enabled": bool(payload.ai_analysis_enabled),
         "status": payload.status or "active",
         "created_at": utc_now_iso(),
     }
@@ -816,6 +872,66 @@ async def clear_smtp(user: dict = Depends(require_admin), session: AsyncSession 
     return {"ok": True}
 
 
+@api.get("/admin/settings/openai")
+async def get_openai_settings(user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    s = await one(session, select(settings).where(settings.c.key == "openai"))
+    env_key = bool(os.environ.get("OPENAI_API_KEY"))
+    configured = env_key or bool(s and s.get("openai_api_key_enc"))
+    return {
+        "model": (s or {}).get("openai_model") or os.environ.get("OPENAI_INVOICE_CHECK_MODEL", "gpt-5.6-luna"),
+        "configured": configured,
+        "source": "environment" if env_key else ("saved" if configured else "missing"),
+    }
+
+
+@api.put("/admin/settings/openai")
+async def update_openai_settings(
+    payload: OpenAISettingsIn,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    existing = await one(session, select(settings).where(settings.c.key == "openai")) or {}
+    model = (payload.model or "gpt-5.6-luna").strip()
+    values = {"key": "openai", "openai_model": model}
+    if payload.api_key and payload.api_key.strip():
+        values["openai_api_key_enc"] = fernet.encrypt(payload.api_key.strip().encode()).decode()
+    elif existing.get("openai_api_key_enc"):
+        values["openai_api_key_enc"] = existing["openai_api_key_enc"]
+    else:
+        values["openai_api_key_enc"] = None
+
+    if existing:
+        await session.execute(update(settings).where(settings.c.key == "openai").values(**values))
+    else:
+        await session.execute(insert(settings).values(**values))
+    await session.commit()
+    return {"ok": True}
+
+
+@api.delete("/admin/settings/openai")
+async def clear_openai_settings(user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    await session.execute(delete(settings).where(settings.c.key == "openai"))
+    await session.commit()
+    return {"ok": True}
+
+
+async def get_openai_runtime_settings(session: AsyncSession) -> dict:
+    env_key = os.environ.get("OPENAI_API_KEY")
+    env_model = os.environ.get("OPENAI_INVOICE_CHECK_MODEL")
+    s = await one(session, select(settings).where(settings.c.key == "openai"))
+    api_key = env_key
+    if not api_key and s and s.get("openai_api_key_enc"):
+        try:
+            api_key = fernet.decrypt(s["openai_api_key_enc"].encode()).decode()
+        except Exception:
+            logger.exception("Failed to decrypt saved OpenAI API key")
+            api_key = None
+    return {
+        "api_key": api_key,
+        "model": env_model or (s or {}).get("openai_model") or "gpt-5.6-luna",
+    }
+
+
 async def get_smtp_settings() -> Optional[dict]:
     async with SessionLocal() as session:
         s = await one(session, select(settings).where(settings.c.key == "smtp"))
@@ -981,6 +1097,128 @@ def render_document_page(title: str, comment: str, submitted_at: datetime) -> by
     return out.getvalue()
 
 
+def normalize_ai_review(data: dict) -> dict:
+    status = str(data.get("status") or "").lower().strip()
+    if status not in ("approved", "needs_review", "rejected"):
+        status = "needs_review"
+    message = str(data.get("message") or data.get("short_message") or "").strip()
+    if not message:
+        message = "Please check this document before submitting."
+    return {
+        "status": status,
+        "message": message[:240],
+        "document_type": str(data.get("document_type") or "unknown").strip()[:64],
+        "confidence": str(data.get("confidence") or "medium").lower().strip()[:24],
+    }
+
+
+async def review_document_with_openai(
+    image_bytes: bytes,
+    content_type: str,
+    item: dict,
+    client_user: dict,
+    api_key: str,
+    model: str,
+) -> dict:
+    if not api_key:
+        raise HTTPException(status_code=400, detail="AI document check is enabled for this client, but OpenAI settings are not configured. Ask your administrator to add an API key.")
+
+    is_vat_client = bool(client_user.get("is_vat_client"))
+    data_url = f"data:{content_type or 'image/jpeg'};base64,{base64.b64encode(image_bytes).decode('ascii')}"
+    invoice_kind = "purchase" if item.get("type") == "purchase" else "sales"
+    vat_instruction = (
+        "This is a VAT client. If the document is an invoice/receipt but VAT evidence is missing "
+        "(VAT number, VAT amount/rate, or net/gross breakdown where expected), use needs_review "
+        "rather than rejected unless it is clearly not an invoice/receipt."
+        if is_vat_client
+        else "This is not marked as a VAT client. Do not reject only because VAT details are absent."
+    )
+    prompt = (
+        "Check whether the uploaded image is a valid invoice or receipt for accounting submission. "
+        "Reject only documents that are clearly not invoices/receipts, such as statements, orders, "
+        "remittance advice, quotes, delivery notes, or unrelated images. Use needs_review for unclear "
+        "or partially valid cases. Keep the message short and client-friendly. "
+        f"Expected document area: {invoice_kind}. Listed item: {item.get('description') or 'Additional invoice'}. "
+        f"{vat_instruction}"
+    )
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "status": {"type": "string", "enum": ["approved", "needs_review", "rejected"]},
+            "document_type": {"type": "string"},
+            "message": {"type": "string"},
+            "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+        },
+        "required": ["status", "document_type", "message", "confidence"],
+    }
+    payload = {
+        "model": model,
+        "input": [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": (
+                            "You are a careful UK accountancy document checker. "
+                            "Return only the requested structured result."
+                        ),
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": prompt},
+                    {"type": "input_image", "image_url": data_url, "detail": "low"},
+                ],
+            },
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "invoice_document_check",
+                "schema": schema,
+                "strict": True,
+            }
+        },
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/responses",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=payload,
+            )
+            resp.raise_for_status()
+            body = resp.json()
+    except httpx.HTTPError as exc:
+        logger.exception("OpenAI invoice check failed")
+        raise HTTPException(status_code=400, detail=f"Document check is temporarily unavailable: {exc}")
+
+    output_text = body.get("output_text")
+    if not output_text:
+        for item_out in body.get("output", []):
+            for content in item_out.get("content", []):
+                if content.get("type") in ("output_text", "text") and content.get("text"):
+                    output_text = content["text"]
+                    break
+            if output_text:
+                break
+    try:
+        return normalize_ai_review(json.loads(output_text or "{}"))
+    except json.JSONDecodeError:
+        logger.warning("OpenAI invoice check returned non-JSON output: %s", output_text)
+        return {"status": "needs_review", "message": "Please check this document before submitting.", "document_type": "unknown", "confidence": "low"}
+
+
+def append_client_approval_note(comment: str, review: dict) -> str:
+    note = f"Client approved after document check warning: {review.get('message') or 'Needs review'}"
+    return f"{comment.strip()}\n{note}" if comment and comment.strip() else note
+
+
 async def send_submission_email(client_user: dict, item: dict, comment: str, image_path: Optional[str]):
     smtp = await get_smtp_settings()
     if not smtp:
@@ -1042,6 +1280,8 @@ async def submit_item(
     item_id: str,
     comment: str = Form(""),
     mode: str = Form(...),
+    client_approved_ai_warning: bool = Form(False),
+    ai_review_token: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     user: dict = Depends(require_client),
     session: AsyncSession = Depends(get_db),
@@ -1057,6 +1297,8 @@ async def submit_item(
 
     comment = (comment or "").strip()
     image_path = None
+    ai_review = None
+    ai_client_approved = False
     now = datetime.now(timezone.utc)
     if mode == "no_photo":
         if not comment:
@@ -1072,10 +1314,36 @@ async def submit_item(
         raw = await file.read()
         if not raw:
             raise HTTPException(status_code=400, detail="Empty file")
+        if user.get("ai_analysis_enabled"):
+            image_hash = hashlib.sha256(raw).hexdigest()
+            ai_token_verified = False
+            if client_approved_ai_warning and ai_review_token:
+                ai_review = verify_ai_review_token(ai_review_token, str(user["id"]), image_hash)
+                ai_token_verified = ai_review is not None
+            if ai_review is None:
+                ai_settings = await get_openai_runtime_settings(session)
+                ai_review = await review_document_with_openai(
+                    raw,
+                    file.content_type or "image/jpeg",
+                    item,
+                    user,
+                    ai_settings["api_key"],
+                    ai_settings["model"],
+                )
+            if ai_review["status"] in ("needs_review", "rejected") and not ai_token_verified:
+                return {
+                    "ok": False,
+                    "ai_review": {
+                        **ai_review,
+                        "token": create_ai_review_token(str(user["id"]), image_hash, ai_review),
+                    },
+                }
+            ai_client_approved = ai_review["status"] in ("needs_review", "rejected") and ai_token_verified
+        watermark_comment = append_client_approval_note(comment, ai_review) if ai_client_approved else comment
         fname = f"{user['id']}_{item_id}_{int(now.timestamp())}.jpg"
         fpath = UPLOAD_DIR / fname
-        if comment:
-            final_bytes = stamp_image(raw, comment, now)
+        if watermark_comment:
+            final_bytes = stamp_image(raw, watermark_comment, now)
             with open(fpath, "wb") as f:
                 f.write(final_bytes)
         else:
@@ -1099,6 +1367,10 @@ async def submit_item(
             comment=comment,
             image_filename=Path(image_path).name if image_path else None,
             is_additional=False,
+            ai_review_status=ai_review.get("status") if ai_review else None,
+            ai_review_message=ai_review.get("message") if ai_review else None,
+            ai_document_type=ai_review.get("document_type") if ai_review else None,
+            ai_client_approved=ai_client_approved,
             submitted_at=utc_now_iso(),
             client_business_name=user.get("business_name", ""),
             client_first_name=user.get("first_name", ""),
@@ -1116,6 +1388,8 @@ async def submit_additional(
     description: str = Form(...),
     comment: str = Form(""),
     mode: str = Form(...),
+    client_approved_ai_warning: bool = Form(False),
+    ai_review_token: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     user: dict = Depends(require_client),
     session: AsyncSession = Depends(get_db),
@@ -1131,6 +1405,8 @@ async def submit_additional(
     now = datetime.now(timezone.utc)
     fname = f"{user['id']}_additional_{int(now.timestamp())}.jpg"
     fpath = UPLOAD_DIR / fname
+    ai_review = None
+    ai_client_approved = False
 
     if mode == "no_photo":
         if not comment:
@@ -1143,9 +1419,36 @@ async def submit_additional(
         raw = await file.read()
         if not raw:
             raise HTTPException(status_code=400, detail="Empty file")
-        if comment:
+        item = {"description": description, "date": "", "amount": "", "type": type, "additional": True}
+        if user.get("ai_analysis_enabled"):
+            image_hash = hashlib.sha256(raw).hexdigest()
+            ai_token_verified = False
+            if client_approved_ai_warning and ai_review_token:
+                ai_review = verify_ai_review_token(ai_review_token, str(user["id"]), image_hash)
+                ai_token_verified = ai_review is not None
+            if ai_review is None:
+                ai_settings = await get_openai_runtime_settings(session)
+                ai_review = await review_document_with_openai(
+                    raw,
+                    file.content_type or "image/jpeg",
+                    item,
+                    user,
+                    ai_settings["api_key"],
+                    ai_settings["model"],
+                )
+            if ai_review["status"] in ("needs_review", "rejected") and not ai_token_verified:
+                return {
+                    "ok": False,
+                    "ai_review": {
+                        **ai_review,
+                        "token": create_ai_review_token(str(user["id"]), image_hash, ai_review),
+                    },
+                }
+            ai_client_approved = ai_review["status"] in ("needs_review", "rejected") and ai_token_verified
+        watermark_comment = append_client_approval_note(comment, ai_review) if ai_client_approved else comment
+        if watermark_comment:
             with open(fpath, "wb") as f:
-                f.write(stamp_image(raw, comment, now))
+                f.write(stamp_image(raw, watermark_comment, now))
         else:
             Image.open(io.BytesIO(raw)).convert("RGB").save(fpath, format="JPEG", quality=88)
     else:
@@ -1167,6 +1470,10 @@ async def submit_additional(
             comment=comment,
             image_filename=fname,
             is_additional=True,
+            ai_review_status=ai_review.get("status") if ai_review else None,
+            ai_review_message=ai_review.get("message") if ai_review else None,
+            ai_document_type=ai_review.get("document_type") if ai_review else None,
+            ai_client_approved=ai_client_approved,
             submitted_at=now.isoformat(),
             client_business_name=user.get("business_name", ""),
             client_first_name=user.get("first_name", ""),
