@@ -86,7 +86,22 @@ export default function AdminSubmissions() {
                       {s.is_additional && (
                         <Badge className="bg-amber-100 text-amber-800 hover:bg-amber-100" data-testid={`additional-badge-${s.id}`}>Additional</Badge>
                       )}
+                      {s.ai_client_approved && (
+                        <Badge className="bg-orange-100 text-orange-800 hover:bg-orange-100" data-testid={`ai-client-approved-${s.id}`}>Client approved</Badge>
+                      )}
+                      {s.ai_review_status === "needs_review" && !s.ai_client_approved && (
+                        <Badge className="bg-amber-100 text-amber-800 hover:bg-amber-100" data-testid={`ai-needs-review-${s.id}`}>Needs review</Badge>
+                      )}
+                      {s.ai_review_status === "rejected" && !s.ai_client_approved && (
+                        <Badge className="bg-red-100 text-red-800 hover:bg-red-100" data-testid={`ai-rejected-${s.id}`}>Rejected</Badge>
+                      )}
+                      {s.ai_review_status === "approved" && (
+                        <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100" data-testid={`ai-approved-${s.id}`}>AI checked</Badge>
+                      )}
                     </div>
+                    {s.ai_review_message && (
+                      <div className="mt-1 text-xs text-stone-500 max-w-md">{s.ai_review_message}</div>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-stone-700">{s.date || "—"}</td>
                   <td className="px-4 py-3 text-stone-700">{s.amount || "—"}</td>
