@@ -7,18 +7,83 @@ on:
         description: "Git branch to sync to the VPS"
         required: true
         default: "main"
+      react_app_backend_url:
+        description: "Public backend origin compiled into the React app"
+        required: true
+        default: "http://45.8.225.73"
+      rebuild_backend:
+        description: "Rebuild and restart the API container after syncing code"
+        required: true
+        type: boolean
+        default: true
 
 concurrency:
   group: sync-vps-code
   cancel-in-progress: false
 
 jobs:
-  sync:
-    name: Pull latest code only
+  build-frontend:
+    name: Build frontend on GitHub
     runs-on: ubuntu-latest
 
     steps:
-      - name: Sync code over SSH
+      - name: Check out selected branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.deploy_branch }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile --reporter=append-only
+
+      - name: Build frontend
+        working-directory: frontend
+        env:
+          REACT_APP_BACKEND_URL: ${{ inputs.react_app_backend_url }}
+        run: pnpm run build
+
+      - name: Upload frontend build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build
+          path: frontend/build
+          if-no-files-found: error
+
+  deploy:
+    name: Sync code and deploy to VPS
+    runs-on: ubuntu-latest
+    needs: build-frontend
+
+    steps:
+      - name: Download frontend build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-build
+          path: frontend-build
+
+      - name: Copy frontend build to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          source: "frontend-build/*"
+          target: "/tmp/autoentry-client-app"
+          rm: true
+          strip_components: 1
+
+      - name: Sync code and restart services
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -26,7 +91,7 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           port: 22
           script_stop: true
-          command_timeout: 5m
+          command_timeout: 15m
           script: |
             set -e
             cd /opt/autoentry-client-app
@@ -38,6 +103,23 @@ jobs:
             git checkout "$DEPLOY_BRANCH"
             git reset --hard "origin/$DEPLOY_BRANCH"
 
+            echo "Installing prebuilt frontend files"
+            rm -rf frontend/build
+            mkdir -p frontend/build
+            cp -a /tmp/autoentry-client-app/. frontend/build/
+
             echo "VPS is now on:"
             git log --oneline -1
             git status --short
+
+            if [ "${{ inputs.rebuild_backend }}" = "true" ]; then
+              echo "Rebuilding API container"
+              docker compose build api
+              docker compose up -d api
+            fi
+
+            echo "Restarting lightweight web containers"
+            docker compose up -d frontend nginx
+
+            echo "Health check"
+            curl -i http://localhost:8000/api/health
