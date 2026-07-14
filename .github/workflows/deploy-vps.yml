@@ -15,7 +15,7 @@ on:
         description: "Rebuild and restart the API container after syncing code"
         required: true
         type: boolean
-        default: true
+        default: false
 
 concurrency:
   group: sync-vps-code
@@ -64,17 +64,52 @@ jobs:
           path: frontend-build.tar.gz
           if-no-files-found: error
 
+  build-api:
+    name: Build API image on GitHub
+    runs-on: ubuntu-latest
+    if: ${{ inputs.rebuild_backend }}
+
+    steps:
+      - name: Check out selected branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.deploy_branch }}
+
+      - name: Build API Docker image
+        run: docker build -t autoentry-client-app-api:latest ./backend
+
+      - name: Save API Docker image
+        run: |
+          docker save autoentry-client-app-api:latest | gzip -1 > api-image.tar.gz
+          ls -lh api-image.tar.gz
+
+      - name: Upload API image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-image
+          path: api-image.tar.gz
+          if-no-files-found: error
+
   deploy:
     name: Sync code and deploy to VPS
     runs-on: ubuntu-latest
     needs:
       - build-frontend
+      - build-api
+    if: ${{ always() && needs.build-frontend.result == 'success' && (needs.build-api.result == 'success' || needs.build-api.result == 'skipped') }}
 
     steps:
       - name: Download frontend build artifact
         uses: actions/download-artifact@v4
         with:
           name: frontend-build
+          path: deploy-files
+
+      - name: Download API image artifact
+        if: ${{ inputs.rebuild_backend }}
+        uses: actions/download-artifact@v4
+        with:
+          name: api-image
           path: deploy-files
 
       - name: Show deploy bundle sizes
@@ -122,16 +157,17 @@ jobs:
             git status --short
 
             if [ "${{ inputs.rebuild_backend }}" = "true" ]; then
-              echo "Rebuilding API image on VPS from synced Git code"
-              echo "Disk before API rebuild:"
+              echo "Loading prebuilt API image"
+              ls -lh /tmp/autoentry-client-app-deploy/api-image.tar.gz
+              echo "Disk before Docker load:"
               df -h
-              echo "Docker storage before API rebuild:"
+              echo "Docker storage before Docker load:"
               docker system df || true
-              build_started="$(date +%s)"
-              timeout 600 docker compose build api
-              build_finished="$(date +%s)"
-              echo "API image rebuilt in $((build_finished - build_started)) seconds"
-              docker compose up -d api
+              load_started="$(date +%s)"
+              timeout 600 sh -c 'gzip -dc /tmp/autoentry-client-app-deploy/api-image.tar.gz | docker load'
+              load_finished="$(date +%s)"
+              echo "Docker image loaded in $((load_finished - load_started)) seconds"
+              docker compose up -d --no-build api
             fi
 
             echo "Restarting lightweight web containers"
