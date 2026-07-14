@@ -73,7 +73,9 @@ jobs:
         run: docker build -t autoentry-client-app-api:latest ./backend
 
       - name: Save API Docker image
-        run: docker save autoentry-client-app-api:latest | gzip > api-image.tar.gz
+        run: |
+          docker save autoentry-client-app-api:latest | gzip > api-image.tar.gz
+          ls -lh api-image.tar.gz
 
       - name: Upload API image artifact
         uses: actions/upload-artifact@v4
@@ -157,7 +159,11 @@ jobs:
 
             if [ "${{ inputs.rebuild_backend }}" = "true" ]; then
               echo "Loading prebuilt API image"
+              ls -lh /tmp/autoentry-client-app-api/api-image.tar.gz
+              load_started="$(date +%s)"
               gzip -dc /tmp/autoentry-client-app-api/api-image.tar.gz | docker load
+              load_finished="$(date +%s)"
+              echo "Docker image loaded in $((load_finished - load_started)) seconds"
               docker compose up -d --no-build api
             fi
 
