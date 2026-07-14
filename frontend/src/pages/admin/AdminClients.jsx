@@ -18,7 +18,7 @@ export default function AdminClients() {
 
   const [form, setForm] = useState({
     first_name: "", last_name: "", business_name: "",
-    email: "", autoentry_email: "", password: "", status: "active", is_vat_client: false, ai_analysis_enabled: false,
+    email: "", autoentry_email: "", sales_autoentry_email: "", password: "", status: "active", is_vat_client: false, ai_analysis_enabled: false,
   });
 
   const load = useCallback(async () => {
@@ -35,10 +35,13 @@ export default function AdminClients() {
     e.preventDefault();
     setBusy(true);
     try {
-      await api.post("/admin/clients", form);
+      await api.post("/admin/clients", {
+        ...form,
+        sales_autoentry_email: form.sales_autoentry_email || null,
+      });
       toast.success("Client created");
       setOpen(false);
-      setForm({ first_name: "", last_name: "", business_name: "", email: "", autoentry_email: "", password: "", status: "active", is_vat_client: false, ai_analysis_enabled: false });
+      setForm({ first_name: "", last_name: "", business_name: "", email: "", autoentry_email: "", sales_autoentry_email: "", password: "", status: "active", is_vat_client: false, ai_analysis_enabled: false });
       load();
     } catch (err) {
       toast.error(formatApiError(err));
@@ -78,7 +81,8 @@ export default function AdminClients() {
               </div>
               <Field label="Business name" id="business_name" value={form.business_name} onChange={(v)=>setForm({...form, business_name: v})} testid="client-business-name" />
               <Field label="Login email" id="email" type="email" value={form.email} onChange={(v)=>setForm({...form, email: v})} testid="client-email" />
-              <Field label="AutoEntry email (where submissions go)" id="autoentry_email" type="email" value={form.autoentry_email} onChange={(v)=>setForm({...form, autoentry_email: v})} testid="client-autoentry-email" />
+              <Field label="Purchase AutoEntry email" id="autoentry_email" type="email" value={form.autoentry_email} onChange={(v)=>setForm({...form, autoentry_email: v})} testid="client-autoentry-email" />
+              <Field label="Sales AutoEntry email (optional)" id="sales_autoentry_email" type="email" value={form.sales_autoentry_email} onChange={(v)=>setForm({...form, sales_autoentry_email: v})} required={false} testid="client-sales-autoentry-email" />
               <Field label="Initial password" id="password" type="password" value={form.password} onChange={(v)=>setForm({...form, password: v})} testid="client-password" />
               <label className="flex items-start gap-3 rounded-xl border border-stone-200 bg-stone-50/60 p-3 text-sm">
                 <input
@@ -173,11 +177,11 @@ export default function AdminClients() {
   );
 }
 
-function Field({ label, id, value, onChange, type = "text", testid }) {
+function Field({ label, id, value, onChange, type = "text", required = true, testid }) {
   return (
     <div>
       <Label htmlFor={id} className="text-sm font-semibold text-stone-700">{label}</Label>
-      <Input id={id} type={type} required value={value} onChange={(e) => onChange(e.target.value)} className="mt-1.5 h-11" data-testid={testid} />
+      <Input id={id} type={type} required={required} value={value} onChange={(e) => onChange(e.target.value)} className="mt-1.5 h-11" data-testid={testid} />
     </div>
   );
 }

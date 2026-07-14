@@ -3,14 +3,21 @@ import { useNavigate, useParams } from "react-router-dom";
 import { api, formatApiError } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, Search, ChevronRight, Plus } from "lucide-react";
+import { ArrowLeft, Search, ChevronRight, Plus, ArrowUpDown } from "lucide-react";
 import { toast } from "sonner";
+
+function parseListDate(value) {
+  const [day, month, year] = String(value || "").split("/").map((part) => Number(part));
+  if (!day || !month || !year) return Number.MAX_SAFE_INTEGER;
+  return new Date(year, month - 1, day).getTime();
+}
 
 export default function ClientList() {
   const { type } = useParams();
   const nav = useNavigate();
   const [items, setItems] = useState([]);
   const [q, setQ] = useState("");
+  const [sortDirection, setSortDirection] = useState("asc");
 
   useEffect(() => {
     api.get("/client/items", { params: { type } })
@@ -24,11 +31,16 @@ export default function ClientList() {
 
   const filtered = useMemo(() => {
     const t = q.trim().toLowerCase();
-    if (!t) return items;
-    return items.filter((it) =>
+    const matches = !t ? items : items.filter((it) =>
       (it.description || "").toLowerCase().includes(t)
     );
-  }, [items, q]);
+    return [...matches].sort((a, b) => {
+      const direction = sortDirection === "asc" ? 1 : -1;
+      const dateDiff = (parseListDate(a.date) - parseListDate(b.date)) * direction;
+      if (dateDiff) return dateDiff;
+      return String(a.description || "").localeCompare(String(b.description || ""));
+    });
+  }, [items, q, sortDirection]);
 
   const title = type === "purchase" ? "Purchase Invoices" : "Sales Invoices";
 
@@ -43,9 +55,20 @@ export default function ClientList() {
         <p className="text-stone-600 mt-1">{items.length} outstanding {items.length === 1 ? "item" : "items"}</p>
       </div>
 
-      <div className="relative">
-        <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" />
-        <Input placeholder="Search description…" value={q} onChange={(e) => setQ(e.target.value)} className="h-12 pl-10" data-testid="items-search" />
+      <div className="flex flex-col sm:flex-row gap-3">
+        <div className="relative flex-1">
+          <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" />
+          <Input placeholder="Search description..." value={q} onChange={(e) => setQ(e.target.value)} className="h-12 pl-10" data-testid="items-search" />
+        </div>
+        <button
+          type="button"
+          onClick={() => setSortDirection((current) => current === "asc" ? "desc" : "asc")}
+          className="h-12 rounded-xl border border-stone-200 bg-white px-4 inline-flex items-center justify-center gap-2 text-sm font-semibold text-stone-700 hover:bg-stone-50"
+          data-testid="sort-date-btn"
+        >
+          <ArrowUpDown className="h-4 w-4" />
+          {sortDirection === "asc" ? "Oldest first" : "Newest first"}
+        </button>
       </div>
 
       <button
@@ -59,7 +82,7 @@ export default function ClientList() {
       {filtered.length === 0 ? (
         <div className="bg-white border border-dashed border-stone-300 rounded-2xl p-10 text-center" data-testid="no-items">
           <p className="font-display text-lg text-stone-700">{items.length === 0 ? "All clear!" : "No matches"}</p>
-          <p className="text-stone-500 text-sm mt-1">{items.length === 0 ? "You've submitted everything in this list. 🎉" : "Try a different search term."}</p>
+          <p className="text-stone-500 text-sm mt-1">{items.length === 0 ? "You've submitted everything in this list." : "Try a different search term."}</p>
         </div>
       ) : (
         <ul className="space-y-3">
@@ -78,7 +101,7 @@ export default function ClientList() {
                     <div className="font-display font-semibold text-stone-900 truncate">{it.description}</div>
                     <div className="text-xs text-stone-500 mt-1">
                       {it.date && <span>{it.date}</span>}
-                      {it.amount && <span> · {it.amount}</span>}
+                      {it.amount && <span> - {it.amount}</span>}
                     </div>
                   </div>
                   <ChevronRight className="h-5 w-5 text-stone-400" />
