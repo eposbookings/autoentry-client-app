@@ -38,7 +38,9 @@ export default function AdminClientDetail() {
       await api.put(`/admin/clients/${id}`, {
         first_name: client.first_name, last_name: client.last_name,
         business_name: client.business_name, email: client.email,
-        autoentry_email: client.autoentry_email, status: client.status,
+        autoentry_email: client.autoentry_email,
+        sales_autoentry_email: client.sales_autoentry_email || null,
+        status: client.status,
         is_vat_client: !!client.is_vat_client,
         ai_analysis_enabled: !!client.ai_analysis_enabled,
       });
@@ -140,7 +142,8 @@ export default function AdminClientDetail() {
           <Field label="Last name" value={client.last_name} onChange={(v)=>setClient({...client, last_name: v})} testid="edit-last-name" />
           <Field label="Business name" value={client.business_name} onChange={(v)=>setClient({...client, business_name: v})} testid="edit-business-name" />
           <Field label="Login email" type="email" value={client.email} onChange={(v)=>setClient({...client, email: v})} testid="edit-email" />
-          <Field label="AutoEntry email" type="email" value={client.autoentry_email} onChange={(v)=>setClient({...client, autoentry_email: v})} testid="edit-autoentry-email" />
+          <Field label="Purchase AutoEntry email" type="email" value={client.autoentry_email} onChange={(v)=>setClient({...client, autoentry_email: v})} testid="edit-autoentry-email" />
+          <Field label="Sales AutoEntry email (optional)" type="email" value={client.sales_autoentry_email} onChange={(v)=>setClient({...client, sales_autoentry_email: v})} testid="edit-sales-autoentry-email" />
           <label className="flex items-start gap-3 rounded-xl border border-stone-200 bg-stone-50/60 p-3 text-sm sm:col-span-2">
             <input
               type="checkbox"

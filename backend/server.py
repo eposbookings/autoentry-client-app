@@ -124,6 +124,7 @@ users = Table(
     Column("last_name", String(255)),
     Column("business_name", String(255), index=True),
     Column("autoentry_email", String(255)),
+    Column("sales_autoentry_email", String(255)),
     Column("is_vat_client", Boolean, default=False),
     Column("ai_analysis_enabled", Boolean, default=False),
     Column("status", String(32), nullable=False, default="active"),
@@ -305,6 +306,7 @@ class ClientCreate(BaseModel):
     business_name: str
     email: EmailStr
     autoentry_email: EmailStr
+    sales_autoentry_email: Optional[EmailStr] = None
     password: str
     status: str = "active"
     is_vat_client: bool = False
@@ -317,6 +319,7 @@ class ClientUpdate(BaseModel):
     business_name: Optional[str] = None
     email: Optional[EmailStr] = None
     autoentry_email: Optional[EmailStr] = None
+    sales_autoentry_email: Optional[EmailStr] = None
     status: Optional[str] = None
     is_vat_client: Optional[bool] = None
     ai_analysis_enabled: Optional[bool] = None
@@ -527,6 +530,7 @@ def serialize_user(u: dict) -> dict:
         "last_name": u.get("last_name"),
         "business_name": u.get("business_name"),
         "autoentry_email": u.get("autoentry_email"),
+        "sales_autoentry_email": u.get("sales_autoentry_email"),
         "is_vat_client": bool(u.get("is_vat_client")),
         "ai_analysis_enabled": bool(u.get("ai_analysis_enabled")),
         "status": u.get("status", "active"),
@@ -537,6 +541,21 @@ def serialize_item(d: dict) -> dict:
     d = dict(d)
     d["_id"] = str(d["id"])
     return d
+
+
+def parse_item_date(value: Optional[str]) -> datetime:
+    try:
+        return datetime.strptime((value or "").strip(), "%d/%m/%Y")
+    except (TypeError, ValueError):
+        return datetime.max
+
+
+def sort_items_by_date(docs: list[dict], newest_first: bool = False) -> list[dict]:
+    return sorted(
+        docs,
+        key=lambda d: (parse_item_date(d.get("date")), (d.get("description") or "").lower()),
+        reverse=newest_first,
+    )
 
 
 def serialize_submission(d: dict) -> dict:
@@ -628,6 +647,7 @@ async def create_client(
         "last_name": payload.last_name.strip(),
         "business_name": payload.business_name.strip(),
         "autoentry_email": payload.autoentry_email.lower().strip(),
+        "sales_autoentry_email": payload.sales_autoentry_email.lower().strip() if payload.sales_autoentry_email else None,
         "is_vat_client": bool(payload.is_vat_client),
         "ai_analysis_enabled": bool(payload.ai_analysis_enabled),
         "status": payload.status or "active",
@@ -657,7 +677,11 @@ async def update_client(
     user: dict = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ):
-    values = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    values = {
+        k: v
+        for k, v in payload.model_dump(exclude_unset=True).items()
+        if v is not None or k == "sales_autoentry_email"
+    }
     if "email" in values:
         values["email"] = values["email"].lower().strip()
         other = await one(
@@ -668,6 +692,8 @@ async def update_client(
             raise HTTPException(status_code=400, detail="Email already in use")
     if "autoentry_email" in values:
         values["autoentry_email"] = values["autoentry_email"].lower().strip()
+    if "sales_autoentry_email" in values:
+        values["sales_autoentry_email"] = values["sales_autoentry_email"].lower().strip() if values["sales_autoentry_email"] else None
     if values:
         result = await session.execute(
             update(users).where(users.c.id == client_id, users.c.role == "client").values(**values)
@@ -733,9 +759,8 @@ async def admin_client_items(
         session,
         select(outstanding_items)
         .where(outstanding_items.c.client_id == client_id, outstanding_items.c.type == type)
-        .order_by(outstanding_items.c.date.desc()),
     )
-    return [serialize_item(d) for d in docs]
+    return [serialize_item(d) for d in sort_items_by_date(docs)]
 
 
 @api.post("/admin/clients/{client_id}/upload-csv")
@@ -987,9 +1012,8 @@ async def client_items(type: str, user: dict = Depends(require_client), session:
         session,
         select(outstanding_items)
         .where(outstanding_items.c.client_id == user["id"], outstanding_items.c.type == type)
-        .order_by(outstanding_items.c.date.desc()),
     )
-    return [serialize_item(d) for d in docs]
+    return [serialize_item(d) for d in sort_items_by_date(docs)]
 
 
 @api.get("/client/items/{item_id}")
@@ -1452,7 +1476,12 @@ async def send_submission_email(client_user: dict, item: dict, comment: str, ima
     msg = EmailMessage()
     msg["Subject"] = "Additional Document Submission" if is_additional else "Outstanding Document Submission"
     msg["From"] = f'{smtp["sender_name"]} <{smtp["sender_email"]}>'
-    msg["To"] = client_user["autoentry_email"]
+    recipient = client_user.get("autoentry_email")
+    if item.get("type") == "sales" and client_user.get("sales_autoentry_email"):
+        recipient = client_user.get("sales_autoentry_email")
+    if not recipient:
+        raise HTTPException(status_code=400, detail="Client AutoEntry email is not configured.")
+    msg["To"] = recipient
 
     body = (
         f"Business Name: {client_user.get('business_name','')}\n"
