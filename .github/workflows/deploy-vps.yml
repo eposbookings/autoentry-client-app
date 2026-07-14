@@ -52,11 +52,16 @@ jobs:
           REACT_APP_BACKEND_URL: ${{ inputs.react_app_backend_url }}
         run: pnpm run build
 
+      - name: Package frontend build
+        run: |
+          tar -C frontend/build -czf frontend-build.tar.gz .
+          ls -lh frontend-build.tar.gz
+
       - name: Upload frontend build artifact
         uses: actions/upload-artifact@v4
         with:
           name: frontend-build
-          path: frontend/build
+          path: frontend-build.tar.gz
           if-no-files-found: error
 
   build-api:
@@ -74,7 +79,7 @@ jobs:
 
       - name: Save API Docker image
         run: |
-          docker save autoentry-client-app-api:latest | gzip > api-image.tar.gz
+          docker save autoentry-client-app-api:latest | gzip -1 > api-image.tar.gz
           ls -lh api-image.tar.gz
 
       - name: Upload API image artifact
@@ -96,35 +101,26 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: frontend-build
-          path: frontend-build
+          path: deploy-files
 
       - name: Download API image artifact
         uses: actions/download-artifact@v4
         with:
           name: api-image
-          path: api-image
+          path: deploy-files
 
-      - name: Copy frontend build to VPS
+      - name: Show deploy bundle sizes
+        run: ls -lh deploy-files
+
+      - name: Copy deploy bundle to VPS
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: 22
-          source: "frontend-build/*"
-          target: "/tmp/autoentry-client-app"
-          rm: true
-          strip_components: 1
-
-      - name: Copy API image to VPS
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: 22
-          source: "api-image/api-image.tar.gz"
-          target: "/tmp/autoentry-client-app-api"
+          source: "deploy-files/*"
+          target: "/tmp/autoentry-client-app-deploy"
           rm: true
           strip_components: 1
 
@@ -151,7 +147,7 @@ jobs:
             echo "Installing prebuilt frontend files"
             rm -rf frontend/build
             mkdir -p frontend/build
-            cp -a /tmp/autoentry-client-app/. frontend/build/
+            tar -xzf /tmp/autoentry-client-app-deploy/frontend-build.tar.gz -C frontend/build
 
             echo "VPS is now on:"
             git log --oneline -1
@@ -159,9 +155,9 @@ jobs:
 
             if [ "${{ inputs.rebuild_backend }}" = "true" ]; then
               echo "Loading prebuilt API image"
-              ls -lh /tmp/autoentry-client-app-api/api-image.tar.gz
+              ls -lh /tmp/autoentry-client-app-deploy/api-image.tar.gz
               load_started="$(date +%s)"
-              gzip -dc /tmp/autoentry-client-app-api/api-image.tar.gz | docker load
+              gzip -dc /tmp/autoentry-client-app-deploy/api-image.tar.gz | docker load
               load_finished="$(date +%s)"
               echo "Docker image loaded in $((load_finished - load_started)) seconds"
               docker compose up -d --no-build api
