@@ -156,8 +156,15 @@ jobs:
             if [ "${{ inputs.rebuild_backend }}" = "true" ]; then
               echo "Loading prebuilt API image"
               ls -lh /tmp/autoentry-client-app-deploy/api-image.tar.gz
+              echo "Disk before Docker load:"
+              df -h
+              echo "Docker storage before Docker load:"
+              docker system df || true
+              echo "Pruning unused Docker build/image cache"
+              docker builder prune -af || true
+              docker image prune -af || true
               load_started="$(date +%s)"
-              gzip -dc /tmp/autoentry-client-app-deploy/api-image.tar.gz | docker load
+              timeout 300 sh -c 'gzip -dc /tmp/autoentry-client-app-deploy/api-image.tar.gz | docker load'
               load_finished="$(date +%s)"
               echo "Docker image loaded in $((load_finished - load_started)) seconds"
               docker compose up -d --no-build api
