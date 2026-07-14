@@ -15,7 +15,7 @@ on:
         description: "Rebuild and restart the API container after syncing code"
         required: true
         type: boolean
-        default: true
+        default: false
 
 concurrency:
   group: sync-vps-code
@@ -67,6 +67,7 @@ jobs:
   build-api:
     name: Build API image on GitHub
     runs-on: ubuntu-latest
+    if: ${{ inputs.rebuild_backend }}
 
     steps:
       - name: Check out selected branch
@@ -95,6 +96,7 @@ jobs:
     needs:
       - build-frontend
       - build-api
+    if: ${{ always() && needs.build-frontend.result == 'success' && (needs.build-api.result == 'success' || needs.build-api.result == 'skipped') }}
 
     steps:
       - name: Download frontend build artifact
@@ -104,6 +106,7 @@ jobs:
           path: deploy-files
 
       - name: Download API image artifact
+        if: ${{ inputs.rebuild_backend }}
         uses: actions/download-artifact@v4
         with:
           name: api-image
@@ -161,7 +164,7 @@ jobs:
               echo "Docker storage before Docker load:"
               docker system df || true
               load_started="$(date +%s)"
-              gzip -dc /tmp/autoentry-client-app-deploy/api-image.tar.gz | docker load
+              timeout 600 sh -c 'gzip -dc /tmp/autoentry-client-app-deploy/api-image.tar.gz | docker load'
               load_finished="$(date +%s)"
               echo "Docker image loaded in $((load_finished - load_started)) seconds"
               docker compose up -d --no-build api
