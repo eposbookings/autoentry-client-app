@@ -442,6 +442,7 @@ def create_ai_review_token(user_id: str, image_hash: str, review: dict) -> str:
         "status": review.get("status"),
         "message": review.get("message", ""),
         "document_type": review.get("document_type", ""),
+        "payment_method": review.get("payment_method", "not_clear"),
         "exp": datetime.now(timezone.utc) + timedelta(minutes=20),
     }
     return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
@@ -463,6 +464,7 @@ def verify_ai_review_token(token: str, user_id: str, image_hash: str) -> Optiona
         "status": payload.get("status"),
         "message": payload.get("message", ""),
         "document_type": payload.get("document_type", ""),
+        "payment_method": payload.get("payment_method", "not_clear"),
         "confidence": "medium",
     }
 
@@ -1346,10 +1348,15 @@ def normalize_ai_review(data: dict) -> dict:
     message = str(data.get("message") or data.get("short_message") or "").strip()
     if not message:
         message = "Please check this document before submitting."
+    payment_method = str(data.get("payment_method") or "not_clear").lower().strip()
+    payment_method = payment_method.replace(" ", "_").replace("-", "_")
+    if payment_method not in ("card", "cash", "payment_terms", "not_clear"):
+        payment_method = "not_clear"
     return {
         "status": status,
         "message": message[:240],
         "document_type": str(data.get("document_type") or "unknown").strip()[:64],
+        "payment_method": payment_method,
         "confidence": str(data.get("confidence") or "medium").lower().strip()[:24],
     }
 
@@ -1378,6 +1385,8 @@ async def review_document_with_openai(
     )
     prompt = (
         "Check whether the uploaded document is a valid invoice or receipt for accounting submission. "
+        "If it is a valid invoice or receipt, identify whether it appears paid by card, paid by cash, "
+        "payable on payment terms/bank transfer, or not clear. "
         "Reject only documents that are clearly not invoices/receipts, such as statements, orders, "
         "remittance advice, quotes, delivery notes, or unrelated images. Use needs_review for unclear "
         "or partially valid cases. Keep the message short and client-friendly. "
@@ -1391,9 +1400,10 @@ async def review_document_with_openai(
             "status": {"type": "string", "enum": ["approved", "needs_review", "rejected"]},
             "document_type": {"type": "string"},
             "message": {"type": "string"},
+            "payment_method": {"type": "string", "enum": ["card", "cash", "payment_terms", "not_clear"]},
             "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
         },
-        "required": ["status", "document_type", "message", "confidence"],
+        "required": ["status", "document_type", "message", "payment_method", "confidence"],
     }
     document_part = (
         {"type": "input_file", "filename": "submitted-document.pdf", "file_data": data_url}
@@ -1459,12 +1469,38 @@ async def review_document_with_openai(
         return normalize_ai_review(json.loads(output_text or "{}"))
     except json.JSONDecodeError:
         logger.warning("OpenAI invoice check returned non-JSON output: %s", output_text)
-        return {"status": "needs_review", "message": "Please check this document before submitting.", "document_type": "unknown", "confidence": "low"}
+        return {"status": "needs_review", "message": "Please check this document before submitting.", "document_type": "unknown", "payment_method": "not_clear", "confidence": "low"}
 
 
-def append_client_approval_note(comment: str, review: dict) -> str:
-    note = f"Client approved after document check warning: {review.get('message') or 'Needs review'}"
-    return f"{comment.strip()}\n{note}" if comment and comment.strip() else note
+def is_invoice_or_receipt_review(review: Optional[dict]) -> bool:
+    if not review or review.get("status") == "rejected":
+        return False
+    document_type = str(review.get("document_type") or "").lower()
+    return "invoice" in document_type or "receipt" in document_type
+
+
+def payment_method_label(review: Optional[dict]) -> Optional[str]:
+    if not is_invoice_or_receipt_review(review):
+        return None
+    labels = {
+        "card": "Card",
+        "cash": "Cash",
+        "payment_terms": "Payment terms",
+        "not_clear": "Payment method not clear",
+    }
+    return labels.get(str(review.get("payment_method") or "not_clear"), "Payment method not clear")
+
+
+def build_submission_note(comment: str, review: Optional[dict], client_approved_ai_warning: bool) -> str:
+    lines = []
+    if comment and comment.strip():
+        lines.append(comment.strip())
+    payment_label = payment_method_label(review)
+    if payment_label:
+        lines.append(f"Payment method: {payment_label}")
+    if client_approved_ai_warning and review:
+        lines.append(f"Client approved after document check warning: {review.get('message') or 'Needs review'}")
+    return "\n".join(lines)
 
 
 async def send_submission_email(client_user: dict, item: dict, comment: str, image_path: Optional[str]):
@@ -1599,7 +1635,7 @@ async def submit_item(
                     },
                 }
             ai_client_approved = ai_review["status"] in ("needs_review", "rejected") and ai_token_verified
-        watermark_comment = append_client_approval_note(comment, ai_review) if ai_client_approved else comment
+        watermark_comment = build_submission_note(comment, ai_review, ai_client_approved)
         fname_ext = ".pdf" if watermark_comment else (".jpg" if image_upload else upload_extension(file, ".pdf"))
         fname = f"{user['id']}_{item_id}_{int(now.timestamp())}{fname_ext}"
         fpath = UPLOAD_DIR / fname
@@ -1715,7 +1751,7 @@ async def submit_additional(
                     },
                 }
             ai_client_approved = ai_review["status"] in ("needs_review", "rejected") and ai_token_verified
-        watermark_comment = append_client_approval_note(comment, ai_review) if ai_client_approved else comment
+        watermark_comment = build_submission_note(comment, ai_review, ai_client_approved)
         fname_ext = ".pdf" if watermark_comment else (".jpg" if image_upload else upload_extension(file, ".pdf"))
         fname = f"{user['id']}_additional_{int(now.timestamp())}{fname_ext}"
         fpath = UPLOAD_DIR / fname
