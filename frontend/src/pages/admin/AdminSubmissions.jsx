@@ -228,12 +228,14 @@ export default function AdminSubmissions() {
       toast.error("Enter a vendor name first");
       return;
     }
+    const supplierCode = window.prompt("Optional supplier account/code for QuickBooks", String(draft.vendor_account || "").trim());
+    if (supplierCode === null) return;
     setBusy(true);
     try {
       await api.post(`/admin/integrations/clients/${clientId}/records`, {
         record_type: "supplier",
         name: supplierName,
-        code: String(draft.vendor_account || "").trim(),
+        code: String(supplierCode || "").trim(),
         external_id: "",
         email: null,
         description: "Created from invoice review",
@@ -241,7 +243,8 @@ export default function AdminSubmissions() {
       });
       const { data } = await api.get(`/admin/integrations/clients/${clientId}`);
       setIntegrationRecords(data?.records || {});
-      toast.success("Supplier added to this client profile");
+      setDraft((current) => ({ ...current, vendor_account: String(supplierCode || "").trim() }));
+      toast.success("Supplier created and added to this client profile");
     } catch (e) {
       toast.error(formatApiError(e));
     } finally {
@@ -680,7 +683,6 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
               <label className="flex items-center gap-2"><input type="radio" checked={draft.document_type === "credit_note"} onChange={() => set("document_type", "credit_note")} /> Credit Note</label>
             </div>
           </div>
-          <DatalistField id="vendor_account" label="Vendor A/C" value={draft.vendor_account} options={options.supplierAccountOptions} onChange={(v) => set("vendor_account", v)} activeField={activeField} setActiveField={setActiveField} />
           <TextField id="bill_number" label="Bill #" value={draft.bill_number} onChange={(v) => set("bill_number", v)} activeField={activeField} setActiveField={setActiveField} />
           <div className="md:col-span-2 -mt-2">
             <Button
