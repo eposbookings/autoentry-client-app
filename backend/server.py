@@ -14,21 +14,24 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import smtplib
 import socket
 import textwrap
 import uuid
+import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from typing import List, Optional
+from urllib.parse import urlencode
 
 import bcrypt
 import httpx
 import jwt
 from cryptography.fernet import Fernet
 from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import (
@@ -159,7 +162,11 @@ submissions = Table(
     Column("ai_review_status", String(32)),
     Column("ai_review_message", Text),
     Column("ai_document_type", String(64)),
+    Column("ai_extracted_fields", Text),
+    Column("coding_fields", Text),
     Column("ai_client_approved", Boolean, default=False),
+    Column("review_status", String(32), default="inbox", index=True),
+    Column("reviewed_at", String(64)),
     Column("submitted_at", String(64), index=True),
     Column("client_business_name", String(255)),
     Column("client_first_name", String(255)),
@@ -179,6 +186,55 @@ settings = Table(
     Column("use_tls", Boolean, default=True),
     Column("openai_api_key_enc", Text),
     Column("openai_model", String(128)),
+    Column("document_processing_enabled", Boolean, default=True),
+    Column("quickbooks_client_id", String(255)),
+    Column("quickbooks_client_secret_enc", Text),
+    Column("quickbooks_environment", String(32)),
+    Column("quickbooks_redirect_uri", String(512)),
+)
+
+client_integrations = Table(
+    "client_integrations",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, unique=True, index=True),
+    Column("provider", String(32), default="quickbooks", index=True),
+    Column("status", String(32), default="not_connected", index=True),
+    Column("company_id", String(255)),
+    Column("company_name", String(255)),
+    Column("sandbox", Boolean, default=False),
+    Column("auto_create_suppliers", Boolean, default=True),
+    Column("auto_create_customers", Boolean, default=True),
+    Column("default_purchase_account", String(255)),
+    Column("default_sales_account", String(255)),
+    Column("default_vat_code", String(255)),
+    Column("notes", Text),
+    Column("access_token_enc", Text),
+    Column("refresh_token_enc", Text),
+    Column("token_expires_at", String(64)),
+    Column("refresh_expires_at", String(64)),
+    Column("scope", Text),
+    Column("last_sync_at", String(64)),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+integration_records = Table(
+    "integration_records",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("provider", String(32), default="quickbooks", index=True),
+    Column("record_type", String(32), nullable=False, index=True),
+    Column("external_id", String(255)),
+    Column("code", String(255)),
+    Column("name", String(255), nullable=False, index=True),
+    Column("email", String(255)),
+    Column("description", Text),
+    Column("active", Boolean, default=True),
+    Column("raw_json", Text),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -210,7 +266,7 @@ async def ensure_schema_columns(conn):
     migration framework yet.
     """
     dialect_name = conn.dialect.name
-    for table in (users, outstanding_items, submissions, settings):
+    for table in (users, outstanding_items, submissions, settings, client_integrations, integration_records):
         existing_column_info = await conn.run_sync(
             lambda sync_conn, table_name=table.name: {
                 col["name"]: col for col in inspect(sync_conn).get_columns(table_name)
@@ -223,6 +279,8 @@ async def ensure_schema_columns(conn):
             column_def = f"{quote_ident(column.name, dialect_name)} {column_sql_type(column)}"
             if column.name == "status":
                 column_def += " DEFAULT 'active'"
+            elif column.name == "review_status":
+                column_def += " DEFAULT 'inbox'"
             await conn.execute(
                 text(
                     f"ALTER TABLE {quote_ident(table.name, dialect_name)} "
@@ -345,6 +403,55 @@ class OpenAISettingsIn(BaseModel):
     model: str = "gpt-5.6-luna"
 
 
+class FeatureSettingsIn(BaseModel):
+    document_processing_enabled: bool = True
+
+
+class SubmissionReviewStatusIn(BaseModel):
+    review_status: str
+    coding_fields: Optional[dict] = None
+
+
+class SubmissionDownloadIn(BaseModel):
+    ids: List[str]
+
+
+class SubmissionLineSuggestionIn(BaseModel):
+    coding_fields: dict
+    pattern_line: dict
+
+
+class ClientIntegrationSettingsIn(BaseModel):
+    provider: str = "quickbooks"
+    status: str = "not_connected"
+    company_id: Optional[str] = None
+    company_name: Optional[str] = None
+    sandbox: bool = False
+    auto_create_suppliers: bool = True
+    auto_create_customers: bool = True
+    default_purchase_account: Optional[str] = None
+    default_sales_account: Optional[str] = None
+    default_vat_code: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class QuickBooksAppSettingsIn(BaseModel):
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None
+    environment: str = "sandbox"
+    redirect_uri: Optional[str] = None
+
+
+class IntegrationRecordIn(BaseModel):
+    record_type: str
+    external_id: Optional[str] = None
+    code: Optional[str] = None
+    name: str
+    email: Optional[EmailStr] = None
+    description: Optional[str] = None
+    active: bool = True
+
+
 # ---------- Helpers ----------
 def new_id() -> str:
     return str(uuid.uuid4())
@@ -443,6 +550,7 @@ def create_ai_review_token(user_id: str, image_hash: str, review: dict) -> str:
         "message": review.get("message", ""),
         "document_type": review.get("document_type", ""),
         "payment_method": review.get("payment_method", "not_clear"),
+        "coding_fields": review.get("coding_fields") or {},
         "exp": datetime.now(timezone.utc) + timedelta(minutes=20),
     }
     return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
@@ -465,6 +573,7 @@ def verify_ai_review_token(token: str, user_id: str, image_hash: str) -> Optiona
         "message": payload.get("message", ""),
         "document_type": payload.get("document_type", ""),
         "payment_method": payload.get("payment_method", "not_clear"),
+        "coding_fields": payload.get("coding_fields") or {},
         "confidence": "medium",
     }
 
@@ -563,6 +672,9 @@ def sort_items_by_date(docs: list[dict], newest_first: bool = False) -> list[dic
 def serialize_submission(d: dict) -> dict:
     d = dict(d)
     d["_id"] = str(d["id"])
+    d["review_status"] = d.get("review_status") or "inbox"
+    d["ai_extracted_fields"] = parse_json_object(d.get("ai_extracted_fields")) or {}
+    d["coding_fields"] = parse_json_object(d.get("coding_fields")) or {}
     return d
 
 
@@ -743,6 +855,615 @@ async def reset_client_password(
     if result.rowcount == 0:
         await session.rollback()
         raise HTTPException(status_code=404, detail="Client not found")
+    await session.commit()
+    return {"ok": True}
+
+
+# ---------- Admin: Client Integrations ----------
+VALID_INTEGRATION_PROVIDERS = {"quickbooks", "sage", "xero"}
+VALID_INTEGRATION_STATUSES = {"not_connected", "ready", "connected", "sync_error"}
+VALID_INTEGRATION_RECORD_TYPES = {"account", "supplier", "customer"}
+QUICKBOOKS_SCOPE = "com.intuit.quickbooks.accounting"
+QUICKBOOKS_AUTH_URL = "https://appcenter.intuit.com/connect/oauth2"
+QUICKBOOKS_TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
+
+
+def clean_provider(value: str) -> str:
+    provider = (value or "quickbooks").strip().lower()
+    if provider not in VALID_INTEGRATION_PROVIDERS:
+        raise HTTPException(status_code=400, detail="Invalid integration provider")
+    return provider
+
+
+def clean_record_type(value: str) -> str:
+    record_type = (value or "").strip().lower()
+    if record_type not in VALID_INTEGRATION_RECORD_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid integration record type")
+    return record_type
+
+
+def serialize_integration(row: Optional[dict]) -> dict:
+    if not row:
+        return {
+            "provider": "quickbooks",
+            "status": "not_connected",
+            "company_id": "",
+            "company_name": "",
+            "sandbox": False,
+            "auto_create_suppliers": True,
+            "auto_create_customers": True,
+            "default_purchase_account": "",
+            "default_sales_account": "",
+            "default_vat_code": "",
+            "notes": "",
+            "last_sync_at": "",
+        }
+    d = dict(row)
+    d["sandbox"] = bool(d.get("sandbox"))
+    d["auto_create_suppliers"] = bool(d.get("auto_create_suppliers"))
+    d["auto_create_customers"] = bool(d.get("auto_create_customers"))
+    d["connected"] = bool(d.get("refresh_token_enc") and d.get("company_id"))
+    d.pop("access_token_enc", None)
+    d.pop("refresh_token_enc", None)
+    return d
+
+
+def serialize_integration_record(row: dict) -> dict:
+    d = dict(row)
+    d["active"] = bool(d.get("active"))
+    return d
+
+
+async def get_client_or_404(session: AsyncSession, client_id: str) -> dict:
+    client = await one(session, select(users).where(users.c.id == client_id, users.c.role == "client"))
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    return client
+
+
+async def integration_record_counts(session: AsyncSession, client_id: str) -> dict:
+    counts = {}
+    for record_type in VALID_INTEGRATION_RECORD_TYPES:
+        counts[record_type] = await count_rows(
+            session,
+            integration_records,
+            integration_records.c.client_id == client_id,
+            integration_records.c.record_type == record_type,
+            integration_records.c.active == True,  # noqa: E712
+        )
+    return counts
+
+
+async def get_quickbooks_credentials(session: Optional[AsyncSession] = None) -> dict:
+    saved = None
+    if session is not None:
+        saved = await one(session, select(settings).where(settings.c.key == "quickbooks"))
+    env_client_id = os.environ.get("QUICKBOOKS_CLIENT_ID", "").strip()
+    env_client_secret = os.environ.get("QUICKBOOKS_CLIENT_SECRET", "").strip()
+    client_id = env_client_id or ((saved or {}).get("quickbooks_client_id") or "").strip()
+    client_secret = env_client_secret
+    if not client_secret and saved and saved.get("quickbooks_client_secret_enc"):
+        try:
+            client_secret = decrypt_secret(saved["quickbooks_client_secret_enc"]) or ""
+        except Exception:
+            logger.exception("Failed to decrypt saved QuickBooks client secret")
+            client_secret = ""
+    redirect_uri = os.environ.get("QUICKBOOKS_REDIRECT_URI", "").strip() or ((saved or {}).get("quickbooks_redirect_uri") or "").strip()
+    if not redirect_uri:
+        redirect_uri = os.environ.get("BACKEND_URL", "http://localhost:8000").rstrip("/") + "/api/integrations/quickbooks/callback"
+    environment = os.environ.get("QUICKBOOKS_ENVIRONMENT", "").strip().lower() or ((saved or {}).get("quickbooks_environment") or "sandbox").strip().lower()
+    if environment not in {"sandbox", "production"}:
+        environment = "sandbox"
+    return {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": redirect_uri,
+        "environment": environment,
+        "configured": bool(client_id and client_secret and redirect_uri),
+        "source": "environment" if env_client_id or env_client_secret else ("saved" if saved else "missing"),
+    }
+
+
+def quickbooks_api_base(environment: str) -> str:
+    return "https://sandbox-quickbooks.api.intuit.com" if environment == "sandbox" else "https://quickbooks.api.intuit.com"
+
+
+def encrypt_secret(value: Optional[str]) -> Optional[str]:
+    return fernet.encrypt(value.encode()).decode() if value else None
+
+
+def decrypt_secret(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    return fernet.decrypt(value.encode()).decode()
+
+
+def create_quickbooks_state(client_id: str) -> str:
+    payload = {
+        "type": "quickbooks_oauth_state",
+        "client_id": client_id,
+        "nonce": new_id(),
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=20),
+    }
+    return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
+
+
+def verify_quickbooks_state(state: str) -> str:
+    try:
+        payload = jwt.decode(state, get_jwt_secret(), algorithms=[JWT_ALGORITHM])
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=400, detail="Invalid QuickBooks connection state")
+    if payload.get("type") != "quickbooks_oauth_state" or not payload.get("client_id"):
+        raise HTTPException(status_code=400, detail="Invalid QuickBooks connection state")
+    return str(payload["client_id"])
+
+
+def quickbooks_auth_header(client_id: str, client_secret: str) -> str:
+    raw = f"{client_id}:{client_secret}".encode("utf-8")
+    return "Basic " + base64.b64encode(raw).decode("utf-8")
+
+
+async def exchange_quickbooks_code(session: AsyncSession, code: str, redirect_uri: str) -> dict:
+    creds = await get_quickbooks_credentials(session)
+    if not creds["configured"]:
+        raise HTTPException(status_code=400, detail="QuickBooks OAuth is not configured. Add QUICKBOOKS_CLIENT_ID and QUICKBOOKS_CLIENT_SECRET.")
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            QUICKBOOKS_TOKEN_URL,
+            headers={
+                "Authorization": quickbooks_auth_header(creds["client_id"], creds["client_secret"]),
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": redirect_uri,
+            },
+        )
+    if resp.status_code >= 400:
+        logger.error("QuickBooks token exchange failed: %s %s", resp.status_code, resp.text[:500])
+        raise HTTPException(status_code=400, detail="QuickBooks token exchange failed")
+    return resp.json()
+
+
+async def refresh_quickbooks_access_token(session: AsyncSession, integration: dict) -> str:
+    creds = await get_quickbooks_credentials(session)
+    refresh_token = decrypt_secret(integration.get("refresh_token_enc"))
+    if not creds["configured"] or not refresh_token:
+        raise HTTPException(status_code=400, detail="QuickBooks is not connected for this client")
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            QUICKBOOKS_TOKEN_URL,
+            headers={
+                "Authorization": quickbooks_auth_header(creds["client_id"], creds["client_secret"]),
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            data={"grant_type": "refresh_token", "refresh_token": refresh_token},
+        )
+    if resp.status_code >= 400:
+        logger.error("QuickBooks refresh failed: %s %s", resp.status_code, resp.text[:500])
+        raise HTTPException(status_code=400, detail="QuickBooks refresh failed. Reconnect this client.")
+    token_data = resp.json()
+    now = datetime.now(timezone.utc)
+    values = {
+        "access_token_enc": encrypt_secret(token_data.get("access_token")),
+        "refresh_token_enc": encrypt_secret(token_data.get("refresh_token") or refresh_token),
+        "token_expires_at": (now + timedelta(seconds=int(token_data.get("expires_in") or 3600))).isoformat(),
+        "updated_at": utc_now_iso(),
+    }
+    if token_data.get("x_refresh_token_expires_in"):
+        values["refresh_expires_at"] = (now + timedelta(seconds=int(token_data["x_refresh_token_expires_in"]))).isoformat()
+    await session.execute(update(client_integrations).where(client_integrations.c.id == integration["id"]).values(**values))
+    await session.commit()
+    return token_data["access_token"]
+
+
+async def get_valid_quickbooks_access_token(session: AsyncSession, integration: dict) -> str:
+    expires_raw = integration.get("token_expires_at")
+    access_token = None
+    if integration.get("access_token_enc"):
+        try:
+            access_token = decrypt_secret(integration["access_token_enc"])
+        except Exception:
+            access_token = None
+    try:
+        expires_at = datetime.fromisoformat(expires_raw) if expires_raw else None
+    except ValueError:
+        expires_at = None
+    if access_token and expires_at and expires_at > datetime.now(timezone.utc) + timedelta(minutes=3):
+        return access_token
+    return await refresh_quickbooks_access_token(session, integration)
+
+
+async def quickbooks_query(access_token: str, realm_id: str, environment: str, query: str) -> dict:
+    url = f"{quickbooks_api_base(environment)}/v3/company/{realm_id}/query"
+    async with httpx.AsyncClient(timeout=40) as client:
+        resp = await client.get(
+            url,
+            params={"query": query, "minorversion": "75"},
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+        )
+    if resp.status_code >= 400:
+        logger.error("QuickBooks query failed: %s %s", resp.status_code, resp.text[:500])
+        raise HTTPException(status_code=400, detail="QuickBooks sync query failed")
+    return resp.json().get("QueryResponse") or {}
+
+
+@api.get("/admin/integrations/clients")
+async def list_integration_clients(
+    q: Optional[str] = None,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    stmt = select(users).where(users.c.role == "client")
+    if q:
+        like = f"%{q}%"
+        stmt = stmt.where(
+            or_(
+                users.c.first_name.ilike(like),
+                users.c.last_name.ilike(like),
+                users.c.business_name.ilike(like),
+                users.c.email.ilike(like),
+            )
+        )
+    clients = await many(session, stmt.order_by(users.c.business_name.asc()))
+    result = []
+    for client in clients:
+        integration = await one(
+            session,
+            select(client_integrations).where(client_integrations.c.client_id == str(client["id"])),
+        )
+        item = serialize_user(client)
+        item["integration"] = serialize_integration(integration)
+        item["integration_counts"] = await integration_record_counts(session, str(client["id"]))
+        result.append(item)
+    return result
+
+
+@api.get("/admin/integrations/clients/{client_id}")
+async def get_client_integration(
+    client_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    integration = await one(
+        session,
+        select(client_integrations).where(client_integrations.c.client_id == client_id),
+    )
+    records = await many(
+        session,
+        select(integration_records)
+        .where(integration_records.c.client_id == client_id)
+        .order_by(integration_records.c.record_type.asc(), integration_records.c.name.asc()),
+    )
+    grouped = {"account": [], "supplier": [], "customer": []}
+    for record in records:
+        grouped.setdefault(record["record_type"], []).append(serialize_integration_record(record))
+    return {
+        "client": serialize_user(client),
+        "integration": serialize_integration(integration),
+        "records": grouped,
+        "counts": {key: len(value) for key, value in grouped.items()},
+    }
+
+
+@api.put("/admin/integrations/clients/{client_id}/settings")
+async def save_client_integration_settings(
+    client_id: str,
+    payload: ClientIntegrationSettingsIn,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await get_client_or_404(session, client_id)
+    provider = clean_provider(payload.provider)
+    status = (payload.status or "not_connected").strip().lower()
+    if status not in VALID_INTEGRATION_STATUSES:
+        raise HTTPException(status_code=400, detail="Invalid integration status")
+    now = utc_now_iso()
+    values = {
+        "provider": provider,
+        "status": status,
+        "company_id": (payload.company_id or "").strip(),
+        "company_name": (payload.company_name or "").strip(),
+        "sandbox": bool(payload.sandbox),
+        "auto_create_suppliers": bool(payload.auto_create_suppliers),
+        "auto_create_customers": bool(payload.auto_create_customers),
+        "default_purchase_account": (payload.default_purchase_account or "").strip(),
+        "default_sales_account": (payload.default_sales_account or "").strip(),
+        "default_vat_code": (payload.default_vat_code or "").strip(),
+        "notes": (payload.notes or "").strip(),
+        "updated_at": now,
+    }
+    existing = await one(session, select(client_integrations).where(client_integrations.c.client_id == client_id))
+    if existing:
+        await session.execute(update(client_integrations).where(client_integrations.c.client_id == client_id).values(**values))
+    else:
+        await session.execute(insert(client_integrations).values(id=new_id(), client_id=client_id, created_at=now, **values))
+    await session.commit()
+    return {"ok": True, "integration": serialize_integration({**values, "client_id": client_id})}
+
+
+@api.get("/admin/integrations/quickbooks/config")
+async def get_quickbooks_config(user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    creds = await get_quickbooks_credentials(session)
+    return {
+        "configured": creds["configured"],
+        "environment": creds["environment"],
+        "redirect_uri": creds["redirect_uri"],
+        "scope": QUICKBOOKS_SCOPE,
+        "source": creds["source"],
+        "client_id_saved": bool(creds["client_id"]),
+        "client_secret_saved": bool(creds["client_secret"]),
+    }
+
+
+@api.put("/admin/integrations/quickbooks/config")
+async def save_quickbooks_config(
+    payload: QuickBooksAppSettingsIn,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    existing = await one(session, select(settings).where(settings.c.key == "quickbooks")) or {}
+    environment = (payload.environment or "sandbox").strip().lower()
+    if environment not in {"sandbox", "production"}:
+        raise HTTPException(status_code=400, detail="Invalid QuickBooks environment")
+    values = {
+        "key": "quickbooks",
+        "quickbooks_client_id": (payload.client_id or existing.get("quickbooks_client_id") or "").strip(),
+        "quickbooks_environment": environment,
+        "quickbooks_redirect_uri": (payload.redirect_uri or "").strip(),
+    }
+    if payload.client_secret:
+        values["quickbooks_client_secret_enc"] = encrypt_secret(payload.client_secret.strip())
+    elif existing.get("quickbooks_client_secret_enc"):
+        values["quickbooks_client_secret_enc"] = existing["quickbooks_client_secret_enc"]
+    else:
+        values["quickbooks_client_secret_enc"] = None
+    if existing:
+        await session.execute(update(settings).where(settings.c.key == "quickbooks").values(**values))
+    else:
+        await session.execute(insert(settings).values(**values))
+    await session.commit()
+    creds = await get_quickbooks_credentials(session)
+    return {
+        "configured": creds["configured"],
+        "environment": creds["environment"],
+        "redirect_uri": creds["redirect_uri"],
+        "source": creds["source"],
+        "client_id_saved": bool(creds["client_id"]),
+        "client_secret_saved": bool(creds["client_secret"]),
+    }
+
+
+@api.get("/admin/integrations/clients/{client_id}/quickbooks/connect")
+async def start_quickbooks_connect(
+    client_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await get_client_or_404(session, client_id)
+    creds = await get_quickbooks_credentials(session)
+    if not creds["configured"]:
+        raise HTTPException(status_code=400, detail="QuickBooks OAuth is not configured. Add QUICKBOOKS_CLIENT_ID and QUICKBOOKS_CLIENT_SECRET to the API environment.")
+    params = {
+        "client_id": creds["client_id"],
+        "scope": QUICKBOOKS_SCOPE,
+        "redirect_uri": creds["redirect_uri"],
+        "response_type": "code",
+        "state": create_quickbooks_state(client_id),
+    }
+    return {"auth_url": f"{QUICKBOOKS_AUTH_URL}?{urlencode(params)}"}
+
+
+@api.get("/integrations/quickbooks/callback")
+async def quickbooks_oauth_callback(
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    realmId: Optional[str] = None,
+    error: Optional[str] = None,
+    error_description: Optional[str] = None,
+    session: AsyncSession = Depends(get_db),
+):
+    frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:3000").rstrip("/")
+    if error:
+        return RedirectResponse(f"{frontend_url}/admin/integrations?quickbooks=error&message={urlencode({'m': error_description or error})[2:]}")
+    if not code or not state or not realmId:
+        return RedirectResponse(f"{frontend_url}/admin/integrations?quickbooks=missing")
+    client_id = verify_quickbooks_state(state)
+    await get_client_or_404(session, client_id)
+    creds = await get_quickbooks_credentials(session)
+    token_data = await exchange_quickbooks_code(session, code, creds["redirect_uri"])
+    now = datetime.now(timezone.utc)
+    values = {
+        "provider": "quickbooks",
+        "status": "connected",
+        "company_id": realmId,
+        "sandbox": creds["environment"] == "sandbox",
+        "access_token_enc": encrypt_secret(token_data.get("access_token")),
+        "refresh_token_enc": encrypt_secret(token_data.get("refresh_token")),
+        "token_expires_at": (now + timedelta(seconds=int(token_data.get("expires_in") or 3600))).isoformat(),
+        "refresh_expires_at": (now + timedelta(seconds=int(token_data.get("x_refresh_token_expires_in") or 0))).isoformat()
+            if token_data.get("x_refresh_token_expires_in") else None,
+        "scope": token_data.get("scope") or QUICKBOOKS_SCOPE,
+        "updated_at": utc_now_iso(),
+    }
+    existing = await one(session, select(client_integrations).where(client_integrations.c.client_id == client_id))
+    if existing:
+        await session.execute(update(client_integrations).where(client_integrations.c.client_id == client_id).values(**values))
+    else:
+        await session.execute(insert(client_integrations).values(id=new_id(), client_id=client_id, created_at=utc_now_iso(), **values))
+    await session.commit()
+    try:
+        await sync_quickbooks_lists_for_client(session, client_id)
+        return RedirectResponse(f"{frontend_url}/admin/integrations?quickbooks=connected&sync=ok")
+    except Exception as exc:
+        logger.exception("QuickBooks connected but initial sync failed for client %s", client_id)
+        message = urlencode({"m": f"QuickBooks connected, but list sync failed: {str(exc)}"})[2:]
+        return RedirectResponse(f"{frontend_url}/admin/integrations?quickbooks=connected&sync=error&message={message}")
+
+
+async def replace_integration_records(session: AsyncSession, client_id: str, provider: str, record_type: str, records: list[dict]):
+    now = utc_now_iso()
+    await session.execute(
+        delete(integration_records).where(
+            integration_records.c.client_id == client_id,
+            integration_records.c.provider == provider,
+            integration_records.c.record_type == record_type,
+        )
+    )
+    if records:
+        await session.execute(insert(integration_records), [
+            {
+                "id": new_id(),
+                "client_id": client_id,
+                "provider": provider,
+                "record_type": record_type,
+                "external_id": record.get("external_id") or "",
+                "code": record.get("code") or "",
+                "name": record.get("name") or "",
+                "email": record.get("email") or None,
+                "description": record.get("description") or "",
+                "active": bool(record.get("active", True)),
+                "raw_json": json.dumps(record.get("raw") or {}),
+                "created_at": now,
+                "updated_at": now,
+            }
+            for record in records
+            if record.get("name")
+        ])
+
+
+async def sync_quickbooks_lists_for_client(session: AsyncSession, client_id: str) -> dict:
+    await get_client_or_404(session, client_id)
+    integration = await one(session, select(client_integrations).where(client_integrations.c.client_id == client_id))
+    if not integration or integration.get("provider") != "quickbooks" or not integration.get("company_id"):
+        raise HTTPException(status_code=400, detail="QuickBooks is not connected for this client")
+    access_token = await get_valid_quickbooks_access_token(session, integration)
+    integration = await one(session, select(client_integrations).where(client_integrations.c.client_id == client_id))
+    environment = "sandbox" if integration.get("sandbox") else "production"
+    realm_id = integration["company_id"]
+
+    accounts_response = await quickbooks_query(access_token, realm_id, environment, "select * from Account maxresults 1000")
+    vendors_response = await quickbooks_query(access_token, realm_id, environment, "select * from Vendor maxresults 1000")
+    customers_response = await quickbooks_query(access_token, realm_id, environment, "select * from Customer maxresults 1000")
+    company_response = await quickbooks_query(access_token, realm_id, environment, "select * from CompanyInfo")
+    company_info = (company_response.get("CompanyInfo") or [{}])[0] or {}
+
+    accounts = [
+        {
+            "external_id": item.get("Id"),
+            "code": item.get("AcctNum") or item.get("Id") or "",
+            "name": item.get("Name") or item.get("FullyQualifiedName") or "",
+            "description": item.get("AccountType") or item.get("Classification") or "",
+            "active": item.get("Active", True),
+            "raw": item,
+        }
+        for item in accounts_response.get("Account", []) or []
+    ]
+    suppliers = [
+        {
+            "external_id": item.get("Id"),
+            "code": item.get("AcctNum") or item.get("Id") or "",
+            "name": item.get("DisplayName") or item.get("CompanyName") or item.get("PrintOnCheckName") or "",
+            "email": ((item.get("PrimaryEmailAddr") or {}).get("Address") if isinstance(item.get("PrimaryEmailAddr"), dict) else None),
+            "description": item.get("CompanyName") or "",
+            "active": item.get("Active", True),
+            "raw": item,
+        }
+        for item in vendors_response.get("Vendor", []) or []
+    ]
+    customers = [
+        {
+            "external_id": item.get("Id"),
+            "code": item.get("Id") or "",
+            "name": item.get("DisplayName") or item.get("CompanyName") or item.get("FullyQualifiedName") or "",
+            "email": ((item.get("PrimaryEmailAddr") or {}).get("Address") if isinstance(item.get("PrimaryEmailAddr"), dict) else None),
+            "description": item.get("CompanyName") or "",
+            "active": item.get("Active", True),
+            "raw": item,
+        }
+        for item in customers_response.get("Customer", []) or []
+    ]
+
+    await replace_integration_records(session, client_id, "quickbooks", "account", accounts)
+    await replace_integration_records(session, client_id, "quickbooks", "supplier", suppliers)
+    await replace_integration_records(session, client_id, "quickbooks", "customer", customers)
+    company_name = (
+        company_info.get("CompanyName")
+        or company_info.get("LegalName")
+        or company_info.get("Name")
+        or integration.get("company_name")
+        or ""
+    )
+    await session.execute(
+        update(client_integrations)
+        .where(client_integrations.c.client_id == client_id)
+        .values(status="connected", company_name=company_name, last_sync_at=utc_now_iso(), updated_at=utc_now_iso())
+    )
+    await session.commit()
+    return {
+        "ok": True,
+        "counts": {"account": len(accounts), "supplier": len(suppliers), "customer": len(customers)},
+        "company_name": company_name,
+    }
+
+
+@api.post("/admin/integrations/clients/{client_id}/quickbooks/sync")
+async def sync_quickbooks_lists(
+    client_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    return await sync_quickbooks_lists_for_client(session, client_id)
+
+
+@api.post("/admin/integrations/clients/{client_id}/records")
+async def create_integration_record(
+    client_id: str,
+    payload: IntegrationRecordIn,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await get_client_or_404(session, client_id)
+    record_type = clean_record_type(payload.record_type)
+    integration = await one(session, select(client_integrations).where(client_integrations.c.client_id == client_id))
+    provider = clean_provider(integration.get("provider") if integration else "quickbooks")
+    now = utc_now_iso()
+    doc = {
+        "id": new_id(),
+        "client_id": client_id,
+        "provider": provider,
+        "record_type": record_type,
+        "external_id": (payload.external_id or "").strip(),
+        "code": (payload.code or "").strip(),
+        "name": payload.name.strip(),
+        "email": payload.email.lower().strip() if payload.email else None,
+        "description": (payload.description or "").strip(),
+        "active": bool(payload.active),
+        "raw_json": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+    if not doc["name"]:
+        raise HTTPException(status_code=400, detail="Name is required")
+    await session.execute(insert(integration_records).values(**doc))
+    await session.commit()
+    return serialize_integration_record(doc)
+
+
+@api.delete("/admin/integrations/records/{record_id}")
+async def delete_integration_record(
+    record_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    result = await session.execute(delete(integration_records).where(integration_records.c.id == record_id))
+    if result.rowcount == 0:
+        await session.rollback()
+        raise HTTPException(status_code=404, detail="Integration record not found")
     await session.commit()
     return {"ok": True}
 
@@ -969,6 +1690,42 @@ async def clear_openai_settings(user: dict = Depends(require_admin), session: As
     await session.execute(delete(settings).where(settings.c.key == "openai"))
     await session.commit()
     return {"ok": True}
+
+
+async def get_feature_settings(session: AsyncSession) -> dict:
+    s = await one(session, select(settings).where(settings.c.key == "features"))
+    enabled = True if not s or s.get("document_processing_enabled") is None else bool(s.get("document_processing_enabled"))
+    return {"document_processing_enabled": enabled}
+
+
+@api.get("/admin/settings/features")
+async def get_admin_feature_settings(user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    return await get_feature_settings(session)
+
+
+@api.put("/admin/settings/features")
+async def update_admin_feature_settings(
+    payload: FeatureSettingsIn,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    existing = await one(session, select(settings).where(settings.c.key == "features")) or {}
+    values = {
+        "key": "features",
+        "document_processing_enabled": bool(payload.document_processing_enabled),
+    }
+    if existing:
+        await session.execute(update(settings).where(settings.c.key == "features").values(**values))
+    else:
+        await session.execute(insert(settings).values(**values))
+    await session.commit()
+    return await get_feature_settings(session)
+
+
+async def require_document_processing_module(session: AsyncSession):
+    features = await get_feature_settings(session)
+    if not features["document_processing_enabled"]:
+        raise HTTPException(status_code=403, detail="Document processing module is disabled")
 
 
 async def get_openai_runtime_settings(session: AsyncSession) -> dict:
@@ -1341,6 +2098,355 @@ def attachment_mime(path: str) -> tuple[str, str]:
     return maintype, subtype
 
 
+CODING_FIELD_KEYS = (
+    "vendor_name",
+    "vendor_account",
+    "category",
+    "date",
+    "due_date",
+    "description",
+    "document_type",
+    "bill_number",
+    "reference",
+    "net",
+    "vat",
+    "total",
+    "vat_code",
+    "currency",
+    "payment_method",
+    "mark_as_paid",
+    "price_is",
+    "line_items",
+    "ocr_text_lines",
+    "ocr_text_boxes",
+)
+
+
+def parse_money_value(value: str) -> Optional[float]:
+    text_value = str(value or "").replace(",", "")
+    match = re.search(r"-?\d+(?:\.\d{1,2})?", text_value)
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
+
+
+def format_money_value(value: float) -> str:
+    return f"{value:.2f}"
+
+
+def first_reference_candidate(lines: list[str]) -> str:
+    keywords = ("receipt", "ref", "reference", "auth", "approval", "transaction", "trans", "txn", "invoice", "inv", "till", "terminal")
+    for line in lines:
+        if any(keyword in line.lower() for keyword in keywords):
+            cleaned = re.sub(r"\s+", " ", line).strip()
+            if cleaned:
+                return cleaned[:128]
+    for line in lines:
+        if re.search(r"\d{4,}", line):
+            cleaned = re.sub(r"\s+", " ", line).strip()
+            if cleaned:
+                return cleaned[:128]
+    return ""
+
+
+def captured_lines_from_fields(fields: dict) -> list[str]:
+    lines = []
+    for key in ("vendor_name", "date", "bill_number", "reference", "net", "vat", "total", "payment_method"):
+        value = str(fields.get(key) or "").strip()
+        if value:
+            lines.append(value)
+    for line in fields.get("line_items") or []:
+        if not isinstance(line, dict):
+            continue
+        parts = [
+            str(line.get("description") or "").strip(),
+            str(line.get("units") or "").strip(),
+            str(line.get("price") or line.get("net") or "").strip(),
+            str(line.get("vat") or "").strip(),
+            str(line.get("total") or "").strip(),
+        ]
+        text = " ".join(part for part in parts if part)
+        if text:
+            lines.append(text[:300])
+    deduped = []
+    seen = set()
+    for line in lines:
+        if line in seen:
+            continue
+        seen.add(line)
+        deduped.append(line)
+    return deduped[:120]
+
+
+def normalize_ocr_text_boxes(value) -> list[dict]:
+    boxes = value if isinstance(value, list) else []
+    normalized = []
+    for box in boxes[:160]:
+        if not isinstance(box, dict):
+            continue
+        text = str(box.get("text") or "").strip()
+        if not text:
+            continue
+        def bounded_float(raw, default=0.0):
+            try:
+                number = float(raw)
+            except (TypeError, ValueError):
+                return default
+            return min(1.0, max(0.0, number))
+
+        normalized.append({
+            "text": text[:300],
+            "page": max(1, int(box.get("page") or 1)),
+            "x": bounded_float(box.get("x")),
+            "y": bounded_float(box.get("y")),
+            "width": bounded_float(box.get("width"), 0.2),
+            "height": bounded_float(box.get("height"), 0.025),
+        })
+    return normalized
+
+
+def reconcile_coding_totals(fields: dict) -> dict:
+    total_value = parse_money_value(fields.get("total"))
+    vat_value = parse_money_value(fields.get("vat"))
+    net_value = parse_money_value(fields.get("net"))
+    if net_value is None and total_value is not None:
+        fields["net"] = format_money_value(total_value - vat_value) if vat_value is not None else format_money_value(total_value)
+        net_value = parse_money_value(fields["net"])
+    if total_value is None and net_value is not None:
+        fields["total"] = format_money_value(net_value + vat_value) if vat_value is not None else format_money_value(net_value)
+        total_value = parse_money_value(fields["total"])
+
+    line_items = fields.get("line_items") if isinstance(fields.get("line_items"), list) else []
+    line_total_sum = 0.0
+    line_net_sum = 0.0
+    line_vat_sum = 0.0
+    counted_total = 0
+    counted_net = 0
+    counted_vat = 0
+    for line in line_items:
+        if not isinstance(line, dict):
+            continue
+        line_total = parse_money_value(line.get("total"))
+        line_vat = parse_money_value(line.get("vat"))
+        line_net = parse_money_value(line.get("net"))
+        if line_net is None and line_total is not None:
+            line["net"] = format_money_value(line_total - line_vat) if line_vat is not None else format_money_value(line_total)
+            line_net = parse_money_value(line["net"])
+        if line_total is None and line_net is not None:
+            line["total"] = format_money_value(line_net + line_vat) if line_vat is not None else format_money_value(line_net)
+            line_total = parse_money_value(line["total"])
+        if not str(line.get("price") or "").strip():
+            line["price"] = line.get("net") or line.get("total") or ""
+        if line_total is not None:
+            line_total_sum += line_total
+            counted_total += 1
+        if line_net is not None:
+            line_net_sum += line_net
+            counted_net += 1
+        if line_vat is not None:
+            line_vat_sum += line_vat
+            counted_vat += 1
+
+    if len(line_items) == 1:
+        line = line_items[0]
+        if total_value is not None:
+            line["total"] = format_money_value(total_value)
+        if net_value is not None:
+            line["net"] = format_money_value(net_value)
+        if vat_value is not None:
+            line["vat"] = format_money_value(vat_value)
+        if not str(line.get("price") or "").strip():
+            line["price"] = line.get("net") or line.get("total") or ""
+    elif len(line_items) > 1:
+        if total_value is None and counted_total:
+            fields["total"] = format_money_value(line_total_sum)
+        if net_value is None and counted_net:
+            fields["net"] = format_money_value(line_net_sum)
+        if vat_value is None and counted_vat:
+            fields["vat"] = format_money_value(line_vat_sum)
+
+    if parse_money_value(fields.get("net")) is None and parse_money_value(fields.get("total")) is not None and parse_money_value(fields.get("vat")) is None:
+        fields["net"] = fields["total"]
+    return fields
+
+
+def normalize_ai_coding_fields(data: dict) -> dict:
+    source = data.get("coding_fields") if isinstance(data.get("coding_fields"), dict) else {}
+    ocr_text_lines = source.get("ocr_text_lines") if isinstance(source.get("ocr_text_lines"), list) else []
+    ocr_text_lines = [str(line).strip()[:300] for line in ocr_text_lines if str(line or "").strip()][:120]
+    ocr_text_boxes = normalize_ocr_text_boxes(source.get("ocr_text_boxes"))
+    fields = {
+        "vendor_name": str(source.get("vendor_name") or "").strip()[:255],
+        "vendor_account": str(source.get("vendor_account") or "").strip()[:255],
+        "category": str(source.get("category") or "").strip()[:255],
+        "date": str(source.get("date") or "").strip()[:32],
+        "due_date": str(source.get("due_date") or "").strip()[:32],
+        "description": str(source.get("description") or "").strip()[:500],
+        "document_type": str(source.get("document_type") or "bill").strip()[:32],
+        "bill_number": str(source.get("bill_number") or "").strip()[:128],
+        "reference": str(source.get("reference") or "").strip()[:128],
+        "net": str(source.get("net") or "").strip()[:64],
+        "vat": str(source.get("vat") or "").strip()[:64],
+        "total": str(source.get("total") or "").strip()[:64],
+        "vat_code": str(source.get("vat_code") or "").strip()[:64],
+        "currency": str(source.get("currency") or "GBP").strip()[:8] or "GBP",
+        "payment_method": str(source.get("payment_method") or data.get("payment_method") or "not_clear").strip()[:64],
+        "mark_as_paid": bool(source.get("mark_as_paid")),
+        "price_is": str(source.get("price_is") or "Tax Exclusive").strip()[:32],
+        "line_items": [],
+        "ocr_text_lines": ocr_text_lines,
+        "ocr_text_boxes": ocr_text_boxes,
+    }
+    if fields["document_type"] not in ("bill", "credit_note"):
+        fields["document_type"] = "bill"
+    if not fields["reference"]:
+        fields["reference"] = first_reference_candidate(ocr_text_lines)
+    if not fields["bill_number"]:
+        fields["bill_number"] = fields["reference"]
+    line_items = source.get("line_items") if isinstance(source.get("line_items"), list) else []
+    for line in line_items[:80]:
+        if not isinstance(line, dict):
+            continue
+        line_net = str(line.get("net") or "").strip()[:64]
+        line_vat = str(line.get("vat") or "").strip()[:64]
+        line_total = str(line.get("total") or "").strip()[:64]
+        line_price = str(line.get("price") or "").strip()[:64]
+        line_total_value = parse_money_value(line_total)
+        line_vat_value = parse_money_value(line_vat)
+        line_net_value = parse_money_value(line_net)
+        if line_net_value is None and line_total_value is not None and line_vat_value is not None:
+            line_net = format_money_value(line_total_value - line_vat_value)
+        if line_total_value is None and line_net_value is not None and line_vat_value is not None:
+            line_total = format_money_value(line_net_value + line_vat_value)
+        if not line_price:
+            line_price = line_net or line_total
+        fields["line_items"].append({
+            "description": str(line.get("description") or "").strip()[:500],
+            "category": str(line.get("category") or "").strip()[:255],
+            "vat_code": str(line.get("vat_code") or "").strip()[:64],
+            "units": str(line.get("units") or "1").strip()[:64],
+            "price": line_price,
+            "net": line_net,
+            "vat": line_vat,
+            "total": line_total,
+        })
+    if not fields["line_items"] and (fields["description"] or fields["total"] or fields["net"] or fields["vat"]):
+        fields["line_items"].append({
+            "description": fields["description"] or fields["vendor_name"] or "Receipt",
+            "category": fields["category"],
+            "vat_code": fields["vat_code"],
+            "units": "1",
+            "price": fields["net"] or fields["total"],
+            "net": fields["net"],
+            "vat": fields["vat"],
+            "total": fields["total"],
+        })
+    fields = reconcile_coding_totals(fields)
+    if not fields["ocr_text_lines"]:
+        fields["ocr_text_lines"] = captured_lines_from_fields(fields)
+    return fields
+
+
+def normalize_line_items(value) -> list[dict]:
+    line_items = value if isinstance(value, list) else []
+    normalized = []
+    for line in line_items[:80]:
+        if not isinstance(line, dict):
+            continue
+        line_net = str(line.get("net") or "").strip()[:64]
+        line_vat = str(line.get("vat") or "").strip()[:64]
+        line_total = str(line.get("total") or "").strip()[:64]
+        line_price = str(line.get("price") or "").strip()[:64]
+        line_total_value = parse_money_value(line_total)
+        line_vat_value = parse_money_value(line_vat)
+        line_net_value = parse_money_value(line_net)
+        if line_net_value is None and line_total_value is not None and line_vat_value is not None:
+            line_net = format_money_value(line_total_value - line_vat_value)
+        if line_total_value is None and line_net_value is not None and line_vat_value is not None:
+            line_total = format_money_value(line_net_value + line_vat_value)
+        if not line_price:
+            line_price = line_net or line_total
+        normalized.append({
+            "description": str(line.get("description") or "").strip()[:500],
+            "category": str(line.get("category") or "").strip()[:255],
+            "vat_code": str(line.get("vat_code") or "").strip()[:64],
+            "units": str(line.get("units") or "1").strip()[:64],
+            "price": line_price,
+            "net": line_net,
+            "vat": line_vat,
+            "total": line_total,
+        })
+    return normalized
+
+
+def build_openai_document_part(document_bytes: bytes, content_type: str, filename: Optional[str]) -> dict:
+    suffix = Path(filename or "").suffix.lower()
+    guessed_content_type, _ = mimetypes.guess_type(filename or "")
+    safe_content_type = (content_type or guessed_content_type or "application/octet-stream").split(";")[0].lower()
+    encoded_document = base64.b64encode(document_bytes).decode("ascii")
+    if safe_content_type == "application/pdf" or suffix == ".pdf":
+        safe_filename = Path(filename or "submitted-document.pdf").name or "submitted-document.pdf"
+        pdf_data_url = f"data:application/pdf;base64,{encoded_document}"
+        return {"type": "input_file", "filename": safe_filename, "file_data": pdf_data_url, "detail": "high"}
+    if safe_content_type in SUPPORTED_IMAGE_TYPES or suffix in SUPPORTED_IMAGE_SUFFIXES:
+        image_content_type = safe_content_type if safe_content_type in SUPPORTED_IMAGE_TYPES else (guessed_content_type or "image/jpeg")
+        data_url = f"data:{image_content_type};base64,{encoded_document}"
+        return {"type": "input_image", "image_url": data_url, "detail": "high"}
+    raise HTTPException(status_code=400, detail="AI document check can only review image or PDF files.")
+
+
+def parse_json_object(value: Optional[str]) -> Optional[dict]:
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+async def get_coding_history(session: AsyncSession, client_id: str, doc_type: str, limit: int = 12) -> list[dict]:
+    docs = await many(
+        session,
+        select(submissions.c.coding_fields, submissions.c.description, submissions.c.reviewed_at)
+        .where(
+            submissions.c.client_id == client_id,
+            submissions.c.type == doc_type,
+            submissions.c.review_status == "published",
+            submissions.c.coding_fields.is_not(None),
+        )
+        .order_by(submissions.c.reviewed_at.desc())
+        .limit(limit),
+    )
+    history = []
+    for row in docs:
+        fields = parse_json_object(row.get("coding_fields"))
+        if not fields:
+            continue
+        history.append({
+            "vendor_name": fields.get("vendor_name", ""),
+            "vendor_account": fields.get("vendor_account", ""),
+            "category": fields.get("category", ""),
+            "document_type": fields.get("document_type", "bill"),
+            "bill_number_style": fields.get("bill_number", ""),
+            "reference_style": fields.get("reference", ""),
+            "net": fields.get("net", ""),
+            "vat": fields.get("vat", ""),
+            "total": fields.get("total", ""),
+            "vat_code": fields.get("vat_code", ""),
+            "currency": fields.get("currency", "GBP"),
+            "payment_method": fields.get("payment_method", ""),
+            "price_is": fields.get("price_is", ""),
+            "description": fields.get("description") or row.get("description") or "",
+            "line_items": (fields.get("line_items") or [])[:8],
+            "published_at": row.get("reviewed_at") or "",
+        })
+    return history
+
+
 def normalize_ai_review(data: dict) -> dict:
     status = str(data.get("status") or "").lower().strip()
     if status not in ("approved", "needs_review", "rejected"):
@@ -1358,6 +2464,7 @@ def normalize_ai_review(data: dict) -> dict:
         "document_type": str(data.get("document_type") or "unknown").strip()[:64],
         "payment_method": payment_method,
         "confidence": str(data.get("confidence") or "medium").lower().strip()[:24],
+        "coding_fields": normalize_ai_coding_fields(data),
     }
 
 
@@ -1368,13 +2475,13 @@ async def review_document_with_openai(
     client_user: dict,
     api_key: str,
     model: str,
+    filename: Optional[str] = None,
+    coding_history: Optional[list[dict]] = None,
 ) -> dict:
     if not api_key:
         raise HTTPException(status_code=400, detail="AI document check is enabled for this client, but OpenAI settings are not configured. Ask your administrator to add an API key.")
 
     is_vat_client = bool(client_user.get("is_vat_client"))
-    safe_content_type = content_type or "application/octet-stream"
-    data_url = f"data:{safe_content_type};base64,{base64.b64encode(document_bytes).decode('ascii')}"
     invoice_kind = "purchase" if item.get("type") == "purchase" else "sales"
     vat_instruction = (
         "This is a VAT client. If the document is an invoice/receipt but VAT evidence is missing "
@@ -1387,12 +2494,91 @@ async def review_document_with_openai(
         "Check whether the uploaded document is a valid invoice or receipt for accounting submission. "
         "If it is a valid invoice or receipt, identify whether it appears paid by card, paid by cash, "
         "payable on payment terms/bank transfer, or not clear. "
+        "Also extract accounting coding fields from the document. Populate header fields and line items "
+        "where visible. Use blank strings for values that are not clear rather than guessing. "
+        "For scanned receipts, read the visible text from the image/PDF and capture store name, VAT number, "
+        "receipt date, subtotal/net, VAT and total where legible. Return useful ocr_text_lines in reading order "
+        "for traceability, especially item rows, amounts, discounts, subtotal, VAT, card/auth/payment lines, "
+        "transaction references and receipt numbers. ocr_text_boxes can be an empty array. "
+        "Do not leave bill_number blank when any receipt number, invoice number, transaction reference, auth code, "
+        "approval code, till number, terminal number, order number, or other stable reference is visible. If no "
+        "explicit bill number exists, use the best transaction/reference candidate. "
+        "For receipts with itemised lines, extract each readable purchased item row into line_items. Do not collapse "
+        "a supermarket/shop receipt into one summary line when item rows and prices are visible. For discount rows "
+        "or clubcard/savings rows, include them as negative lines when they clearly relate to an item. If itemised "
+        "lines are not readable but the document total is readable, create one summary line. If VAT and gross total "
+        "are readable, calculate net as gross minus VAT. If net and VAT are readable, calculate gross total as net plus VAT. "
+        "Use dates as DD/MM/YYYY where possible. Use GBP unless another currency is clearly shown. "
+        "For payment_method use Card, Cash, Payment terms, or Not clear. "
         "Reject only documents that are clearly not invoices/receipts, such as statements, orders, "
         "remittance advice, quotes, delivery notes, or unrelated images. Use needs_review for unclear "
         "or partially valid cases. Keep the message short and client-friendly. "
         f"Expected document area: {invoice_kind}. Listed item: {item.get('description') or 'Additional invoice'}. "
-        f"{vat_instruction}"
+        f"{vat_instruction} "
+        "Use the published accountant-corrected examples below as supplier memory. If the supplier, VAT number, "
+        "receipt layout, or bill/reference style matches, reuse the coding pattern, VAT code/category, payment "
+        "method style and line item approach. Do not copy old dates or amounts from examples. "
+        f"Published correction examples for this client/type: {json.dumps(coding_history or [])[:5000]}"
     )
+    line_item_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "description": {"type": "string"},
+            "category": {"type": "string"},
+            "vat_code": {"type": "string"},
+            "units": {"type": "string"},
+            "price": {"type": "string"},
+            "net": {"type": "string"},
+            "vat": {"type": "string"},
+            "total": {"type": "string"},
+        },
+        "required": ["description", "category", "vat_code", "units", "price", "net", "vat", "total"],
+    }
+    ocr_text_box_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "text": {"type": "string"},
+            "page": {"type": "integer"},
+            "x": {"type": "number"},
+            "y": {"type": "number"},
+            "width": {"type": "number"},
+            "height": {"type": "number"},
+        },
+        "required": ["text", "page", "x", "y", "width", "height"],
+    }
+    coding_fields_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "vendor_name": {"type": "string"},
+            "vendor_account": {"type": "string"},
+            "category": {"type": "string"},
+            "date": {"type": "string"},
+            "due_date": {"type": "string"},
+            "description": {"type": "string"},
+            "document_type": {"type": "string", "enum": ["bill", "credit_note"]},
+            "bill_number": {"type": "string"},
+            "reference": {"type": "string"},
+            "net": {"type": "string"},
+            "vat": {"type": "string"},
+            "total": {"type": "string"},
+            "vat_code": {"type": "string"},
+            "currency": {"type": "string"},
+            "payment_method": {"type": "string"},
+            "mark_as_paid": {"type": "boolean"},
+            "price_is": {"type": "string", "enum": ["Tax Exclusive", "Tax Inclusive"]},
+            "line_items": {"type": "array", "items": line_item_schema},
+            "ocr_text_lines": {"type": "array", "items": {"type": "string"}},
+            "ocr_text_boxes": {"type": "array", "items": ocr_text_box_schema},
+        },
+        "required": [
+            "vendor_name", "vendor_account", "category", "date", "due_date", "description",
+            "document_type", "bill_number", "reference", "net", "vat", "total", "vat_code",
+            "currency", "payment_method", "mark_as_paid", "price_is", "line_items", "ocr_text_lines", "ocr_text_boxes",
+        ],
+    }
     schema = {
         "type": "object",
         "additionalProperties": False,
@@ -1402,14 +2588,11 @@ async def review_document_with_openai(
             "message": {"type": "string"},
             "payment_method": {"type": "string", "enum": ["card", "cash", "payment_terms", "not_clear"]},
             "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+            "coding_fields": coding_fields_schema,
         },
-        "required": ["status", "document_type", "message", "payment_method", "confidence"],
+        "required": ["status", "document_type", "message", "payment_method", "confidence", "coding_fields"],
     }
-    document_part = (
-        {"type": "input_file", "filename": "submitted-document.pdf", "file_data": data_url}
-        if safe_content_type == "application/pdf"
-        else {"type": "input_image", "image_url": data_url, "detail": "low"}
-    )
+    document_part = build_openai_document_part(document_bytes, content_type, filename)
     payload = {
         "model": model,
         "input": [
@@ -1452,6 +2635,22 @@ async def review_document_with_openai(
             )
             resp.raise_for_status()
             body = resp.json()
+    except httpx.HTTPStatusError as exc:
+        openai_detail = exc.response.text
+        try:
+            error_body = exc.response.json()
+            openai_detail = error_body.get("error", {}).get("message") or openai_detail
+        except Exception:
+            pass
+        logger.exception("OpenAI invoice check failed: %s", openai_detail)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Document check is temporarily unavailable: "
+                f"OpenAI rejected the document check request ({exc.response.status_code}): "
+                f"{openai_detail[:300]}"
+            ),
+        )
     except httpx.HTTPError as exc:
         logger.exception("OpenAI invoice check failed")
         raise HTTPException(status_code=400, detail=f"Document check is temporarily unavailable: {exc}")
@@ -1618,6 +2817,7 @@ async def submit_item(
                 ai_token_verified = ai_review is not None
             if ai_review is None:
                 ai_settings = await get_openai_runtime_settings(session)
+                coding_history = await get_coding_history(session, str(user["id"]), item["type"])
                 ai_review = await review_document_with_openai(
                     raw,
                     upload_content_type(file),
@@ -1625,6 +2825,8 @@ async def submit_item(
                     user,
                     ai_settings["api_key"],
                     ai_settings["model"],
+                    file.filename,
+                    coding_history,
                 )
             if ai_review["status"] in ("needs_review", "rejected") and not ai_token_verified:
                 return {
@@ -1670,7 +2872,9 @@ async def submit_item(
             ai_review_status=ai_review.get("status") if ai_review else None,
             ai_review_message=ai_review.get("message") if ai_review else None,
             ai_document_type=ai_review.get("document_type") if ai_review else None,
+            ai_extracted_fields=json.dumps(ai_review.get("coding_fields") or {}) if ai_review else None,
             ai_client_approved=ai_client_approved,
+            review_status="inbox",
             submitted_at=utc_now_iso(),
             client_business_name=user.get("business_name", ""),
             client_first_name=user.get("first_name", ""),
@@ -1734,6 +2938,7 @@ async def submit_additional(
                 ai_token_verified = ai_review is not None
             if ai_review is None:
                 ai_settings = await get_openai_runtime_settings(session)
+                coding_history = await get_coding_history(session, str(user["id"]), type)
                 ai_review = await review_document_with_openai(
                     raw,
                     upload_content_type(file),
@@ -1741,6 +2946,8 @@ async def submit_additional(
                     user,
                     ai_settings["api_key"],
                     ai_settings["model"],
+                    file.filename,
+                    coding_history,
                 )
             if ai_review["status"] in ("needs_review", "rejected") and not ai_token_verified:
                 return {
@@ -1786,7 +2993,9 @@ async def submit_additional(
             ai_review_status=ai_review.get("status") if ai_review else None,
             ai_review_message=ai_review.get("message") if ai_review else None,
             ai_document_type=ai_review.get("document_type") if ai_review else None,
+            ai_extracted_fields=json.dumps(ai_review.get("coding_fields") or {}) if ai_review else None,
             ai_client_approved=ai_client_approved,
+            review_status="inbox",
             submitted_at=now.isoformat(),
             client_business_name=user.get("business_name", ""),
             client_first_name=user.get("first_name", ""),
@@ -1803,16 +3012,24 @@ async def submit_additional(
 async def list_submissions(
     client_id: Optional[str] = None,
     type: Optional[str] = None,
+    review_status: Optional[str] = None,
     q: Optional[str] = None,
     user: dict = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ):
+    await require_document_processing_module(session)
     stmt = select(submissions)
     conditions = []
     if client_id:
         conditions.append(submissions.c.client_id == client_id)
     if type in ("purchase", "sales"):
         conditions.append(submissions.c.type == type)
+    if review_status == "inbox":
+        conditions.append(or_(submissions.c.review_status == "inbox", submissions.c.review_status.is_(None)))
+    elif review_status == "archived":
+        conditions.append(submissions.c.review_status.in_(["archived", "published"]))
+    elif review_status in ("rejected", "published"):
+        conditions.append(submissions.c.review_status == review_status)
     if q:
         like = f"%{q}%"
         conditions.append(or_(submissions.c.description.ilike(like), submissions.c.comment.ilike(like)))
@@ -1833,12 +3050,266 @@ async def list_submissions(
     return result
 
 
+@api.patch("/admin/submissions/{submission_id}/review-status")
+async def update_submission_review_status(
+    submission_id: str,
+    payload: SubmissionReviewStatusIn,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await require_document_processing_module(session)
+    status = payload.review_status.strip().lower()
+    if status not in {"inbox", "archived", "rejected", "published"}:
+        raise HTTPException(status_code=400, detail="Invalid submission status")
+    values = {"review_status": status, "reviewed_at": utc_now_iso()}
+    memory_updated = False
+    supplier_name = ""
+    if payload.coding_fields is not None:
+        values["coding_fields"] = json.dumps(payload.coding_fields)
+        supplier_name = str(payload.coding_fields.get("vendor_name") or "").strip()
+        memory_updated = status == "published"
+    result = await session.execute(
+        update(submissions)
+        .where(submissions.c.id == submission_id)
+        .values(**values)
+    )
+    if result.rowcount == 0:
+        await session.rollback()
+        raise HTTPException(status_code=404, detail="Submission not found")
+    await session.commit()
+    return {
+        "ok": True,
+        "review_status": status,
+        "memory_updated": memory_updated,
+        "supplier_name": supplier_name,
+    }
+
+
+@api.post("/admin/submissions/{submission_id}/extract-fields")
+async def extract_submission_fields(
+    submission_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await require_document_processing_module(session)
+    doc = await one(session, select(submissions).where(submissions.c.id == submission_id))
+    if not doc:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    filename = doc.get("image_filename")
+    if not filename:
+        raise HTTPException(status_code=400, detail="Submission has no document attached")
+    path = UPLOAD_DIR / Path(filename).name
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Submitted document file was not found")
+    client_user = await get_user_by_id(session, doc["client_id"])
+    if not client_user:
+        raise HTTPException(status_code=404, detail="Client was not found")
+    ai_settings = await get_openai_runtime_settings(session)
+    raw = path.read_bytes()
+    content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    item = {
+        "description": doc.get("description") or "",
+        "date": doc.get("date") or "",
+        "amount": doc.get("amount") or "",
+        "type": doc.get("type") or "purchase",
+        "additional": bool(doc.get("is_additional")),
+    }
+    coding_history = await get_coding_history(session, str(doc["client_id"]), doc.get("type") or "purchase")
+    ai_review = await review_document_with_openai(
+        raw,
+        content_type,
+        item,
+        client_user,
+        ai_settings["api_key"],
+        ai_settings["model"],
+        filename,
+        coding_history,
+    )
+    extracted = ai_review.get("coding_fields") or {}
+    await session.execute(
+        update(submissions)
+        .where(submissions.c.id == submission_id)
+        .values(
+            ai_review_status=ai_review.get("status"),
+            ai_review_message=ai_review.get("message"),
+            ai_document_type=ai_review.get("document_type"),
+            ai_extracted_fields=json.dumps(extracted),
+        )
+    )
+    await session.commit()
+    return {"ok": True, "ai_review": ai_review, "ai_extracted_fields": extracted}
+
+
+@api.post("/admin/submissions/{submission_id}/suggest-lines")
+async def suggest_submission_lines(
+    submission_id: str,
+    payload: SubmissionLineSuggestionIn,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await require_document_processing_module(session)
+    doc = await one(session, select(submissions).where(submissions.c.id == submission_id))
+    if not doc:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    filename = doc.get("image_filename")
+    if not filename:
+        raise HTTPException(status_code=400, detail="Submission has no document attached")
+    path = UPLOAD_DIR / Path(filename).name
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Submitted document file was not found")
+    ai_settings = await get_openai_runtime_settings(session)
+    raw = path.read_bytes()
+    content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    document_part = build_openai_document_part(raw, content_type, filename)
+    coding_history = await get_coding_history(session, str(doc["client_id"]), doc.get("type") or "purchase")
+    line_item_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "description": {"type": "string"},
+            "category": {"type": "string"},
+            "vat_code": {"type": "string"},
+            "units": {"type": "string"},
+            "price": {"type": "string"},
+            "net": {"type": "string"},
+            "vat": {"type": "string"},
+            "total": {"type": "string"},
+        },
+        "required": ["description", "category", "vat_code", "units", "price", "net", "vat", "total"],
+    }
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "line_items": {"type": "array", "items": line_item_schema},
+        },
+        "required": ["line_items"],
+    }
+    prompt = (
+        "Extract invoice or receipt line items from this document. Use the supplied example line as the coding pattern. "
+        "Keep the document's visible line descriptions, units, price, net, VAT and total where legible. "
+        "Apply category and VAT code consistently from the pattern unless the document clearly requires a different value. "
+        "Return all visible document item rows where possible. For supermarket/shop receipts, each purchased product row "
+        "with a visible amount should become a separate line item. Do not collapse a readable receipt into one summary line. "
+        "Include discount/clubcard rows as negative lines when they are clearly visible. If the receipt only has a total "
+        "and no itemised lines are readable, return one best summary line. "
+        "For each line, populate net and total wherever possible. If VAT and gross total are visible, calculate net as gross minus VAT. "
+        "If only a gross receipt total is visible, use it as total and leave VAT blank unless VAT is explicitly shown. "
+        f"Current header/draft coding: {json.dumps(payload.coding_fields)[:4000]}. "
+        f"Example line pattern: {json.dumps(payload.pattern_line)[:1500]}. "
+        f"Previous approved examples: {json.dumps(coding_history)[:3000]}."
+    )
+    request_payload = {
+        "model": ai_settings["model"],
+        "input": [
+            {
+                "role": "system",
+                "content": [{"type": "input_text", "text": "You are a UK bookkeeping line-item coding assistant. Return only structured line items."}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": prompt},
+                    document_part,
+                ],
+            },
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "line_item_suggestions",
+                "schema": schema,
+                "strict": True,
+            }
+        },
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/responses",
+                headers={"Authorization": f"Bearer {ai_settings['api_key']}", "Content-Type": "application/json"},
+                json=request_payload,
+            )
+            resp.raise_for_status()
+            body = resp.json()
+    except httpx.HTTPStatusError as exc:
+        openai_detail = exc.response.text
+        try:
+            error_body = exc.response.json()
+            openai_detail = error_body.get("error", {}).get("message") or openai_detail
+        except Exception:
+            pass
+        logger.exception("OpenAI line suggestion failed: %s", openai_detail)
+        raise HTTPException(status_code=400, detail=f"Unable to suggest line items: {openai_detail[:300]}")
+    except httpx.HTTPError as exc:
+        logger.exception("OpenAI line suggestion failed")
+        raise HTTPException(status_code=400, detail=f"Unable to suggest line items: {exc}")
+
+    output_text = body.get("output_text")
+    if not output_text:
+        for item_out in body.get("output", []):
+            for content in item_out.get("content", []):
+                if content.get("type") in ("output_text", "text") and content.get("text"):
+                    output_text = content["text"]
+                    break
+            if output_text:
+                break
+    try:
+        parsed = json.loads(output_text or "{}")
+    except json.JSONDecodeError:
+        logger.warning("OpenAI line suggestion returned non-JSON output: %s", output_text)
+        parsed = {}
+    line_items = normalize_line_items(parsed.get("line_items"))
+    if not line_items:
+        raise HTTPException(status_code=400, detail="AI could not identify line items from this document.")
+    return {"ok": True, "line_items": line_items}
+
+
+@api.post("/admin/submissions/download")
+async def download_submissions(
+    payload: SubmissionDownloadIn,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await require_document_processing_module(session)
+    ids = [str(item).strip() for item in payload.ids if str(item).strip()]
+    if not ids:
+        raise HTTPException(status_code=400, detail="Select at least one document")
+
+    docs = await many(session, select(submissions).where(submissions.c.id.in_(ids)))
+    buffer = io.BytesIO()
+    added = 0
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for doc in docs:
+            filename = doc.get("image_filename")
+            if not filename:
+                continue
+            path = UPLOAD_DIR / filename
+            if not path.exists():
+                continue
+            submitted = (doc.get("submitted_at") or "").replace(":", "-").replace("T", "_")[:19]
+            prefix = submitted or str(doc.get("id"))
+            archive.write(path, arcname=f"{prefix}_{filename}")
+            added += 1
+
+    if added == 0:
+        raise HTTPException(status_code=404, detail="No files found for selected submissions")
+
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="submissions.zip"'},
+    )
+
+
 @api.delete("/admin/submissions/{submission_id}")
 async def delete_submission(
     submission_id: str,
     user: dict = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ):
+    await require_document_processing_module(session)
     result = await session.execute(delete(submissions).where(submissions.c.id == submission_id))
     if result.rowcount == 0:
         await session.rollback()

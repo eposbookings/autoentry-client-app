@@ -1,6 +1,6 @@
 # PROJECT_STATE - EPOS Accountancy Outstanding Documents Portal
 
-Last updated: 13 Jul 2026
+Last updated: 15 Jul 2026
 
 ## Current Status
 
@@ -19,6 +19,9 @@ Admins can:
 - configure SMTP,
 - configure OpenAI document checks,
 - review submitted documents.
+- configure QuickBooks client integrations.
+- disable the admin document-processing inbox without changing the client
+  submission/email flow.
 
 ## Current Stack
 
@@ -47,6 +50,12 @@ artifacts to the VPS, then restarts Docker Compose services.
 - Local frontend: `http://localhost:3000`
 - Local API health: `http://localhost:8000/api/health`
 - VPS login: `http://45.8.225.73/login`
+- Live frontend/API origin: `https://eposbookings.net`
+- Live QuickBooks callback:
+  `https://eposbookings.net/api/integrations/quickbooks/callback`
+- On live HTTPS, set `COOKIE_SECURE=true`.
+- Set `FRONTEND_URL` and `BACKEND_URL` to `https://eposbookings.net` so OAuth
+  redirects return to the live app correctly.
 
 ## Recent Features
 
@@ -57,3 +66,5 @@ artifacts to the VPS, then restarts Docker Compose services.
 - Image and PDF uploads.
 - PDF/image comments and approval notes added as a separate PDF page.
 - EPOS Accountancy logo and browser tab branding.
+- QuickBooks OAuth connection with chart of accounts, suppliers and customers.
+- Admin feature toggle for the Submitted items/document-processing inbox.

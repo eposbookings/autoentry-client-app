@@ -59,7 +59,7 @@ export default function AdminClients() {
     <div className="space-y-8">
       <header className="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
         <div>
-          <h1 className="font-display text-3xl sm:text-4xl font-bold tracking-tight text-stone-900">Clients</h1>
+          <h1 className="font-display text-3xl sm:text-4xl font-bold tracking-tight text-stone-900">Client settings</h1>
           <p className="mt-1 text-stone-600">
             {clients.length} {clients.length === 1 ? "client" : "clients"} · {totalOutstanding} outstanding items total
           </p>

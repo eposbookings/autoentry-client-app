@@ -36,12 +36,17 @@ Backend (`backend/.env`):
 
 - `DATABASE_URL`
 - `CORS_ORIGINS`
+- `FRONTEND_URL` - public frontend origin used after OAuth callbacks.
+- `BACKEND_URL` - public backend origin used to build OAuth callback defaults.
 - `JWT_SECRET`
 - `FERNET_KEY` - preserve this; it decrypts saved SMTP/OpenAI settings.
+- `COOKIE_SECURE` - use `true` on HTTPS/live.
 - `ADMIN_EMAIL`
 - `ADMIN_PASSWORD`
 - `UPLOAD_DIR`
 - optional: `OPENAI_API_KEY`, `OPENAI_INVOICE_CHECK_MODEL`
+- optional: `QUICKBOOKS_CLIENT_ID`, `QUICKBOOKS_CLIENT_SECRET`,
+  `QUICKBOOKS_ENVIRONMENT`, `QUICKBOOKS_REDIRECT_URI`
 
 Frontend (`frontend/.env`):
 
@@ -84,6 +89,29 @@ Local API health: `http://localhost:8000/api/health`
   to the VPS, then restarts Docker services.
 
 Work locally first. Do not change the VPS unless explicitly requested.
+
+### Live Environment Checklist
+
+For `https://eposbookings.net`, the VPS `.env` should include:
+
+```bash
+REACT_APP_BACKEND_URL=https://eposbookings.net
+CORS_ORIGINS=https://eposbookings.net,https://www.eposbookings.net,http://45.8.225.73
+FRONTEND_URL=https://eposbookings.net
+BACKEND_URL=https://eposbookings.net
+COOKIE_SECURE=true
+QUICKBOOKS_ENVIRONMENT=production
+QUICKBOOKS_REDIRECT_URI=https://eposbookings.net/api/integrations/quickbooks/callback
+```
+
+In the Intuit developer portal, add the exact production Redirect URI:
+
+```text
+https://eposbookings.net/api/integrations/quickbooks/callback
+```
+
+Use production QuickBooks keys for live testing. Development/sandbox keys should
+stay with local or sandbox testing.
 
 ## Document Submission
 
