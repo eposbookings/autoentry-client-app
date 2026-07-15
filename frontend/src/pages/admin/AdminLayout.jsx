@@ -1,8 +1,9 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
+import { api } from "@/lib/api";
 import { EposLogo } from "@/components/Brand";
-import { Users, FileText, Settings, LogOut } from "lucide-react";
+import { Users, FileText, Settings, LogOut, PlugZap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 const linkBase =
@@ -11,6 +12,16 @@ const linkBase =
 export default function AdminLayout() {
   const { user, logout } = useAuth();
   const nav = useNavigate();
+  const [features, setFeatures] = useState({ document_processing_enabled: true });
+
+  useEffect(() => {
+    const loadFeatures = () => api.get("/admin/settings/features")
+      .then(({ data }) => setFeatures({ document_processing_enabled: data.document_processing_enabled !== false }))
+      .catch(() => setFeatures({ document_processing_enabled: true }));
+    loadFeatures();
+    window.addEventListener("feature-settings-updated", loadFeatures);
+    return () => window.removeEventListener("feature-settings-updated", loadFeatures);
+  }, []);
 
   async function onLogout() {
     await logout();
@@ -31,11 +42,17 @@ export default function AdminLayout() {
         <nav className="px-3 pt-2 pb-6 space-y-1">
           <NavLink end to="/admin" data-testid="nav-clients"
             className={({isActive}) => `${linkBase} ${isActive ? "bg-stone-100 text-stone-900" : "text-stone-600 hover:bg-stone-50"}`}>
-            <Users className="h-4 w-4" /> Clients
+            <Users className="h-4 w-4" /> Client settings
           </NavLink>
-          <NavLink to="/admin/submissions" data-testid="nav-submissions"
+          {features.document_processing_enabled && (
+            <NavLink to="/admin/submissions" data-testid="nav-submissions"
+              className={({isActive}) => `${linkBase} ${isActive ? "bg-stone-100 text-stone-900" : "text-stone-600 hover:bg-stone-50"}`}>
+              <FileText className="h-4 w-4" /> Submitted items
+            </NavLink>
+          )}
+          <NavLink to="/admin/integrations" data-testid="nav-integrations"
             className={({isActive}) => `${linkBase} ${isActive ? "bg-stone-100 text-stone-900" : "text-stone-600 hover:bg-stone-50"}`}>
-            <FileText className="h-4 w-4" /> Submissions
+            <PlugZap className="h-4 w-4" /> Client integrations
           </NavLink>
           <NavLink to="/admin/settings" data-testid="nav-settings"
             className={({isActive}) => `${linkBase} ${isActive ? "bg-stone-100 text-stone-900" : "text-stone-600 hover:bg-stone-50"}`}>
@@ -50,7 +67,7 @@ export default function AdminLayout() {
         </div>
       </aside>
 
-      <main className="flex-1 p-6 sm:p-10 max-w-7xl w-full mx-auto fade-up">
+      <main className="flex-1 p-4 sm:p-6 max-w-none w-full fade-up overflow-hidden">
         <Outlet />
       </main>
     </div>

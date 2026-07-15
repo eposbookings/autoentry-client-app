@@ -13,11 +13,13 @@ export default function AdminSettings() {
     sender_email: "", sender_name: "", use_tls: true, aws_iam_secret: false,
   });
   const [aiForm, setAiForm] = useState({ api_key: "", model: "gpt-5.6-luna" });
+  const [featureForm, setFeatureForm] = useState({ document_processing_enabled: true });
   const [configured, setConfigured] = useState(false);
   const [aiConfigured, setAiConfigured] = useState(false);
   const [aiSource, setAiSource] = useState("missing");
   const [busy, setBusy] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
+  const [featureBusy, setFeatureBusy] = useState(false);
 
   const load = useCallback(async () => {
     const errors = [];
@@ -38,6 +40,13 @@ export default function AdminSettings() {
       setAiConfigured(false);
       setAiSource("missing");
       errors.push(`OpenAI: ${formatApiError(e)}`);
+    }
+
+    try {
+      const features = await api.get("/admin/settings/features");
+      setFeatureForm({ document_processing_enabled: features.data.document_processing_enabled !== false });
+    } catch (e) {
+      errors.push(`Features: ${formatApiError(e)}`);
     }
 
     if (errors.length) toast.error(errors.join(" | "));
@@ -72,12 +81,50 @@ export default function AdminSettings() {
     finally { setAiBusy(false); }
   }
 
+  async function saveFeatures(e) {
+    e.preventDefault();
+    setFeatureBusy(true);
+    try {
+      await api.put("/admin/settings/features", featureForm);
+      toast.success("Feature settings saved");
+      window.dispatchEvent(new Event("feature-settings-updated"));
+      load();
+    } catch (err) { toast.error(formatApiError(err)); }
+    finally { setFeatureBusy(false); }
+  }
+
   return (
     <div className="space-y-6 max-w-2xl">
       <header>
         <h1 className="font-display text-3xl sm:text-4xl font-bold tracking-tight text-stone-900">Settings</h1>
         <p className="mt-1 text-stone-600">Configure email delivery and optional AI document checks.</p>
       </header>
+
+      <form onSubmit={saveFeatures} className="bg-white border border-stone-200 rounded-2xl p-6 space-y-4">
+        <div>
+          <h2 className="font-display text-xl font-semibold text-stone-900">Feature modules</h2>
+          <p className="text-sm text-stone-500 mt-1">Controls admin modules only. Client uploads, AI pre-email checks, stamps, and email delivery stay unchanged.</p>
+        </div>
+        <div className="rounded-xl border border-stone-200 bg-stone-50 p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <Label className="text-sm font-semibold text-stone-800">Document processing inbox</Label>
+              <p className="mt-1 text-xs leading-relaxed text-stone-600">
+                Shows the admin Submitted items inbox, coding fields, archive, AI prefill and line suggestions. Turn off while testing live integrations without changing the client submission flow.
+              </p>
+            </div>
+            <Switch
+              checked={featureForm.document_processing_enabled}
+              onCheckedChange={(v) => setFeatureForm({ ...featureForm, document_processing_enabled: v })}
+            />
+          </div>
+        </div>
+        <div className="flex justify-end">
+          <Button type="submit" disabled={featureBusy} className="gap-2" style={{ background: "var(--brand)" }}>
+            <Save className="h-4 w-4" /> {featureBusy ? "Saving…" : "Save feature settings"}
+          </Button>
+        </div>
+      </form>
 
       <div className={`rounded-xl p-4 flex items-start gap-3 border ${configured ? "border-emerald-200" : "border-amber-200"}`}
         style={{ background: configured ? "var(--success-bg)" : "var(--outstanding-bg)" }}>

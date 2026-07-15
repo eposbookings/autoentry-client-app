@@ -46,7 +46,9 @@ services:
     env_file:
       - ./.env
     environment:
-      CORS_ORIGINS: "http://localhost:3000,http://45.8.225.73,http://eposbookings.net,http://www.eposbookings.net,https://eposbookings.net,https://www.eposbookings.net"
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://45.8.225.73,http://eposbookings.net,http://www.eposbookings.net,https://eposbookings.net,https://www.eposbookings.net}
+      FRONTEND_URL: ${FRONTEND_URL:-https://eposbookings.net}
+      BACKEND_URL: ${BACKEND_URL:-https://eposbookings.net}
     ports:
       - "${APP_PORT:-8000}:8000"
     depends_on:
