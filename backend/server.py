@@ -1091,6 +1091,44 @@ async def quickbooks_query(access_token: str, realm_id: str, environment: str, q
     return resp.json().get("QueryResponse") or {}
 
 
+async def quickbooks_post(access_token: str, realm_id: str, environment: str, entity: str, payload: dict) -> dict:
+    url = f"{quickbooks_api_base(environment)}/v3/company/{realm_id}/{entity.lower()}"
+    async with httpx.AsyncClient(timeout=40) as client:
+        resp = await client.post(
+            url,
+            params={"minorversion": "75"},
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+    if resp.status_code >= 400:
+        logger.error("QuickBooks %s create failed: %s %s", entity, resp.status_code, resp.text[:1000])
+        raise HTTPException(status_code=400, detail=f"QuickBooks rejected the {entity}: {quickbooks_error_message(resp.text)}")
+    return resp.json().get(entity) or resp.json()
+
+
+def quickbooks_error_message(text_value: str) -> str:
+    try:
+        data = json.loads(text_value or "{}")
+        errors = (((data.get("Fault") or {}).get("Error")) or [])
+        messages = []
+        for item in errors:
+            message = item.get("Message") or item.get("Detail") or item.get("code")
+            detail = item.get("Detail")
+            if message and detail and detail not in message:
+                message = f"{message}: {detail}"
+            if message:
+                messages.append(str(message))
+        if messages:
+            return "; ".join(messages)[:500]
+    except Exception:
+        pass
+    return (text_value or "Unknown QuickBooks error")[:500]
+
+
 async def optional_quickbooks_query(access_token: str, realm_id: str, environment: str, query: str) -> tuple[dict, Optional[str]]:
     try:
         return await quickbooks_query(access_token, realm_id, environment, query), None
@@ -1144,6 +1182,7 @@ async def get_client_integration(
         session,
         select(integration_records)
         .where(integration_records.c.client_id == client_id)
+        .where(integration_records.c.active == True)  # noqa: E712
         .order_by(integration_records.c.record_type.asc(), integration_records.c.name.asc()),
     )
     grouped = {"account": [], "supplier": [], "customer": [], "tax_code": []}
@@ -1475,6 +1514,210 @@ async def sync_quickbooks_lists(
     session: AsyncSession = Depends(get_db),
 ):
     return await sync_quickbooks_lists_for_client(session, client_id)
+
+
+async def get_active_integration_records(session: AsyncSession, client_id: str, record_type: str) -> list[dict]:
+    return await many(
+        session,
+        select(integration_records)
+        .where(integration_records.c.client_id == client_id)
+        .where(integration_records.c.provider == "quickbooks")
+        .where(integration_records.c.record_type == record_type)
+        .where(integration_records.c.active == True),  # noqa: E712
+    )
+
+
+def normalize_lookup_value(value: Optional[str]) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip()).lower()
+
+
+def record_matches_value(record: dict, value: str) -> bool:
+    needle = normalize_lookup_value(value)
+    if not needle:
+        return False
+    raw = parse_json_object(record.get("raw_json")) or {}
+    candidates = [
+        record.get("external_id"),
+        record.get("code"),
+        record.get("name"),
+        " - ".join([part for part in (record.get("code"), record.get("name")) if part]),
+        " - ".join([part for part in (record.get("code"), record.get("name"), record.get("description")) if part]),
+        raw.get("DisplayName"),
+        raw.get("FullyQualifiedName"),
+        raw.get("CompanyName"),
+        raw.get("Name"),
+    ]
+    return any(normalize_lookup_value(candidate) == needle for candidate in candidates if candidate)
+
+
+def find_integration_record(records: list[dict], value: Optional[str]) -> Optional[dict]:
+    if not value:
+        return None
+    exact = [record for record in records if record_matches_value(record, value)]
+    if exact:
+        return exact[0]
+    needle = normalize_lookup_value(value)
+    for record in records:
+        if needle and needle in normalize_lookup_value(record.get("name")):
+            return record
+    return None
+
+
+def quickbooks_date(value: Optional[str]) -> Optional[str]:
+    text_value = str(value or "").strip()
+    if not text_value:
+        return None
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d %b %Y", "%d %B %Y"):
+        try:
+            return datetime.strptime(text_value, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def quickbooks_amount(value: Optional[str]) -> Optional[float]:
+    parsed = parse_money_value(str(value or ""))
+    return round(parsed, 2) if parsed is not None else None
+
+
+def quickbooks_ref(record: dict) -> dict:
+    return {"value": str(record["external_id"]), "name": record.get("name") or record.get("code") or str(record["external_id"])}
+
+
+def build_quickbooks_bill_lines(coding_fields: dict, accounts: list[dict], tax_codes: list[dict], header_account: dict, header_tax: Optional[dict]) -> list[dict]:
+    source_lines = coding_fields.get("line_items")
+    if not isinstance(source_lines, list) or not source_lines:
+        source_lines = [{
+            "description": coding_fields.get("description") or "",
+            "category": coding_fields.get("category") or "",
+            "vat_code": coding_fields.get("vat_code") or "",
+            "net": coding_fields.get("net") or coding_fields.get("total") or "",
+            "total": coding_fields.get("total") or coding_fields.get("net") or "",
+        }]
+
+    lines = []
+    for line in source_lines:
+        if not isinstance(line, dict):
+            continue
+        amount = quickbooks_amount(line.get("net"))
+        if amount is None:
+            amount = quickbooks_amount(line.get("total"))
+        if amount is None:
+            continue
+        account = find_integration_record(accounts, line.get("category") or "") or header_account
+        tax = find_integration_record(tax_codes, line.get("vat_code") or "") or header_tax
+        detail = {"AccountRef": quickbooks_ref(account)}
+        if tax and tax.get("external_id"):
+            detail["TaxCodeRef"] = {"value": str(tax["external_id"]), "name": tax.get("name") or tax.get("code") or str(tax["external_id"])}
+        lines.append({
+            "DetailType": "AccountBasedExpenseLineDetail",
+            "Amount": amount,
+            "Description": str(line.get("description") or coding_fields.get("description") or "Purchase")[:4000],
+            "AccountBasedExpenseLineDetail": detail,
+        })
+    return lines
+
+
+async def attach_submission_file_to_quickbooks(access_token: str, realm_id: str, environment: str, filename: str, entity_type: str, entity_id: str) -> dict:
+    safe_name = Path(filename).name
+    file_path = UPLOAD_DIR / safe_name
+    if not file_path.exists():
+        raise HTTPException(status_code=400, detail="The submitted document file could not be found for attachment.")
+    content_type = mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
+    metadata_payload = {
+        "AttachableRef": [{"EntityRef": {"type": entity_type, "value": entity_id}}],
+        "FileName": safe_name,
+        "ContentType": content_type,
+    }
+    url = f"{quickbooks_api_base(environment)}/v3/company/{realm_id}/upload"
+    with file_path.open("rb") as fh:
+        files = {
+            "file_metadata_0": ("metadata.json", json.dumps(metadata_payload), "application/json"),
+            "file_content_0": (safe_name, fh, content_type),
+        }
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                url,
+                params={"minorversion": "75"},
+                headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+                files=files,
+            )
+    if resp.status_code >= 400:
+        logger.error("QuickBooks attachment upload failed: %s %s", resp.status_code, resp.text[:1000])
+        raise HTTPException(status_code=400, detail=f"QuickBooks created the bill but rejected the attachment: {quickbooks_error_message(resp.text)}")
+    data = resp.json()
+    attachables = data.get("AttachableResponse") or data.get("Attachable") or []
+    if isinstance(attachables, list) and attachables:
+        return attachables[0].get("Attachable") or attachables[0]
+    return data
+
+
+async def publish_submission_to_quickbooks(session: AsyncSession, submission: dict, coding_fields: dict) -> dict:
+    if submission.get("type") != "purchase":
+        raise HTTPException(status_code=400, detail="QuickBooks publishing is ready for purchase bills first. Sales invoices need product/service item mapping before they can be published safely.")
+
+    client_id = str(submission["client_id"])
+    integration = await one(session, select(client_integrations).where(client_integrations.c.client_id == client_id))
+    if not integration or integration.get("provider") != "quickbooks" or not integration.get("company_id"):
+        raise HTTPException(status_code=400, detail="Connect this client to QuickBooks before publishing.")
+    if integration.get("status") != "connected":
+        raise HTTPException(status_code=400, detail="QuickBooks is not connected for this client.")
+
+    suppliers = await get_active_integration_records(session, client_id, "supplier")
+    accounts = await get_active_integration_records(session, client_id, "account")
+    tax_codes = await get_active_integration_records(session, client_id, "tax_code")
+
+    supplier = find_integration_record(suppliers, coding_fields.get("vendor_name") or coding_fields.get("vendor_account") or "")
+    if not supplier or not supplier.get("external_id"):
+        raise HTTPException(status_code=400, detail="Select a synced QuickBooks supplier, or create the missing supplier first.")
+
+    default_account = integration.get("default_purchase_account") or ""
+    header_account = find_integration_record(accounts, coding_fields.get("category") or default_account)
+    if not header_account and default_account:
+        header_account = find_integration_record(accounts, default_account)
+    if not header_account:
+        raise HTTPException(status_code=400, detail="Select a QuickBooks category/account before publishing.")
+
+    header_tax = find_integration_record(tax_codes, coding_fields.get("vat_code") or integration.get("default_vat_code") or "")
+    lines = build_quickbooks_bill_lines(coding_fields, accounts, tax_codes, header_account, header_tax)
+    if not lines:
+        raise HTTPException(status_code=400, detail="Add at least one line with a net or total amount before publishing.")
+
+    environment = "sandbox" if integration.get("sandbox") else "production"
+    realm_id = integration["company_id"]
+    access_token = await get_valid_quickbooks_access_token(session, integration)
+    integration = await one(session, select(client_integrations).where(client_integrations.c.client_id == client_id))
+
+    payload = {
+        "VendorRef": quickbooks_ref(supplier),
+        "Line": lines,
+        "PrivateNote": str(coding_fields.get("reference") or submission.get("comment") or "")[:4000],
+    }
+    doc_number = str(coding_fields.get("bill_number") or "").strip()
+    if doc_number:
+        payload["DocNumber"] = doc_number[:21]
+    txn_date = quickbooks_date(coding_fields.get("date") or submission.get("date"))
+    if txn_date:
+        payload["TxnDate"] = txn_date
+    due_date = quickbooks_date(coding_fields.get("due_date"))
+    if due_date:
+        payload["DueDate"] = due_date
+    payload["GlobalTaxCalculation"] = "TaxInclusive" if str(coding_fields.get("price_is") or "").lower() == "tax inclusive" else "TaxExcluded"
+
+    bill = await quickbooks_post(access_token, realm_id, environment, "Bill", payload)
+    bill_id = str(bill.get("Id") or "")
+    attachable = None
+    if bill_id and submission.get("image_filename"):
+        attachable = await attach_submission_file_to_quickbooks(access_token, realm_id, environment, submission.get("image_filename"), "Bill", bill_id)
+    return {
+        "provider": "quickbooks",
+        "entity": "Bill",
+        "id": bill_id,
+        "doc_number": bill.get("DocNumber") or doc_number,
+        "attached": bool(attachable),
+        "attached_id": (attachable or {}).get("Id"),
+        "synced_at": utc_now_iso(),
+    }
 
 
 @api.post("/admin/integrations/clients/{client_id}/records")
@@ -3126,12 +3369,20 @@ async def update_submission_review_status(
     status = payload.review_status.strip().lower()
     if status not in {"inbox", "archived", "rejected", "published"}:
         raise HTTPException(status_code=400, detail="Invalid submission status")
+    existing_submission = await one(session, select(submissions).where(submissions.c.id == submission_id))
+    if not existing_submission:
+        raise HTTPException(status_code=404, detail="Submission not found")
     values = {"review_status": status, "reviewed_at": utc_now_iso()}
     memory_updated = False
     supplier_name = ""
+    quickbooks_publish = None
     if payload.coding_fields is not None:
-        values["coding_fields"] = json.dumps(payload.coding_fields)
-        supplier_name = str(payload.coding_fields.get("vendor_name") or "").strip()
+        coding_fields = dict(payload.coding_fields)
+        supplier_name = str(coding_fields.get("vendor_name") or "").strip()
+        if status == "published":
+            quickbooks_publish = await publish_submission_to_quickbooks(session, existing_submission, coding_fields)
+            coding_fields["quickbooks_publish"] = quickbooks_publish
+        values["coding_fields"] = json.dumps(coding_fields)
         memory_updated = status == "published"
     result = await session.execute(
         update(submissions)
@@ -3147,6 +3398,7 @@ async def update_submission_review_status(
         "review_status": status,
         "memory_updated": memory_updated,
         "supplier_name": supplier_name,
+        "quickbooks_publish": quickbooks_publish,
     }
 
 
