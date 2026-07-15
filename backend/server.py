@@ -9,6 +9,7 @@ import base64
 import hashlib
 import asyncio
 import csv
+import difflib
 import io
 import json
 import logging
@@ -1563,6 +1564,18 @@ def find_integration_record(records: list[dict], value: Optional[str]) -> Option
     return None
 
 
+def find_supplier_record(records: list[dict], vendor_name: Optional[str], vendor_account: Optional[str]) -> Optional[dict]:
+    supplier = find_integration_record(records, vendor_name)
+    if supplier:
+        return supplier
+    account_value = str(vendor_account or "").strip()
+    # Bare numeric ids are too easy to confuse with an unrelated supplier. Only
+    # trust the account field when it carries a display label from the synced list.
+    if " - " in account_value:
+        return find_integration_record(records, account_value)
+    return None
+
+
 def quickbooks_date(value: Optional[str]) -> Optional[str]:
     text_value = str(value or "").strip()
     if not text_value:
@@ -1582,6 +1595,74 @@ def quickbooks_amount(value: Optional[str]) -> Optional[float]:
 
 def quickbooks_ref(record: dict) -> dict:
     return {"value": str(record["external_id"]), "name": record.get("name") or record.get("code") or str(record["external_id"])}
+
+
+def require_account_match(accounts: list[dict], value: Optional[str], field_label: str) -> Optional[dict]:
+    text_value = str(value or "").strip()
+    if not text_value:
+        return None
+    account = find_integration_record(accounts, text_value)
+    if not account or not account.get("external_id"):
+        raise HTTPException(status_code=400, detail=f"Select a synced QuickBooks {field_label}. AI suggested '{text_value}', but it is not in the synced Chart of Accounts.")
+    return account
+
+
+def optional_tax_match(tax_codes: list[dict], value: Optional[str]) -> Optional[dict]:
+    text_value = str(value or "").strip()
+    if not text_value:
+        return None
+    tax = find_integration_record(tax_codes, text_value)
+    if not tax or not tax.get("external_id"):
+        raise HTTPException(status_code=400, detail=f"Select a synced QuickBooks VAT code. AI suggested '{text_value}', but it is not in the synced VAT code list.")
+    return tax
+
+
+async def create_quickbooks_supplier(
+    session: AsyncSession,
+    access_token: str,
+    realm_id: str,
+    environment: str,
+    client_id: str,
+    vendor_name: str,
+    supplier_code: Optional[str] = None,
+    existing_record: Optional[dict] = None,
+) -> dict:
+    clean_name = re.sub(r"\s+", " ", str(vendor_name or "").strip())
+    if not clean_name:
+        raise HTTPException(status_code=400, detail="Supplier name is required before publishing.")
+    payload = {
+        "DisplayName": clean_name[:100],
+        "CompanyName": clean_name[:100],
+    }
+    clean_code = re.sub(r"\s+", " ", str(supplier_code or "").strip())
+    if clean_code:
+        payload["AcctNum"] = clean_code[:100]
+    vendor = await quickbooks_post(access_token, realm_id, environment, "Vendor", payload)
+    now = utc_now_iso()
+    raw_json = json.dumps(vendor)
+    values = {
+        "external_id": str(vendor.get("Id") or ""),
+        "code": clean_code or str(vendor.get("AcctNum") or vendor.get("Id") or ""),
+        "name": vendor.get("DisplayName") or vendor.get("CompanyName") or clean_name,
+        "description": vendor.get("CompanyName") or "",
+        "active": vendor.get("Active", True),
+        "raw_json": raw_json,
+        "updated_at": now,
+    }
+    if existing_record and existing_record.get("id"):
+        await session.execute(update(integration_records).where(integration_records.c.id == existing_record["id"]).values(**values))
+        return {**existing_record, **values}
+    record = {
+        "id": new_id(),
+        "client_id": client_id,
+        "provider": "quickbooks",
+        "record_type": "supplier",
+        "email": None,
+        "created_at": now,
+        **values,
+    }
+    await session.execute(insert(integration_records).values(**record))
+    return record
 
 
 def build_quickbooks_bill_lines(coding_fields: dict, accounts: list[dict], tax_codes: list[dict], header_account: dict, header_tax: Optional[dict]) -> list[dict]:
@@ -1604,8 +1685,8 @@ def build_quickbooks_bill_lines(coding_fields: dict, accounts: list[dict], tax_c
             amount = quickbooks_amount(line.get("total"))
         if amount is None:
             continue
-        account = find_integration_record(accounts, line.get("category") or "") or header_account
-        tax = find_integration_record(tax_codes, line.get("vat_code") or "") or header_tax
+        account = require_account_match(accounts, line.get("category"), "line category/account") or header_account
+        tax = optional_tax_match(tax_codes, line.get("vat_code")) or header_tax
         detail = {"AccountRef": quickbooks_ref(account)}
         if tax and tax.get("external_id"):
             detail["TaxCodeRef"] = {"value": str(tax["external_id"]), "name": tax.get("name") or tax.get("code") or str(tax["external_id"])}
@@ -1667,26 +1748,30 @@ async def publish_submission_to_quickbooks(session: AsyncSession, submission: di
     accounts = await get_active_integration_records(session, client_id, "account")
     tax_codes = await get_active_integration_records(session, client_id, "tax_code")
 
-    supplier = find_integration_record(suppliers, coding_fields.get("vendor_name") or coding_fields.get("vendor_account") or "")
+    environment = "sandbox" if integration.get("sandbox") else "production"
+    realm_id = integration["company_id"]
+    access_token = await get_valid_quickbooks_access_token(session, integration)
+    integration = await one(session, select(client_integrations).where(client_integrations.c.client_id == client_id))
+
+    supplier = find_supplier_record(suppliers, coding_fields.get("vendor_name"), coding_fields.get("vendor_account"))
     if not supplier or not supplier.get("external_id"):
-        raise HTTPException(status_code=400, detail="Select a synced QuickBooks supplier, or create the missing supplier first.")
+        raise HTTPException(status_code=400, detail="Select a synced QuickBooks supplier, or click Create missing supplier before publishing.")
 
     default_account = integration.get("default_purchase_account") or ""
-    header_account = find_integration_record(accounts, coding_fields.get("category") or default_account)
+    header_category_value = str(coding_fields.get("category") or "").strip()
+    header_account = require_account_match(accounts, header_category_value, "category/account") if header_category_value else None
     if not header_account and default_account:
         header_account = find_integration_record(accounts, default_account)
     if not header_account:
         raise HTTPException(status_code=400, detail="Select a QuickBooks category/account before publishing.")
 
-    header_tax = find_integration_record(tax_codes, coding_fields.get("vat_code") or integration.get("default_vat_code") or "")
+    header_vat_value = str(coding_fields.get("vat_code") or "").strip()
+    header_tax = optional_tax_match(tax_codes, header_vat_value) if header_vat_value else None
+    if not header_tax and integration.get("default_vat_code"):
+        header_tax = find_integration_record(tax_codes, integration.get("default_vat_code") or "")
     lines = build_quickbooks_bill_lines(coding_fields, accounts, tax_codes, header_account, header_tax)
     if not lines:
         raise HTTPException(status_code=400, detail="Add at least one line with a net or total amount before publishing.")
-
-    environment = "sandbox" if integration.get("sandbox") else "production"
-    realm_id = integration["company_id"]
-    access_token = await get_valid_quickbooks_access_token(session, integration)
-    integration = await one(session, select(client_integrations).where(client_integrations.c.client_id == client_id))
 
     payload = {
         "VendorRef": quickbooks_ref(supplier),
@@ -1734,6 +1819,26 @@ async def create_integration_record(
     integration = await one(session, select(client_integrations).where(client_integrations.c.client_id == client_id))
     provider = clean_provider(integration.get("provider") if integration else "quickbooks")
     now = utc_now_iso()
+    if (
+        provider == "quickbooks"
+        and integration
+        and integration.get("status") == "connected"
+        and integration.get("company_id")
+    ):
+        environment = "sandbox" if integration.get("sandbox") else "production"
+        access_token = await get_valid_quickbooks_access_token(session, integration)
+        record = await create_quickbooks_supplier(
+            session,
+            access_token,
+            integration["company_id"],
+            environment,
+            client_id,
+            payload.name,
+            payload.code,
+        )
+        await session.commit()
+        return serialize_integration_record(record)
+
     doc = {
         "id": new_id(),
         "client_id": client_id,
@@ -2752,6 +2857,77 @@ async def get_coding_history(session: AsyncSession, client_id: str, doc_type: st
     return history
 
 
+def integration_choice_label(record: dict, include_description: bool = False) -> str:
+    parts = [record.get("code"), record.get("name")]
+    if include_description:
+        parts.append(record.get("description"))
+    return " - ".join([str(part).strip() for part in parts if str(part or "").strip()]) or str(record.get("name") or record.get("code") or "").strip()
+
+
+async def get_quickbooks_coding_choices(session: AsyncSession, client_id: str) -> dict:
+    try:
+        accounts = await get_active_integration_records(session, client_id, "account")
+        suppliers = await get_active_integration_records(session, client_id, "supplier")
+        tax_codes = await get_active_integration_records(session, client_id, "tax_code")
+    except Exception:
+        return {"categories": [], "suppliers": [], "vat_codes": []}
+    return {
+        "categories": [integration_choice_label(record, True) for record in accounts if record.get("external_id")][:500],
+        "suppliers": [str(record.get("name") or "").strip() for record in suppliers if record.get("external_id") and record.get("name")][:500],
+        "vat_codes": [integration_choice_label(record, True) for record in tax_codes if record.get("external_id")][:200],
+    }
+
+
+def choice_match_score(value: str, choice: str) -> float:
+    left = normalize_lookup_value(value)
+    right = normalize_lookup_value(choice)
+    if not left or not right:
+        return 0.0
+    if left == right:
+        return 1.0
+    if left in right or right in left:
+        return 0.86
+    return difflib.SequenceMatcher(None, left, right).ratio()
+
+
+def best_choice(value: Optional[str], choices: list[str], minimum: float = 0.62) -> str:
+    text_value = str(value or "").strip()
+    if not text_value:
+        return ""
+    best = ""
+    best_score = 0.0
+    for choice in choices:
+        score = choice_match_score(text_value, choice)
+        if score > best_score:
+            best = choice
+            best_score = score
+    return best if best_score >= minimum else ""
+
+
+def apply_synced_coding_choices(review: dict, coding_choices: Optional[dict]) -> dict:
+    if not coding_choices:
+        return review
+    fields = review.get("coding_fields") or {}
+    if not isinstance(fields, dict):
+        return review
+    categories = coding_choices.get("categories") or []
+    vat_codes = coding_choices.get("vat_codes") or []
+    suppliers = coding_choices.get("suppliers") or []
+
+    supplier_match = best_choice(fields.get("vendor_name"), suppliers, 0.76)
+    if supplier_match:
+        fields["vendor_name"] = supplier_match
+    fields["category"] = best_choice(fields.get("category"), categories, 0.56)
+    fields["vat_code"] = best_choice(fields.get("vat_code"), vat_codes, 0.56)
+    for line in fields.get("line_items") or []:
+        if not isinstance(line, dict):
+            continue
+        line["category"] = best_choice(line.get("category") or fields.get("category"), categories, 0.56)
+        line["vat_code"] = best_choice(line.get("vat_code") or fields.get("vat_code"), vat_codes, 0.56)
+    review["coding_fields"] = fields
+    return review
+
+
 def normalize_ai_review(data: dict) -> dict:
     status = str(data.get("status") or "").lower().strip()
     if status not in ("approved", "needs_review", "rejected"):
@@ -2782,6 +2958,7 @@ async def review_document_with_openai(
     model: str,
     filename: Optional[str] = None,
     coding_history: Optional[list[dict]] = None,
+    coding_choices: Optional[dict] = None,
 ) -> dict:
     if not api_key:
         raise HTTPException(status_code=400, detail="AI document check is enabled for this client, but OpenAI settings are not configured. Ask your administrator to add an API key.")
@@ -2825,6 +3002,10 @@ async def review_document_with_openai(
         "method style and line item approach. Do not copy old dates or amounts from examples. "
         "If Mark as Paid is true or payment is by card/cash, include the most likely bank/cash account only "
         "when there is a clear matching pattern in the published examples; otherwise leave bank_account blank. "
+        "For supplier, category, line category, VAT code and line VAT code, use the synced QuickBooks choices below "
+        "when possible. Do not invent category/account names or VAT codes. If no synced option is a reasonable match, "
+        "leave that field blank for the accountant to choose. "
+        f"Synced QuickBooks choices: {json.dumps(coding_choices or {})[:7000]}. "
         f"Published correction examples for this client/type: {json.dumps(coding_history or [])[:5000]}"
     )
     line_item_schema = {
@@ -2973,7 +3154,7 @@ async def review_document_with_openai(
             if output_text:
                 break
     try:
-        return normalize_ai_review(json.loads(output_text or "{}"))
+        return apply_synced_coding_choices(normalize_ai_review(json.loads(output_text or "{}")), coding_choices)
     except json.JSONDecodeError:
         logger.warning("OpenAI invoice check returned non-JSON output: %s", output_text)
         return {"status": "needs_review", "message": "Please check this document before submitting.", "document_type": "unknown", "payment_method": "not_clear", "confidence": "low"}
@@ -3126,6 +3307,7 @@ async def submit_item(
             if ai_review is None:
                 ai_settings = await get_openai_runtime_settings(session)
                 coding_history = await get_coding_history(session, str(user["id"]), item["type"])
+                coding_choices = await get_quickbooks_coding_choices(session, str(user["id"]))
                 ai_review = await review_document_with_openai(
                     raw,
                     upload_content_type(file),
@@ -3135,6 +3317,7 @@ async def submit_item(
                     ai_settings["model"],
                     file.filename,
                     coding_history,
+                    coding_choices,
                 )
             if ai_review["status"] in ("needs_review", "rejected") and not ai_token_verified:
                 return {
@@ -3247,6 +3430,7 @@ async def submit_additional(
             if ai_review is None:
                 ai_settings = await get_openai_runtime_settings(session)
                 coding_history = await get_coding_history(session, str(user["id"]), type)
+                coding_choices = await get_quickbooks_coding_choices(session, str(user["id"]))
                 ai_review = await review_document_with_openai(
                     raw,
                     upload_content_type(file),
@@ -3256,6 +3440,7 @@ async def submit_additional(
                     ai_settings["model"],
                     file.filename,
                     coding_history,
+                    coding_choices,
                 )
             if ai_review["status"] in ("needs_review", "rejected") and not ai_token_verified:
                 return {
@@ -3432,6 +3617,7 @@ async def extract_submission_fields(
         "additional": bool(doc.get("is_additional")),
     }
     coding_history = await get_coding_history(session, str(doc["client_id"]), doc.get("type") or "purchase")
+    coding_choices = await get_quickbooks_coding_choices(session, str(doc["client_id"]))
     ai_review = await review_document_with_openai(
         raw,
         content_type,
@@ -3441,6 +3627,7 @@ async def extract_submission_fields(
         ai_settings["model"],
         filename,
         coding_history,
+        coding_choices,
     )
     extracted = ai_review.get("coding_fields") or {}
     await session.execute(
