@@ -2,11 +2,10 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { api, formatApiError } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { ArrowLeft, BookOpen, Building2, Plus, RefreshCw, Search, Store, UsersRound } from "lucide-react";
+import { ArrowLeft, BookOpen, Building2, Percent, RefreshCw, Search, Store, UsersRound } from "lucide-react";
 import { toast } from "sonner";
 
 const providers = [
@@ -19,6 +18,7 @@ const recordTabs = [
   { key: "account", label: "Chart of Accounts", icon: BookOpen, empty: "No account codes synced or added yet." },
   { key: "supplier", label: "Supplier List", icon: Store, empty: "No suppliers synced or added yet." },
   { key: "customer", label: "Customer List", icon: UsersRound, empty: "No customers synced or added yet." },
+  { key: "tax_code", label: "VAT Codes", icon: Percent, empty: "No VAT codes synced or added yet." },
 ];
 
 const localQuickBooksRedirectUri = "http://localhost:8000/api/integrations/quickbooks/callback";
@@ -125,21 +125,6 @@ export default function AdminIntegrations() {
     }
   }
 
-  async function addRecord(record) {
-    if (!selectedId) return;
-    setBusy(true);
-    try {
-      await api.post(`/admin/integrations/clients/${selectedId}/records`, record);
-      toast.success("Record added");
-      await refreshDetail();
-      await loadClients();
-    } catch (err) {
-      toast.error(formatApiError(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function deleteRecord(recordId) {
     setBusy(true);
     try {
@@ -176,7 +161,10 @@ export default function AdminIntegrations() {
     setBusy(true);
     try {
       const { data } = await api.post(`/admin/integrations/clients/${selectedId}/quickbooks/sync`);
-      toast.success(`Synced ${data.counts.account} accounts, ${data.counts.supplier} suppliers, ${data.counts.customer} customers`);
+      toast.success(`Synced ${data.counts.account} accounts, ${data.counts.supplier} suppliers, ${data.counts.customer} customers, ${data.counts.tax_code || 0} VAT codes`);
+      if (data.warnings?.length) {
+        toast.warning(data.warnings.join(" "));
+      }
       await refreshDetail();
       await loadClients();
     } catch (err) {
@@ -220,7 +208,6 @@ export default function AdminIntegrations() {
         saveSettings={saveSettings}
         connectQuickBooks={connectQuickBooks}
         syncQuickBooks={syncQuickBooks}
-        addRecord={addRecord}
         deleteRecord={deleteRecord}
         back={() => {
           setSelectedId("");
@@ -357,13 +344,14 @@ function ClientCard({ client, onOpen, disabled }) {
         <SmallCount label="Accounts" value={counts.account || 0} />
         <SmallCount label="Suppliers" value={counts.supplier || 0} />
         <SmallCount label="Customers" value={counts.customer || 0} />
+        <SmallCount label="VAT codes" value={counts.tax_code || 0} />
       </div>
       <div className="mt-4 text-sm font-semibold text-emerald-800">{statusLabel(integration.status)}</div>
     </button>
   );
 }
 
-function DetailView({ detail, settings, setSettings, tab, setTab, busy, quickBooksConfig, saveSettings, connectQuickBooks, syncQuickBooks, addRecord, deleteRecord, back }) {
+function DetailView({ detail, settings, setSettings, tab, setTab, busy, quickBooksConfig, saveSettings, connectQuickBooks, syncQuickBooks, deleteRecord, back }) {
   const client = detail.client || {};
   const records = detail.records || {};
   const activeRecords = records[tab] || [];
@@ -492,7 +480,9 @@ function DetailView({ detail, settings, setSettings, tab, setTab, busy, quickBoo
                   );
                 })}
               </div>
-              <AddRecordDialog recordType={tab} onSave={addRecord} busy={busy} />
+              <div className="rounded-lg bg-stone-50 px-3 py-2 text-sm text-stone-600">
+                Synced from QuickBooks. Create missing suppliers from invoice review.
+              </div>
             </div>
 
             <div className="min-h-0 flex-1 overflow-auto">
@@ -522,65 +512,21 @@ function RecordRow({ record, recordType, onDelete, busy }) {
         <div className="truncate font-semibold text-stone-900">{record.name}</div>
         <div className="mt-1 truncate text-sm text-stone-500">{record.description || record.email || "No description"}</div>
       </div>
-      <div className="text-sm text-stone-600">{record.code || "-"}</div>
+        <div className="text-sm text-stone-600">{record.code || "-"}</div>
       <Badge variant={record.active ? "secondary" : "outline"}>{record.active ? "Active" : "Inactive"}</Badge>
-      <Button type="button" variant="outline" size="sm" onClick={onDelete} disabled={busy}>
-        Remove
-      </Button>
+      {record.external_id ? (
+        <Badge variant="outline">Synced</Badge>
+      ) : recordType === "supplier" ? (
+        <Button type="button" variant="outline" size="sm" onClick={onDelete} disabled={busy}>
+          Remove
+        </Button>
+      ) : (
+        <span className="text-sm text-stone-400">Read only</span>
+      )}
       {recordType !== "account" && record.external_id && (
         <div className="lg:col-span-4 text-xs text-stone-400">External ID: {record.external_id}</div>
       )}
     </div>
-  );
-}
-
-function AddRecordDialog({ recordType, onSave, busy }) {
-  const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ name: "", code: "", external_id: "", email: "", description: "", active: true });
-  const label = recordTabs.find((item) => item.key === recordType)?.label || "Record";
-
-  async function submit(e) {
-    e.preventDefault();
-    await onSave({ ...form, record_type: recordType, email: form.email || null });
-    setForm({ name: "", code: "", external_id: "", email: "", description: "", active: true });
-    setOpen(false);
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button type="button" variant="outline" className="h-10 gap-2">
-          <Plus className="h-4 w-4" /> Add {recordType === "account" ? "account" : recordType}
-        </Button>
-      </DialogTrigger>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Add {label}</DialogTitle>
-        </DialogHeader>
-        <form onSubmit={submit} className="space-y-4">
-          <Field label={recordType === "account" ? "Account name" : "Name"} value={form.name} onChange={(value) => setForm({ ...form, name: value })} required />
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field label={recordType === "account" ? "Account code" : "Code"} value={form.code} onChange={(value) => setForm({ ...form, code: value })} required={false} />
-            <Field label="External ID" value={form.external_id} onChange={(value) => setForm({ ...form, external_id: value })} required={false} />
-          </div>
-          {recordType !== "account" && (
-            <Field label="Email" type="email" value={form.email} onChange={(value) => setForm({ ...form, email: value })} required={false} />
-          )}
-          <div>
-            <Label>Description</Label>
-            <Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="mt-1" />
-          </div>
-          <label className="flex items-center gap-2 text-sm font-medium text-stone-700">
-            <input type="checkbox" checked={form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} />
-            Active
-          </label>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-            <Button type="submit" disabled={busy} style={{ background: "var(--brand)" }}>Save</Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
   );
 }
 

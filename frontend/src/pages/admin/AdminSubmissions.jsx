@@ -27,6 +27,7 @@ export default function AdminSubmissions() {
   const [previewError, setPreviewError] = useState("");
   const [busy, setBusy] = useState(false);
   const [moduleDisabled, setModuleDisabled] = useState(false);
+  const [integrationRecords, setIntegrationRecords] = useState({});
 
   const load = useCallback(async () => {
     try {
@@ -79,11 +80,29 @@ export default function AdminSubmissions() {
 
   const selected = rows.find((row) => row.id === selectedId) || null;
   const previewUrl = previewObjectUrl;
+  const integrationOptions = useMemo(() => buildIntegrationOptions(integrationRecords), [integrationRecords]);
 
   useEffect(() => {
     setSelectedArchiveIds([]);
     setSelectedId("");
   }, [clientId, tab]);
+
+  useEffect(() => {
+    setIntegrationRecords({});
+  }, [clientId]);
+
+  useEffect(() => {
+    if (!clientId) return undefined;
+    let cancelled = false;
+    api.get(`/admin/integrations/clients/${clientId}`)
+      .then(({ data }) => {
+        if (!cancelled) setIntegrationRecords(data?.records || {});
+      })
+      .catch(() => {
+        if (!cancelled) setIntegrationRecords({});
+      });
+    return () => { cancelled = true; };
+  }, [clientId]);
 
   useEffect(() => {
     setDraft(makeDraft(selected));
@@ -194,6 +213,33 @@ export default function AdminSubmissions() {
     }
   }
 
+  async function createSupplierFromDraft() {
+    const supplierName = String(draft.vendor_name || "").trim();
+    if (!clientId || !supplierName) {
+      toast.error("Enter a vendor name first");
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.post(`/admin/integrations/clients/${clientId}/records`, {
+        record_type: "supplier",
+        name: supplierName,
+        code: String(draft.vendor_account || "").trim(),
+        external_id: "",
+        email: null,
+        description: "Created from invoice review",
+        active: true,
+      });
+      const { data } = await api.get(`/admin/integrations/clients/${clientId}`);
+      setIntegrationRecords(data?.records || {});
+      toast.success("Supplier added to this client profile");
+    } catch (e) {
+      toast.error(formatApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function downloadArchive() {
     if (selectedArchiveIds.length === 0) {
       toast.error("Select at least one archived document");
@@ -276,6 +322,8 @@ export default function AdminSubmissions() {
           prefillSelected={prefillSelected}
           suggestLinesFromPattern={suggestLinesFromPattern}
           moveSelected={moveSelected}
+          createSupplierFromDraft={createSupplierFromDraft}
+          integrationOptions={integrationOptions}
           busy={busy}
         />
       )}
@@ -470,6 +518,8 @@ function DetailLayer({
   prefillSelected,
   suggestLinesFromPattern,
   moveSelected,
+  createSupplierFromDraft,
+  integrationOptions,
   busy,
 }) {
   if (!row) {
@@ -512,6 +562,8 @@ function DetailLayer({
             activeField={activeField}
             setActiveField={setActiveField}
             suggestLinesFromPattern={suggestLinesFromPattern}
+            createSupplierFromDraft={createSupplierFromDraft}
+            integrationOptions={integrationOptions}
             busy={busy}
           />
         </section>
@@ -556,8 +608,9 @@ function DetailLayer({
   );
 }
 
-function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLinesFromPattern, busy }) {
+function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLinesFromPattern, createSupplierFromDraft, integrationOptions, busy }) {
   const [patternLineIndex, setPatternLineIndex] = useState(0);
+  const options = integrationOptions || {};
   const set = (key, value) => setDraftValue(key, value, setDraft);
   const setLine = (index, key, value) => {
     setDraft((current) => ({
@@ -604,7 +657,7 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
 
       <div className="min-h-0 flex-1 overflow-auto p-4">
         <div className="grid gap-4 md:grid-cols-2">
-          <TextField id="vendor_name" label="Vendor Name" value={draft.vendor_name} onChange={(v) => set("vendor_name", v)} activeField={activeField} setActiveField={setActiveField} />
+          <DatalistField id="vendor_name" label="Vendor Name" value={draft.vendor_name} options={options.supplierOptions} onChange={(v) => set("vendor_name", v)} activeField={activeField} setActiveField={setActiveField} />
           <div>
             <Label className="text-xs font-semibold text-stone-700">Type</Label>
             <div className="mt-2 flex gap-4 text-sm">
@@ -612,9 +665,23 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
               <label className="flex items-center gap-2"><input type="radio" checked={draft.document_type === "credit_note"} onChange={() => set("document_type", "credit_note")} /> Credit Note</label>
             </div>
           </div>
-          <TextField id="vendor_account" label="Vendor A/C" value={draft.vendor_account} onChange={(v) => set("vendor_account", v)} activeField={activeField} setActiveField={setActiveField} />
+          <DatalistField id="vendor_account" label="Vendor A/C" value={draft.vendor_account} options={options.supplierAccountOptions} onChange={(v) => set("vendor_account", v)} activeField={activeField} setActiveField={setActiveField} />
           <TextField id="bill_number" label="Bill #" value={draft.bill_number} onChange={(v) => set("bill_number", v)} activeField={activeField} setActiveField={setActiveField} />
-          <TextField id="category" label="Category" value={draft.category} onChange={(v) => set("category", v)} activeField={activeField} setActiveField={setActiveField} />
+          <div className="md:col-span-2 -mt-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={createSupplierFromDraft}
+              disabled={busy || !String(draft.vendor_name || "").trim() || supplierExists(draft.vendor_name, options.supplierOptions)}
+            >
+              Create missing supplier
+            </Button>
+            {!options.supplierOptions?.length && (
+              <span className="ml-3 text-xs text-stone-500">No QuickBooks suppliers synced for this client yet.</span>
+            )}
+          </div>
+          <DatalistField id="category" label="Category" value={draft.category} options={options.categoryOptions} onChange={(v) => set("category", v)} activeField={activeField} setActiveField={setActiveField} />
           <TextField id="reference" label="Reference" value={draft.reference} onChange={(v) => set("reference", v)} activeField={activeField} setActiveField={setActiveField} />
           <TextField id="date" label="Date" value={draft.date} onChange={(v) => set("date", v)} activeField={activeField} setActiveField={setActiveField} />
           <TextField id="due_date" label="Due Date" value={draft.due_date} onChange={(v) => set("due_date", v)} activeField={activeField} setActiveField={setActiveField} />
@@ -635,9 +702,12 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
             </label>
           </div>
           <div className="grid grid-cols-3 gap-3 md:grid-cols-1">
-            <TextField id="vat_code" label="VAT Code" value={draft.vat_code} onChange={(v) => set("vat_code", v)} activeField={activeField} setActiveField={setActiveField} />
+            <DatalistField id="vat_code" label="VAT Code" value={draft.vat_code} options={options.vatOptions} onChange={(v) => set("vat_code", v)} activeField={activeField} setActiveField={setActiveField} />
             <TextField id="currency" label="Currency" value={draft.currency} onChange={(v) => set("currency", v)} activeField={activeField} setActiveField={setActiveField} />
             <TextField id="payment_method" label="Payment Method" value={draft.payment_method} onChange={(v) => set("payment_method", v)} activeField={activeField} setActiveField={setActiveField} />
+            {draft.mark_as_paid && (
+              <DatalistField id="bank_account" label="Bank account" value={draft.bank_account} options={options.bankAccountOptions} onChange={(v) => set("bank_account", v)} activeField={activeField} setActiveField={setActiveField} />
+            )}
           </div>
         </div>
 
@@ -665,6 +735,12 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
             </div>
           </div>
           <div className="overflow-x-auto">
+            <datalist id="line-category-options">
+              {(options.categoryOptions || []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </datalist>
+            <datalist id="line-vat-options">
+              {(options.vatOptions || []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </datalist>
             <table className="w-full min-w-[900px] text-sm">
               <thead className="border-b border-stone-200 text-left text-xs uppercase tracking-wider text-stone-500">
                 <tr>
@@ -699,6 +775,7 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
                           value={line[key]}
                           onChange={(e) => setLine(index, key, e.target.value)}
                           onFocus={() => setActiveField(`line_items.${index}.${key}`)}
+                          list={key === "category" ? "line-category-options" : key === "vat_code" ? "line-vat-options" : undefined}
                           className={`h-9 min-w-20 px-2 ${activeField === `line_items.${index}.${key}` ? "border-emerald-500 ring-2 ring-emerald-100" : ""}`}
                         />
                       </td>
@@ -737,6 +814,26 @@ function TextField({ id, label, value, onChange, activeField, setActiveField }) 
   );
 }
 
+function DatalistField({ id, label, value, options = [], onChange, activeField, setActiveField }) {
+  const active = activeField === id;
+  const listId = `${id}-options`;
+  return (
+    <div>
+      <Label className="text-xs font-semibold text-stone-700">{label}</Label>
+      <Input
+        value={value || ""}
+        list={listId}
+        onChange={(e) => onChange(e.target.value)}
+        onFocus={() => setActiveField(id)}
+        className={`mt-1 h-10 px-2 ${active ? "border-emerald-500 ring-2 ring-emerald-100" : ""}`}
+      />
+      <datalist id={listId}>
+        {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </datalist>
+    </div>
+  );
+}
+
 function makeDraft(row) {
   const amount = row?.amount || "";
   const description = row?.description || "";
@@ -770,6 +867,7 @@ function makeDraft(row) {
     currency: "GBP",
     payment_method: paymentMethodLabel(row?.ai_payment_method),
     mark_as_paid: false,
+    bank_account: "",
     price_is: "Tax Exclusive",
   };
   return reconcileDraftTotals({
@@ -921,6 +1019,7 @@ function cleanCodingFields(value) {
     "vat_code",
     "currency",
     "payment_method",
+    "bank_account",
   ].some((key) => String(value[key] || "").trim());
   const hasLineValue = Array.isArray(value.line_items)
     && value.line_items.some((line) => line && Object.values(line).some((item) => String(item || "").trim()));
@@ -949,6 +1048,89 @@ function fieldLabel(key) {
     vat_code: "VAT Code",
     currency: "Currency",
     payment_method: "Payment Method",
+    bank_account: "Bank account",
   };
   return labels[key] || key;
+}
+
+function buildIntegrationOptions(records = {}) {
+  const accounts = Array.isArray(records.account) ? records.account.filter((record) => record.active !== false) : [];
+  const suppliers = Array.isArray(records.supplier) ? records.supplier.filter((record) => record.active !== false) : [];
+  const taxCodes = Array.isArray(records.tax_code) ? records.tax_code.filter((record) => record.active !== false) : [];
+  const supplierOptions = uniqueOptions(suppliers.map((record) => ({
+    value: record.name || record.code || record.external_id || "",
+    label: [record.code, record.name].filter(Boolean).join(" - ") || record.name || record.code || "",
+  })));
+  const supplierAccountOptions = uniqueOptions(suppliers.map((record) => ({
+    value: record.code || record.name || record.external_id || "",
+    label: [record.code, record.name].filter(Boolean).join(" - ") || record.name || record.code || "",
+  })));
+  const categoryOptions = uniqueOptions(accounts.map((record) => ({
+    value: [record.code, record.name].filter(Boolean).join(" - ") || record.name || record.code || "",
+    label: [record.code, record.name, record.description].filter(Boolean).join(" - "),
+  })));
+  const bankAccountOptions = uniqueOptions(accounts
+    .filter(isBankAccountRecord)
+    .map((record) => ({
+      value: [record.code, record.name].filter(Boolean).join(" - ") || record.name || record.code || "",
+      label: [record.code, record.name, record.description].filter(Boolean).join(" - "),
+    })));
+  const syncedVatOptions = uniqueOptions(taxCodes.map((record) => ({
+    value: record.code || record.name || "",
+    label: [record.code, record.name, record.description].filter(Boolean).join(" - "),
+  })));
+  return {
+    supplierOptions,
+    supplierAccountOptions,
+    categoryOptions,
+    bankAccountOptions,
+    vatOptions: syncedVatOptions,
+    vatSource: "integration",
+  };
+}
+
+function uniqueOptions(options) {
+  const seen = new Set();
+  return options
+    .map((option) => ({
+      value: String(option.value || "").trim(),
+      label: String(option.label || option.value || "").trim(),
+    }))
+    .filter((option) => {
+      if (!option.value) return false;
+      const key = option.value.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function supplierExists(value, options = []) {
+  const needle = String(value || "").trim().toLowerCase();
+  return !!needle && options.some((option) => String(option.value || "").trim().toLowerCase() === needle);
+}
+
+function isBankAccountRecord(record) {
+  const raw = safeJson(record.raw_json);
+  const text = [
+    record.name,
+    record.code,
+    record.description,
+    raw.AccountType,
+    raw.AccountSubType,
+    raw.Classification,
+    raw.FullyQualifiedName,
+  ].filter(Boolean).join(" ").toLowerCase();
+  return ["bank", "cash", "credit card", "current account", "undeposited funds", "paypal"].some((needle) => text.includes(needle));
+}
+
+function safeJson(value) {
+  if (!value) return {};
+  if (typeof value === "object") return value;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
 }

@@ -862,7 +862,7 @@ async def reset_client_password(
 # ---------- Admin: Client Integrations ----------
 VALID_INTEGRATION_PROVIDERS = {"quickbooks", "sage", "xero"}
 VALID_INTEGRATION_STATUSES = {"not_connected", "ready", "connected", "sync_error"}
-VALID_INTEGRATION_RECORD_TYPES = {"account", "supplier", "customer"}
+VALID_INTEGRATION_RECORD_TYPES = {"account", "supplier", "customer", "tax_code"}
 QUICKBOOKS_SCOPE = "com.intuit.quickbooks.accounting"
 QUICKBOOKS_AUTH_URL = "https://appcenter.intuit.com/connect/oauth2"
 QUICKBOOKS_TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
@@ -1087,8 +1087,15 @@ async def quickbooks_query(access_token: str, realm_id: str, environment: str, q
         )
     if resp.status_code >= 400:
         logger.error("QuickBooks query failed: %s %s", resp.status_code, resp.text[:500])
-        raise HTTPException(status_code=400, detail="QuickBooks sync query failed")
+        raise HTTPException(status_code=400, detail=f"QuickBooks sync query failed for {query}: {resp.text[:300]}")
     return resp.json().get("QueryResponse") or {}
+
+
+async def optional_quickbooks_query(access_token: str, realm_id: str, environment: str, query: str) -> tuple[dict, Optional[str]]:
+    try:
+        return await quickbooks_query(access_token, realm_id, environment, query), None
+    except HTTPException as exc:
+        return {}, str(exc.detail)
 
 
 @api.get("/admin/integrations/clients")
@@ -1139,7 +1146,7 @@ async def get_client_integration(
         .where(integration_records.c.client_id == client_id)
         .order_by(integration_records.c.record_type.asc(), integration_records.c.name.asc()),
     )
-    grouped = {"account": [], "supplier": [], "customer": []}
+    grouped = {"account": [], "supplier": [], "customer": [], "tax_code": []}
     for record in records:
         grouped.setdefault(record["record_type"], []).append(serialize_integration_record(record))
     return {
@@ -1346,10 +1353,29 @@ async def sync_quickbooks_lists_for_client(session: AsyncSession, client_id: str
     environment = "sandbox" if integration.get("sandbox") else "production"
     realm_id = integration["company_id"]
 
-    accounts_response = await quickbooks_query(access_token, realm_id, environment, "select * from Account maxresults 1000")
-    vendors_response = await quickbooks_query(access_token, realm_id, environment, "select * from Vendor maxresults 1000")
-    customers_response = await quickbooks_query(access_token, realm_id, environment, "select * from Customer maxresults 1000")
-    company_response = await quickbooks_query(access_token, realm_id, environment, "select * from CompanyInfo")
+    accounts_response = await quickbooks_query(access_token, realm_id, environment, "SELECT * FROM Account MAXRESULTS 1000")
+    vendors_response = await quickbooks_query(access_token, realm_id, environment, "SELECT * FROM Vendor MAXRESULTS 1000")
+    customers_response = await quickbooks_query(access_token, realm_id, environment, "SELECT * FROM Customer MAXRESULTS 1000")
+    company_response = await quickbooks_query(access_token, realm_id, environment, "SELECT * FROM CompanyInfo")
+    sync_warnings = []
+    tax_codes_response = {}
+    for tax_code_query in ("SELECT * FROM TaxCode MAXRESULTS 1000", "SELECT * FROM TaxCode"):
+        tax_codes_response, warning = await optional_quickbooks_query(access_token, realm_id, environment, tax_code_query)
+        if warning:
+            sync_warnings.append(warning)
+            logger.warning("QuickBooks tax code query skipped for client %s: %s", client_id, warning)
+            continue
+        if tax_codes_response.get("TaxCode"):
+            break
+    tax_rates_response = {}
+    for tax_rate_query in ("SELECT * FROM TaxRate MAXRESULTS 1000", "SELECT * FROM TaxRate"):
+        tax_rates_response, warning = await optional_quickbooks_query(access_token, realm_id, environment, tax_rate_query)
+        if warning:
+            sync_warnings.append(warning)
+            logger.warning("QuickBooks tax rate query skipped for client %s: %s", client_id, warning)
+            continue
+        if tax_rates_response.get("TaxRate"):
+            break
     company_info = (company_response.get("CompanyInfo") or [{}])[0] or {}
 
     accounts = [
@@ -1387,10 +1413,38 @@ async def sync_quickbooks_lists_for_client(session: AsyncSession, client_id: str
         }
         for item in customers_response.get("Customer", []) or []
     ]
+    tax_codes = [
+        {
+            "external_id": item.get("Id"),
+            "code": item.get("Name") or item.get("Id") or "",
+            "name": item.get("Name") or item.get("Description") or item.get("Id") or "",
+            "description": item.get("Description") or ("Taxable" if item.get("Taxable") else "Non-taxable"),
+            "active": item.get("Active", True),
+            "raw": item,
+        }
+        for item in tax_codes_response.get("TaxCode", []) or []
+    ]
+    existing_tax_names = {str(item.get("name") or "").strip().lower() for item in tax_codes}
+    for item in tax_rates_response.get("TaxRate", []) or []:
+        rate_name = item.get("Name") or item.get("Description") or item.get("Id") or ""
+        if not rate_name or rate_name.strip().lower() in existing_tax_names:
+            continue
+        rate_value = item.get("RateValue")
+        rate_label = f"{rate_name} ({rate_value}%)" if rate_value not in (None, "") else rate_name
+        tax_codes.append({
+            "external_id": item.get("Id"),
+            "code": rate_name,
+            "name": rate_label,
+            "description": item.get("Description") or "QuickBooks tax rate",
+            "active": item.get("Active", True),
+            "raw": item,
+        })
+        existing_tax_names.add(rate_name.strip().lower())
 
     await replace_integration_records(session, client_id, "quickbooks", "account", accounts)
     await replace_integration_records(session, client_id, "quickbooks", "supplier", suppliers)
     await replace_integration_records(session, client_id, "quickbooks", "customer", customers)
+    await replace_integration_records(session, client_id, "quickbooks", "tax_code", tax_codes)
     company_name = (
         company_info.get("CompanyName")
         or company_info.get("LegalName")
@@ -1404,10 +1458,13 @@ async def sync_quickbooks_lists_for_client(session: AsyncSession, client_id: str
         .values(status="connected", company_name=company_name, last_sync_at=utc_now_iso(), updated_at=utc_now_iso())
     )
     await session.commit()
+    if not tax_codes:
+        sync_warnings.append("QuickBooks returned 0 VAT/tax codes. Check the connected company VAT/tax setup and whether it exposes TaxCode or TaxRate records through the API.")
     return {
         "ok": True,
-        "counts": {"account": len(accounts), "supplier": len(suppliers), "customer": len(customers)},
+        "counts": {"account": len(accounts), "supplier": len(suppliers), "customer": len(customers), "tax_code": len(tax_codes)},
         "company_name": company_name,
+        "warnings": sync_warnings[:6],
     }
 
 
@@ -1429,6 +1486,8 @@ async def create_integration_record(
 ):
     await get_client_or_404(session, client_id)
     record_type = clean_record_type(payload.record_type)
+    if record_type != "supplier":
+        raise HTTPException(status_code=400, detail="Only missing suppliers can be created from invoice review")
     integration = await one(session, select(client_integrations).where(client_integrations.c.client_id == client_id))
     provider = clean_provider(integration.get("provider") if integration else "quickbooks")
     now = utc_now_iso()
@@ -2115,6 +2174,7 @@ CODING_FIELD_KEYS = (
     "currency",
     "payment_method",
     "mark_as_paid",
+    "bank_account",
     "price_is",
     "line_items",
     "ocr_text_lines",
@@ -2295,6 +2355,7 @@ def normalize_ai_coding_fields(data: dict) -> dict:
         "currency": str(source.get("currency") or "GBP").strip()[:8] or "GBP",
         "payment_method": str(source.get("payment_method") or data.get("payment_method") or "not_clear").strip()[:64],
         "mark_as_paid": bool(source.get("mark_as_paid")),
+        "bank_account": str(source.get("bank_account") or "").strip()[:255],
         "price_is": str(source.get("price_is") or "Tax Exclusive").strip()[:32],
         "line_items": [],
         "ocr_text_lines": ocr_text_lines,
@@ -2439,6 +2500,7 @@ async def get_coding_history(session: AsyncSession, client_id: str, doc_type: st
             "vat_code": fields.get("vat_code", ""),
             "currency": fields.get("currency", "GBP"),
             "payment_method": fields.get("payment_method", ""),
+            "bank_account": fields.get("bank_account", ""),
             "price_is": fields.get("price_is", ""),
             "description": fields.get("description") or row.get("description") or "",
             "line_items": (fields.get("line_items") or [])[:8],
@@ -2518,6 +2580,8 @@ async def review_document_with_openai(
         "Use the published accountant-corrected examples below as supplier memory. If the supplier, VAT number, "
         "receipt layout, or bill/reference style matches, reuse the coding pattern, VAT code/category, payment "
         "method style and line item approach. Do not copy old dates or amounts from examples. "
+        "If Mark as Paid is true or payment is by card/cash, include the most likely bank/cash account only "
+        "when there is a clear matching pattern in the published examples; otherwise leave bank_account blank. "
         f"Published correction examples for this client/type: {json.dumps(coding_history or [])[:5000]}"
     )
     line_item_schema = {
@@ -2568,6 +2632,7 @@ async def review_document_with_openai(
             "currency": {"type": "string"},
             "payment_method": {"type": "string"},
             "mark_as_paid": {"type": "boolean"},
+            "bank_account": {"type": "string"},
             "price_is": {"type": "string", "enum": ["Tax Exclusive", "Tax Inclusive"]},
             "line_items": {"type": "array", "items": line_item_schema},
             "ocr_text_lines": {"type": "array", "items": {"type": "string"}},
@@ -2576,7 +2641,7 @@ async def review_document_with_openai(
         "required": [
             "vendor_name", "vendor_account", "category", "date", "due_date", "description",
             "document_type", "bill_number", "reference", "net", "vat", "total", "vat_code",
-            "currency", "payment_method", "mark_as_paid", "price_is", "line_items", "ocr_text_lines", "ocr_text_boxes",
+            "currency", "payment_method", "mark_as_paid", "bank_account", "price_is", "line_items", "ocr_text_lines", "ocr_text_boxes",
         ],
     }
     schema = {
