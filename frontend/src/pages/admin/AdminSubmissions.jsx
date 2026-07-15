@@ -155,16 +155,25 @@ export default function AdminSubmissions() {
 
   async function moveSelected(reviewStatus) {
     if (!selected) return;
+    const nextInboxId = reviewStatus === "published" ? getNextRowId(rows, selected.id) : "";
     setBusy(true);
     try {
       const { data } = await api.patch(`/admin/submissions/${selected.id}/review-status`, { review_status: reviewStatus, coding_fields: draft });
-      if (reviewStatus === "published" && data?.memory_updated) {
-        toast.success("Published and future AI examples updated");
+      if (reviewStatus === "published" && data?.quickbooks_publish?.id) {
+        toast.success(`Sent to QuickBooks Bill ${data.quickbooks_publish.doc_number || data.quickbooks_publish.id} and archived`);
+      } else if (reviewStatus === "published" && data?.memory_updated) {
+        toast.success("Published to archive and future AI examples updated");
       } else {
         toast.success(reviewStatus === "published" ? "Published to archive" : "Submission updated");
       }
       await load();
-      setView("items");
+      if (reviewStatus === "published" && nextInboxId) {
+        setSelectedId(nextInboxId);
+        setView("detail");
+      } else {
+        setSelectedId("");
+        setView("items");
+      }
     } catch (e) {
       toast.error(formatApiError(e));
     } finally {
@@ -611,6 +620,12 @@ function DetailLayer({
 function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLinesFromPattern, createSupplierFromDraft, integrationOptions, busy }) {
   const [patternLineIndex, setPatternLineIndex] = useState(0);
   const options = integrationOptions || {};
+  const lineTotals = useMemo(() => calculateLineTotals(draft.line_items), [draft.line_items]);
+  const headerTotals = {
+    net: parseAmount(draft.net),
+    vat: parseAmount(draft.vat),
+    total: parseAmount(draft.total),
+  };
   const set = (key, value) => setDraftValue(key, value, setDraft);
   const setLine = (index, key, value) => {
     setDraft((current) => ({
@@ -793,7 +808,40 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
           <Button type="button" variant="outline" size="sm" onClick={addLine} className="mt-3">
             Add line item
           </Button>
+          <div className="mt-3 grid gap-2 rounded-lg border border-stone-200 bg-stone-50 p-3 md:grid-cols-3">
+            <TotalComparison label="Net" lineValue={lineTotals.net} headerValue={headerTotals.net} />
+            <TotalComparison label="VAT" lineValue={lineTotals.vat} headerValue={headerTotals.vat} />
+            <TotalComparison label="Total" lineValue={lineTotals.total} headerValue={headerTotals.total} />
+          </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function TotalComparison({ label, lineValue, headerValue }) {
+  const hasHeader = Number.isFinite(headerValue);
+  const diff = hasHeader ? lineValue - headerValue : null;
+  const matched = diff !== null && Math.abs(diff) < 0.01;
+  const diffClass = !hasHeader
+    ? "text-stone-500"
+    : matched
+      ? "text-emerald-700"
+      : "text-amber-700";
+  return (
+    <div className="rounded-md border border-stone-200 bg-white px-3 py-2 text-sm">
+      <div className="text-xs font-semibold uppercase tracking-wide text-stone-500">{label}</div>
+      <div className="mt-1 flex items-center justify-between gap-3">
+        <span className="text-stone-600">Lines</span>
+        <span className="font-semibold text-stone-900">{formatMoney(lineValue)}</span>
+      </div>
+      <div className="mt-1 flex items-center justify-between gap-3">
+        <span className="text-stone-600">Header</span>
+        <span className="font-semibold text-stone-900">{hasHeader ? formatMoney(headerValue) : "-"}</span>
+      </div>
+      <div className={`mt-1 flex items-center justify-between gap-3 ${diffClass}`}>
+        <span>Difference</span>
+        <span className="font-semibold">{diff === null ? "-" : formatMoney(diff)}</span>
       </div>
     </div>
   );
@@ -912,6 +960,22 @@ function setDraftValue(key, value, setDraft) {
   });
 }
 
+function getNextRowId(rows, selectedId) {
+  if (!Array.isArray(rows) || rows.length <= 1) return "";
+  const index = rows.findIndex((row) => row.id === selectedId);
+  if (index < 0) return "";
+  return rows[index + 1]?.id || rows[index - 1]?.id || "";
+}
+
+function calculateLineTotals(lineItems = []) {
+  return lineItems.reduce((totals, line) => {
+    totals.net += parseAmount(line.net) || 0;
+    totals.vat += parseAmount(line.vat) || 0;
+    totals.total += parseAmount(line.total) || 0;
+    return totals;
+  }, { net: 0, vat: 0, total: 0 });
+}
+
 function parseAmount(value) {
   const match = String(value || "").replace(/,/g, "").match(/-?\d+(?:\.\d{1,2})?/);
   return match ? Number(match[0]) : null;
@@ -919,6 +983,10 @@ function parseAmount(value) {
 
 function formatAmount(value) {
   return Number.isFinite(value) ? value.toFixed(2) : "";
+}
+
+function formatMoney(value) {
+  return Number.isFinite(value) ? value.toFixed(2) : "0.00";
 }
 
 function reconcileDraftTotals(draft) {
