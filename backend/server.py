@@ -24,7 +24,7 @@ import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
-from typing import List, Optional
+from typing import Any, List, Optional
 from urllib.parse import urlencode
 
 import bcrypt
@@ -147,6 +147,12 @@ users = Table(
     Column("year_end", String(32)),
     Column("practice_manager", String(255)),
     Column("companies_house_last_checked", String(64)),
+    Column("main_contact_name", String(255)),
+    Column("main_contact_role", String(255)),
+    Column("company_directors", Text),
+    Column("company_pscs", Text),
+    Column("company_contacts", Text),
+    Column("companies_house_filings", Text),
     Column("autoentry_email", String(255)),
     Column("sales_autoentry_email", String(255)),
     Column("is_vat_client", Boolean, default=False),
@@ -412,6 +418,13 @@ class ClientCreate(BaseModel):
     payroll_frequency: Optional[str] = None
     year_end: Optional[str] = None
     practice_manager: Optional[str] = None
+    companies_house_last_checked: Optional[str] = None
+    main_contact_name: Optional[str] = None
+    main_contact_role: Optional[str] = None
+    company_directors: Optional[str] = None
+    company_pscs: Optional[str] = None
+    company_contacts: Optional[str] = None
+    companies_house_filings: Optional[str] = None
 
 
 class ClientUpdate(BaseModel):
@@ -444,6 +457,12 @@ class ClientUpdate(BaseModel):
     year_end: Optional[str] = None
     practice_manager: Optional[str] = None
     companies_house_last_checked: Optional[str] = None
+    main_contact_name: Optional[str] = None
+    main_contact_role: Optional[str] = None
+    company_directors: Optional[str] = None
+    company_pscs: Optional[str] = None
+    company_contacts: Optional[str] = None
+    companies_house_filings: Optional[str] = None
 
 
 class PasswordReset(BaseModel):
@@ -491,6 +510,12 @@ CLIENT_PRACTICE_FIELDS = [
     "year_end",
     "practice_manager",
     "companies_house_last_checked",
+    "main_contact_name",
+    "main_contact_role",
+    "company_directors",
+    "company_pscs",
+    "company_contacts",
+    "companies_house_filings",
 ]
 
 
@@ -759,6 +784,12 @@ def serialize_user(u: dict) -> dict:
         "year_end": u.get("year_end"),
         "practice_manager": u.get("practice_manager"),
         "companies_house_last_checked": u.get("companies_house_last_checked"),
+        "main_contact_name": u.get("main_contact_name"),
+        "main_contact_role": u.get("main_contact_role"),
+        "company_directors": u.get("company_directors"),
+        "company_pscs": u.get("company_pscs"),
+        "company_contacts": u.get("company_contacts"),
+        "companies_house_filings": u.get("companies_house_filings"),
         "autoentry_email": u.get("autoentry_email"),
         "sales_autoentry_email": u.get("sales_autoentry_email"),
         "is_vat_client": bool(u.get("is_vat_client")),
@@ -812,6 +843,78 @@ def format_companies_house_address(address: dict) -> str:
     return ", ".join(str(part).strip() for part in parts if part)
 
 
+def companies_house_error_detail(response: httpx.Response) -> str:
+    detail = f"Companies House request failed ({response.status_code})"
+    try:
+        data = response.json()
+        message = data.get("error") or data.get("message") or data.get("error_description")
+        if isinstance(message, list):
+            message = "; ".join(str(part) for part in message)
+        if message:
+            return f"{detail}: {message}"
+    except ValueError:
+        pass
+    text_value = (response.text or "").strip()
+    if text_value:
+        return f"{detail}: {text_value[:300]}"
+    return detail
+
+
+def ch_person_name(item: dict) -> str:
+    name = item.get("name") or item.get("title") or ""
+    return str(name).strip()
+
+
+def ch_date_of_birth(item: dict) -> str:
+    dob = item.get("date_of_birth") or {}
+    month = dob.get("month")
+    year = dob.get("year")
+    if month and year:
+        return f"{int(month):02d}/{year}"
+    return str(year or "")
+
+
+def ch_director(item: dict) -> dict:
+    return {
+        "name": ch_person_name(item),
+        "role": item.get("officer_role") or "director",
+        "appointed_on": item.get("appointed_on") or "",
+        "resigned_on": item.get("resigned_on") or "",
+        "occupation": item.get("occupation") or "",
+        "nationality": item.get("nationality") or "",
+        "date_of_birth": ch_date_of_birth(item),
+        "address": format_companies_house_address(item.get("address") or {}),
+        "source": "officer",
+    }
+
+
+def ch_psc(item: dict) -> dict:
+    return {
+        "name": ch_person_name(item),
+        "role": "PSC",
+        "kind": item.get("kind") or "",
+        "notified_on": item.get("notified_on") or "",
+        "ceased_on": item.get("ceased_on") or "",
+        "natures_of_control": ", ".join(item.get("natures_of_control") or []),
+        "address": format_companies_house_address(item.get("address") or {}),
+        "source": "psc",
+    }
+
+
+def ch_filing(item: dict) -> dict:
+    return {
+        "date": item.get("date") or "",
+        "description": item.get("description") or "",
+        "category": item.get("category") or "",
+        "type": item.get("type") or "",
+        "barcode": item.get("barcode") or "",
+    }
+
+
+def json_compact(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
 async def get_companies_house_api_key(session: Optional[AsyncSession] = None) -> str:
     env_key = os.environ.get("COMPANIES_HOUSE_API_KEY", "").strip()
     if env_key:
@@ -844,8 +947,17 @@ async def companies_house_get(path: str, params: Optional[dict] = None, session:
     if response.status_code == 404:
         raise HTTPException(status_code=404, detail="Company not found")
     if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail="Companies House request failed")
+        raise HTTPException(status_code=response.status_code, detail=companies_house_error_detail(response))
     return response.json()
+
+
+async def companies_house_get_optional(path: str, params: Optional[dict] = None, session: Optional[AsyncSession] = None) -> dict:
+    try:
+        return await companies_house_get(path, params=params, session=session)
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            return {}
+        raise
 
 
 # ---------- Auth ----------
@@ -1046,14 +1158,47 @@ async def companies_house_profile(
     if not number:
         raise HTTPException(status_code=400, detail="Company number is required")
     profile = await companies_house_get(f"/company/{number}", session=session)
+    officers_data, pscs_data, filings_data = await asyncio.gather(
+        companies_house_get_optional(
+            f"/company/{number}/officers",
+            {"items_per_page": 50, "register_type": "directors"},
+            session,
+        ),
+        companies_house_get_optional(
+            f"/company/{number}/persons-with-significant-control",
+            {"items_per_page": 50},
+            session,
+        ),
+        companies_house_get_optional(
+            f"/company/{number}/filing-history",
+            {"items_per_page": 25},
+            session,
+        ),
+    )
     accounts = profile.get("accounts") or {}
     confirmation = profile.get("confirmation_statement") or {}
     sic_codes = profile.get("sic_codes") or []
+    directors = [
+        ch_director(item)
+        for item in (officers_data.get("items") or [])
+        if not item.get("resigned_on") and ch_person_name(item)
+    ][:30]
+    pscs = [
+        ch_psc(item)
+        for item in (pscs_data.get("items") or [])
+        if not item.get("ceased_on") and ch_person_name(item)
+    ][:30]
+    filings = [ch_filing(item) for item in (filings_data.get("items") or []) if item.get("date")][:20]
+    contacts = directors + [psc for psc in pscs if psc.get("name") not in {director.get("name") for director in directors}]
     deadlines = []
     if accounts.get("next_due"):
         deadlines.append(f"Accounts due: {accounts.get('next_due')}")
     if confirmation.get("next_due"):
         deadlines.append(f"Confirmation statement due: {confirmation.get('next_due')}")
+    for filing in filings[:5]:
+        if filing.get("description"):
+            deadlines.append(f"Recent filing {filing.get('date')}: {filing.get('description')}")
+    main_contact = directors[0] if directors else (pscs[0] if pscs else {})
     return {
         "business_name": profile.get("company_name"),
         "client_type": "limited_company" if profile.get("type") == "ltd" else profile.get("type"),
@@ -1067,6 +1212,12 @@ async def companies_house_profile(
         ),
         "statutory_deadlines": "\n".join(deadlines),
         "companies_house_last_checked": utc_now_iso(),
+        "main_contact_name": main_contact.get("name") or "",
+        "main_contact_role": main_contact.get("role") or main_contact.get("kind") or "",
+        "company_directors": json_compact(directors),
+        "company_pscs": json_compact(pscs),
+        "company_contacts": json_compact(contacts),
+        "companies_house_filings": json_compact(filings),
     }
 
 
