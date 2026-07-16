@@ -15,8 +15,8 @@ export default function ClientLayout() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col" data-testid="client-shell">
-      <header className="border-b border-stone-200 bg-white">
+    <div className="app-shell-bg min-h-screen flex flex-col" data-testid="client-shell">
+      <header className="client-topbar border-b border-stone-200">
         <div className="max-w-3xl mx-auto px-5 py-4 flex items-center justify-between">
           <button onClick={() => nav("/portal")} className="flex items-center gap-2.5" data-testid="brand-link">
             <EposLogo size={40} />
@@ -30,7 +30,7 @@ export default function ClientLayout() {
           </Button>
         </div>
       </header>
-      <main className="flex-1 px-5 py-8 max-w-3xl w-full mx-auto fade-up">
+      <main className="client-main flex-1 px-5 py-8 max-w-3xl w-full mx-auto fade-up">
         <Outlet />
       </main>
     </div>

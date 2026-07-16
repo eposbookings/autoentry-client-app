@@ -28,7 +28,7 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen grid md:grid-cols-2">
+    <div className="min-h-screen grid md:grid-cols-2 app-shell-bg">
       <div className="hidden md:block paper-bg relative">
         <div
           className="absolute inset-0 bg-cover bg-center opacity-90 mix-blend-multiply"
@@ -52,8 +52,8 @@ export default function Login() {
         </div>
       </div>
 
-      <div className="flex items-center justify-center p-6 sm:p-12 bg-[var(--bg)]">
-        <div className="w-full max-w-md fade-up">
+      <div className="flex items-center justify-center p-6 sm:p-12">
+        <div className="login-panel w-full max-w-md rounded-2xl p-6 sm:p-8 fade-up">
           <div className="mb-10 md:hidden flex items-center gap-3">
             <EposLogo size={40} />
             <div className="font-display font-bold text-xl">EPOS Accountancy</div>
