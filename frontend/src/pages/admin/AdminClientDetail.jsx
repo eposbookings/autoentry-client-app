@@ -103,6 +103,12 @@ const PRACTICE_FIELDS = [
   "year_end",
   "practice_manager",
   "companies_house_last_checked",
+  "main_contact_name",
+  "main_contact_role",
+  "company_directors",
+  "company_pscs",
+  "company_contacts",
+  "companies_house_filings",
 ];
 
 const INTEGRATION_PROVIDERS = [
@@ -193,6 +199,10 @@ export default function AdminClientDetail() {
     () => splitMulti(client?.services_required),
     [client?.services_required]
   );
+  const directors = useMemo(() => parseStoredList(client?.company_directors), [client?.company_directors]);
+  const pscs = useMemo(() => parseStoredList(client?.company_pscs), [client?.company_pscs]);
+  const contacts = useMemo(() => parseStoredList(client?.company_contacts), [client?.company_contacts]);
+  const filings = useMemo(() => parseStoredList(client?.companies_house_filings), [client?.companies_house_filings]);
 
   function setField(key, value) {
     setClient((current) => ({ ...current, [key]: value }));
@@ -259,10 +269,7 @@ export default function AdminClientDetail() {
     setCompanyBusy(true);
     try {
       const { data } = await api.get(`/admin/companies-house/profile/${companyNumber}`);
-      setClient((current) => ({
-        ...current,
-        ...Object.fromEntries(Object.entries(data).filter(([, value]) => value != null && value !== "")),
-      }));
+      setClient((current) => mergeCompanyProfile(current, data));
       setCompanyResults([]);
       toast.success("Companies House details added");
     } catch (e) {
@@ -297,6 +304,18 @@ export default function AdminClientDetail() {
     if (next.has(service)) next.delete(service);
     else next.add(service);
     setField("services_required", Array.from(next).join("\n"));
+  }
+
+  function selectContactAsMain(contact) {
+    const names = splitPersonName(contact?.name);
+    setClient((current) => ({
+      ...current,
+      first_name: names.first_name || current.first_name,
+      last_name: names.last_name || current.last_name,
+      main_contact_name: contact?.name || current.main_contact_name,
+      main_contact_role: contact?.role || contact?.kind || current.main_contact_role,
+    }));
+    toast.success("Main contact selected");
   }
 
   async function refreshIntegration() {
@@ -460,45 +479,21 @@ export default function AdminClientDetail() {
           </section>
 
           <section className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
-            <div className="rounded-md border border-stone-200 bg-white p-4">
-              <div className="mb-3 flex items-center gap-2">
-                <Building2 className="h-4 w-4 text-[var(--brand)]" />
-                <h2 className="font-display text-lg font-semibold">Companies House</h2>
-              </div>
-              <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
-                <Input value={companyQuery} onChange={(e) => setCompanyQuery(e.target.value)} placeholder="Search company name or number" className="h-9" />
-                <Button type="button" variant="outline" onClick={searchCompaniesHouse} disabled={companyBusy} className="gap-2">
-                  <Search className="h-4 w-4" /> Search
-                </Button>
-              </div>
-              {companyResults.length > 0 && (
-                <div className="mt-3 max-h-52 overflow-auto rounded-md border border-stone-200">
-                  {companyResults.map((company) => (
-                    <button
-                      key={company.company_number}
-                      type="button"
-                      onClick={() => importCompany(company.company_number)}
-                      className="flex w-full items-start justify-between gap-3 border-b border-stone-100 px-3 py-2 text-left text-sm last:border-b-0 hover:bg-stone-50"
-                    >
-                      <span>
-                        <span className="block font-semibold text-stone-900">{company.title}</span>
-                        <span className="block text-xs text-stone-500">{company.company_number} - {company.address || "No address shown"}</span>
-                      </span>
-                      <Badge variant="secondary">{company.company_status}</Badge>
-                    </button>
-                  ))}
-                </div>
-              )}
-              <div className="mt-3 grid gap-3 lg:grid-cols-3">
-                <Field label="Company number" value={client.company_number} onChange={(v) => setField("company_number", v)} />
-                <Field label="Company status" value={client.company_status} onChange={(v) => setField("company_status", v)} />
-                <Field label="Incorporation date" value={client.incorporation_date} onChange={(v) => setField("incorporation_date", v)} />
-              </div>
-              <div className="mt-3 grid gap-3 lg:grid-cols-2">
-                <TextAreaField label="Registered office" value={client.registered_office_address} onChange={(v) => setField("registered_office_address", v)} />
-                <TextAreaField label="Trading address" value={client.trading_address} onChange={(v) => setField("trading_address", v)} />
-              </div>
-            </div>
+            <CompaniesHousePanel
+              client={client}
+              setField={setField}
+              query={companyQuery}
+              setQuery={setCompanyQuery}
+              results={companyResults}
+              busy={companyBusy}
+              search={searchCompaniesHouse}
+              importCompany={importCompany}
+              directors={directors}
+              pscs={pscs}
+              contacts={contacts}
+              filings={filings}
+              selectContactAsMain={selectContactAsMain}
+            />
 
             <div className="rounded-md border border-stone-200 bg-white p-4">
               <div className="mb-3 flex items-center gap-2">
@@ -554,6 +549,139 @@ export default function AdminClientDetail() {
           />
         </TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+function CompaniesHousePanel({
+  client,
+  setField,
+  query,
+  setQuery,
+  results,
+  busy,
+  search,
+  importCompany,
+  directors,
+  pscs,
+  contacts,
+  filings,
+  selectContactAsMain,
+}) {
+  return (
+    <div className="rounded-md border border-stone-200 bg-white p-4">
+      <div className="mb-3 flex flex-col justify-between gap-2 sm:flex-row sm:items-start">
+        <div className="flex items-center gap-2">
+          <Building2 className="h-4 w-4 text-[var(--brand)]" />
+          <div>
+            <h2 className="font-display text-lg font-semibold">Companies House</h2>
+            <p className="text-xs text-stone-500">Lookup fills company details, deadlines, directors, PSCs, and contacts.</p>
+          </div>
+        </div>
+        {client.companies_house_last_checked && (
+          <Badge variant="secondary">Checked {formatShortDate(client.companies_house_last_checked)}</Badge>
+        )}
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
+        <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search company name or number" className="h-9" />
+        <Button type="button" variant="outline" onClick={search} disabled={busy} className="gap-2">
+          <Search className="h-4 w-4" /> Search
+        </Button>
+      </div>
+      {results.length > 0 && (
+        <div className="mt-3 max-h-52 overflow-auto rounded-md border border-stone-200">
+          {results.map((company) => (
+            <button
+              key={company.company_number}
+              type="button"
+              onClick={() => importCompany(company.company_number)}
+              className="flex w-full items-start justify-between gap-3 border-b border-stone-100 px-3 py-2 text-left text-sm last:border-b-0 hover:bg-stone-50"
+            >
+              <span>
+                <span className="block font-semibold text-stone-900">{company.title}</span>
+                <span className="block text-xs text-stone-500">{company.company_number} - {company.address || "No address shown"}</span>
+              </span>
+              <Badge variant="secondary">{company.company_status}</Badge>
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-3 grid gap-3 lg:grid-cols-3">
+        <Field label="Company number" value={client.company_number} onChange={(v) => setField("company_number", v)} />
+        <Field label="Company status" value={client.company_status} onChange={(v) => setField("company_status", v)} />
+        <Field label="Incorporation date" value={client.incorporation_date} onChange={(v) => setField("incorporation_date", v)} />
+        <Field label="Main contact" value={client.main_contact_name} onChange={(v) => setField("main_contact_name", v)} />
+        <Field label="Main contact role" value={client.main_contact_role} onChange={(v) => setField("main_contact_role", v)} />
+        <Field label="SIC / industry" value={client.industry} onChange={(v) => setField("industry", v)} />
+      </div>
+      <div className="mt-3 grid gap-3 lg:grid-cols-2">
+        <TextAreaField label="Registered office" value={client.registered_office_address} onChange={(v) => setField("registered_office_address", v)} />
+        <TextAreaField label="Trading address" value={client.trading_address} onChange={(v) => setField("trading_address", v)} />
+      </div>
+
+      <div className="mt-4 grid gap-3 xl:grid-cols-2">
+        <ContactTable title="Directors" contacts={directors} onUse={selectContactAsMain} empty="No active directors imported yet." />
+        <ContactTable title="PSCs / owners" contacts={pscs} onUse={selectContactAsMain} empty="No active PSCs imported yet." />
+      </div>
+      {contacts.length > 0 && (
+        <div className="mt-3 rounded-md border border-stone-200 bg-stone-50 p-3">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-stone-500">Contact candidates</div>
+          <div className="flex flex-wrap gap-2">
+            {contacts.slice(0, 12).map((contact, index) => (
+              <button
+                key={`${contact.name}-${index}`}
+                type="button"
+                onClick={() => selectContactAsMain(contact)}
+                className="rounded-md border border-stone-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-stone-700 hover:border-emerald-300 hover:bg-emerald-50"
+              >
+                {contact.name} <span className="font-normal text-stone-500">{contact.role || contact.kind}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {filings.length > 0 && (
+        <div className="mt-3 overflow-hidden rounded-md border border-stone-200">
+          <div className="bg-stone-50 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-stone-500">Recent filings</div>
+          <div className="max-h-56 overflow-auto">
+            {filings.map((filing, index) => (
+              <div key={`${filing.date}-${filing.type}-${index}`} className="grid gap-2 border-t border-stone-100 px-3 py-2 text-xs sm:grid-cols-[90px_90px_1fr]">
+                <span className="font-semibold text-stone-800">{filing.date}</span>
+                <span className="text-stone-500">{filing.type || filing.category}</span>
+                <span className="text-stone-700">{humaniseFiling(filing.description)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ContactTable({ title, contacts, onUse, empty }) {
+  return (
+    <div className="overflow-hidden rounded-md border border-stone-200">
+      <div className="bg-stone-50 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-stone-500">{title}</div>
+      {contacts.length === 0 ? (
+        <p className="px-3 py-6 text-center text-xs text-stone-500">{empty}</p>
+      ) : (
+        <div className="max-h-64 overflow-auto">
+          {contacts.map((contact, index) => (
+            <div key={`${contact.name}-${index}`} className="border-t border-stone-100 px-3 py-2 text-sm">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="truncate font-semibold text-stone-900">{contact.name}</div>
+                  <div className="text-xs text-stone-500">{contact.role || contact.kind || "Contact"}{contact.appointed_on ? ` - appointed ${contact.appointed_on}` : ""}</div>
+                  {contact.address && <div className="mt-1 line-clamp-2 text-xs text-stone-500">{contact.address}</div>}
+                </div>
+                <Button type="button" variant="outline" size="sm" onClick={() => onUse(contact)}>Main</Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -892,6 +1020,48 @@ function splitMulti(value) {
     .split(/\r?\n|,/)
     .map((part) => part.trim())
     .filter(Boolean);
+}
+
+function parseStoredList(value) {
+  if (Array.isArray(value)) return value;
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function mergeCompanyProfile(current, data) {
+  const imported = Object.fromEntries(Object.entries(data || {}).filter(([, value]) => value != null && value !== ""));
+  const next = { ...current, ...imported };
+  if (current.first_name || current.last_name) {
+    next.first_name = current.first_name;
+    next.last_name = current.last_name;
+  } else if (imported.main_contact_name) {
+    const names = splitPersonName(imported.main_contact_name);
+    next.first_name = names.first_name;
+    next.last_name = names.last_name;
+  }
+  if (!current.email) next.email = current.email || "";
+  if (!current.autoentry_email) next.autoentry_email = current.autoentry_email || "";
+  return next;
+}
+
+function splitPersonName(name) {
+  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length <= 1) return { first_name: parts[0] || "", last_name: "" };
+  return { first_name: parts.slice(0, -1).join(" "), last_name: parts[parts.length - 1] };
+}
+
+function formatShortDate(value) {
+  if (!value) return "";
+  return String(value).slice(0, 10);
+}
+
+function humaniseFiling(value) {
+  return String(value || "").replace(/-/g, " ");
 }
 
 function labelFor(options, value) {
