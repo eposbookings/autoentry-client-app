@@ -56,17 +56,17 @@ export default function AdminClients() {
   );
 
   return (
-    <div className="space-y-8">
-      <header className="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
+    <div className="space-y-4">
+      <header className="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
         <div>
-          <h1 className="font-display text-3xl sm:text-4xl font-bold tracking-tight text-stone-900">Client settings</h1>
-          <p className="mt-1 text-stone-600">
+          <h1 className="font-display text-2xl font-bold tracking-tight text-stone-900">Client settings</h1>
+          <p className="text-sm text-stone-600">
             {clients.length} {clients.length === 1 ? "client" : "clients"} · {totalOutstanding} outstanding items total
           </p>
         </div>
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
-            <Button className="h-11 px-5 rounded-xl gap-2" style={{ background: "var(--brand)" }} data-testid="add-client-btn">
+            <Button className="h-9 gap-2" style={{ background: "var(--brand)" }} data-testid="add-client-btn">
               <Plus className="h-4 w-4" /> New client
             </Button>
           </DialogTrigger>
@@ -127,28 +127,28 @@ export default function AdminClients() {
           placeholder="Search by business, name or email"
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          className="h-11 pl-10"
+          className="h-9 pl-10"
           data-testid="client-search"
         />
       </div>
 
       {clients.length === 0 ? (
-        <div className="border border-dashed border-stone-300 rounded-2xl bg-white p-12 text-center" data-testid="empty-clients">
+        <div className="border border-dashed border-stone-300 rounded-md bg-white p-10 text-center" data-testid="empty-clients">
           <p className="font-display text-xl text-stone-700">No clients yet</p>
           <p className="text-sm text-stone-500 mt-2">Add your first client to start uploading their outstanding invoices.</p>
         </div>
       ) : (
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 gap-3">
           {clients.map((c) => (
             <button
               key={c._id}
               onClick={() => nav(`/admin/clients/${c._id}`)}
-              className="text-left bg-white border border-stone-200 rounded-2xl p-6 card-hover"
+              className="text-left bg-white border border-stone-200 rounded-md p-4 card-hover"
               data-testid={`client-card-${c._id}`}
             >
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <div className="font-display font-semibold text-lg text-stone-900 leading-tight">{c.business_name}</div>
+                  <div className="font-display font-semibold text-base text-stone-900 leading-tight">{c.business_name}</div>
                   <div className="text-sm text-stone-500">{c.first_name} {c.last_name}</div>
                 </div>
                 <Badge variant={c.status === "active" ? "default" : "secondary"} className={c.status === "active" ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-100" : ""}>
@@ -161,11 +161,11 @@ export default function AdminClients() {
               {c.ai_analysis_enabled && (
                 <Badge className="mt-3 ml-2 bg-violet-100 text-violet-800 hover:bg-violet-100">AI analysis</Badge>
               )}
-              <div className="mt-5 grid grid-cols-2 gap-3">
+              <div className="mt-4 grid grid-cols-2 gap-2">
                 <Stat label="Purchase" value={c.purchase_outstanding} />
                 <Stat label="Sales" value={c.sales_outstanding} />
               </div>
-              <div className="mt-5 flex items-center justify-between text-sm">
+              <div className="mt-4 flex items-center justify-between text-sm">
                 <span className="text-stone-500 truncate">{c.email}</span>
                 <span className="inline-flex items-center gap-1 text-[var(--brand)] font-medium">Manage <ArrowRight className="h-3.5 w-3.5" /></span>
               </div>
@@ -181,7 +181,7 @@ function Field({ label, id, value, onChange, type = "text", required = true, tes
   return (
     <div>
       <Label htmlFor={id} className="text-sm font-semibold text-stone-700">{label}</Label>
-      <Input id={id} type={type} required={required} value={value} onChange={(e) => onChange(e.target.value)} className="mt-1.5 h-11" data-testid={testid} />
+      <Input id={id} type={type} required={required} value={value} onChange={(e) => onChange(e.target.value)} className="mt-1 h-9" data-testid={testid} />
     </div>
   );
 }
@@ -189,10 +189,10 @@ function Field({ label, id, value, onChange, type = "text", required = true, tes
 function Stat({ label, value }) {
   const empty = !value;
   return (
-    <div className={`rounded-xl px-3 py-2.5 border ${empty ? "bg-stone-50 border-stone-200" : "border-amber-200"}`}
+    <div className={`rounded-md px-3 py-2 border ${empty ? "bg-stone-50 border-stone-200" : "border-amber-200"}`}
       style={!empty ? { background: "var(--outstanding-bg)" } : undefined}>
       <div className="text-[11px] uppercase tracking-wider font-semibold text-stone-500">{label}</div>
-      <div className={`font-display text-2xl font-bold ${empty ? "text-stone-400" : ""}`}
+      <div className={`font-display text-xl font-bold ${empty ? "text-stone-400" : ""}`}
         style={!empty ? { color: "var(--outstanding)" } : undefined}>{value || 0}</div>
     </div>
   );

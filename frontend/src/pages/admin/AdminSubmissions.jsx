@@ -345,15 +345,15 @@ export default function AdminSubmissions() {
 
 function ClientsLayer({ clients, counts, q, setQ, openClient }) {
   return (
-    <div className="space-y-6">
-      <header className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+    <div className="space-y-4">
+      <header className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <h1 className="font-display text-3xl font-bold tracking-tight text-stone-900">Submitted items</h1>
-          <p className="mt-1 text-stone-600">Open a client inbox or archive to review submitted invoices and receipts.</p>
+          <h1 className="font-display text-2xl font-bold tracking-tight text-stone-900">Submitted items</h1>
+          <p className="text-sm text-stone-600">Open a client inbox or archive to review submitted invoices and receipts.</p>
         </div>
         <div className="relative w-full max-w-md">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-stone-400" />
-          <Input placeholder="Search clients" value={q} onChange={(e) => setQ(e.target.value)} className="h-11 pl-10" />
+          <Input placeholder="Search clients" value={q} onChange={(e) => setQ(e.target.value)} className="h-9 pl-10" />
         </div>
       </header>
 
@@ -362,14 +362,14 @@ function ClientsLayer({ clients, counts, q, setQ, openClient }) {
           No submitted items yet.
         </div>
       ) : (
-        <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
           {clients.map((client) => {
             const count = counts[client._id] || { inbox: 0, archived: 0 };
             return (
-              <div key={client._id} className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm">
+              <div key={client._id} className="rounded-md border border-stone-200 bg-white p-4 shadow-sm">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="truncate font-display text-lg font-semibold text-stone-900">{client.business_name}</div>
+                    <div className="truncate font-display text-base font-semibold text-stone-900">{client.business_name}</div>
                     <div className="text-sm text-stone-500">{client.first_name} {client.last_name}</div>
                   </div>
                   <Badge variant={client.status === "active" ? "default" : "secondary"} className={client.status === "active" ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-100" : ""}>
@@ -377,26 +377,26 @@ function ClientsLayer({ clients, counts, q, setQ, openClient }) {
                   </Badge>
                 </div>
 
-                <div className="mt-5 grid grid-cols-2 gap-3">
+                <div className="mt-4 grid grid-cols-2 gap-2">
                   <button
                     type="button"
                     onClick={() => openClient(client, "inbox")}
-                    className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-left hover:border-amber-300"
+                    className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-left hover:border-amber-300"
                   >
                     <div className="text-xs font-semibold uppercase tracking-wide text-amber-700">Inbox</div>
-                    <div className="font-display text-3xl font-bold text-amber-700">{count.inbox || 0}</div>
+                    <div className="font-display text-2xl font-bold text-amber-700">{count.inbox || 0}</div>
                   </button>
                   <button
                     type="button"
                     onClick={() => openClient(client, "archived")}
-                    className="rounded-lg border border-stone-200 bg-stone-50 p-4 text-left hover:border-stone-300"
+                    className="rounded-md border border-stone-200 bg-stone-50 px-3 py-2.5 text-left hover:border-stone-300"
                   >
                     <div className="text-xs font-semibold uppercase tracking-wide text-stone-500">Archived</div>
-                    <div className="font-display text-3xl font-bold text-stone-700">{count.archived || 0}</div>
+                    <div className="font-display text-2xl font-bold text-stone-700">{count.archived || 0}</div>
                   </button>
                 </div>
 
-                <div className="mt-4 flex flex-wrap gap-2">
+                <div className="mt-3 flex flex-wrap gap-1.5">
                   {client.is_vat_client && <Badge className="bg-sky-100 text-sky-800 hover:bg-sky-100">VAT client</Badge>}
                   {client.ai_analysis_enabled && <Badge className="bg-violet-100 text-violet-800 hover:bg-violet-100">AI analysis</Badge>}
                 </div>
@@ -422,14 +422,14 @@ function ItemsLayer({
   busy,
 }) {
   return (
-    <div className="flex h-[calc(100vh-3rem)] min-h-[720px] flex-col overflow-hidden">
-      <header className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+    <div className="flex h-[calc(100vh-2rem)] min-h-[660px] flex-col overflow-hidden">
+      <header className="mb-3 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex items-center gap-3">
-          <Button type="button" variant="outline" onClick={backToClients} className="h-10 gap-2">
+          <Button type="button" variant="outline" onClick={backToClients} className="h-9 gap-2">
             <ArrowLeft className="h-4 w-4" /> Clients
           </Button>
           <div>
-            <h1 className="font-display text-2xl font-bold text-stone-900">{client?.business_name || "Client"}</h1>
+            <h1 className="font-display text-xl font-bold text-stone-900">{client?.business_name || "Client"}</h1>
             <p className="text-sm text-stone-500">{rows.length} {rows.length === 1 ? "document" : "documents"} in {tab}</p>
           </div>
         </div>
@@ -443,7 +443,7 @@ function ItemsLayer({
                 type="button"
                 variant={active ? "default" : "outline"}
                 onClick={() => setTab(item.key)}
-                className="h-10 gap-2"
+                className="h-9 gap-2"
                 style={active ? { background: "var(--brand)" } : undefined}
               >
                 <Icon className="h-4 w-4" /> {item.label}
@@ -451,24 +451,24 @@ function ItemsLayer({
             );
           })}
           {tab === "archived" && (
-            <Button type="button" variant="outline" onClick={downloadArchive} disabled={busy || selectedArchiveIds.length === 0} className="h-10 gap-2">
+            <Button type="button" variant="outline" onClick={downloadArchive} disabled={busy || selectedArchiveIds.length === 0} className="h-9 gap-2">
               <Download className="h-4 w-4" /> Download selected
             </Button>
           )}
         </div>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-stone-200 bg-white">
+      <div className="min-h-0 flex-1 overflow-auto rounded-md border border-stone-200 bg-white">
         <table className="w-full text-sm">
           <thead className="sticky top-0 z-10 bg-stone-50 text-left text-xs uppercase tracking-wide text-stone-500">
             <tr>
-              {tab === "archived" && <th className="w-12 px-4 py-3"></th>}
-              <th className="px-4 py-3">Document</th>
-              <th className="px-4 py-3">Type</th>
-              <th className="px-4 py-3">Submitted</th>
-              <th className="px-4 py-3">AI</th>
-              <th className="px-4 py-3">Comment</th>
-              <th className="px-4 py-3 text-right">Open</th>
+              {tab === "archived" && <th className="w-10 px-3 py-2"></th>}
+              <th className="px-3 py-2">Document</th>
+              <th className="px-3 py-2">Type</th>
+              <th className="px-3 py-2">Submitted</th>
+              <th className="px-3 py-2">AI</th>
+              <th className="px-3 py-2">Comment</th>
+              <th className="px-3 py-2 text-right">Open</th>
             </tr>
           </thead>
           <tbody>
@@ -488,24 +488,24 @@ function ItemsLayer({
                     />
                   </td>
                 )}
-                <td className="px-4 py-3">
+                <td className="px-3 py-2">
                   <div className="flex items-center gap-3">
                     <FileText className="h-4 w-4 text-stone-500" />
-                    <div>
+                    <div className="min-w-0">
                       <div className="font-semibold text-stone-900">{row.description || "Submitted document"}</div>
-                      <div className="text-xs text-stone-500">{row.image_filename || "No file"}</div>
+                      <div className="max-w-lg truncate text-xs text-stone-500">{row.image_filename || "No file"}</div>
                     </div>
                   </div>
                 </td>
-                <td className="px-4 py-3"><Badge variant="secondary" className="capitalize">{row.type}</Badge></td>
-                <td className="px-4 py-3 text-stone-600">{formatDateTime(row.submitted_at)}</td>
-                <td className="px-4 py-3">
+                <td className="px-3 py-2"><Badge variant="secondary" className="capitalize">{row.type}</Badge></td>
+                <td className="px-3 py-2 text-stone-600">{formatDateTime(row.submitted_at)}</td>
+                <td className="px-3 py-2">
                   {row.ai_review_status === "approved" && <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">Checked</Badge>}
                   {row.ai_client_approved && <Badge className="bg-orange-100 text-orange-800 hover:bg-orange-100">Client approved</Badge>}
                   {!row.ai_review_status && !row.ai_client_approved && <span className="text-stone-400">-</span>}
                 </td>
-                <td className="max-w-md truncate px-4 py-3 text-stone-600">{row.comment || "-"}</td>
-                <td className="px-4 py-3 text-right">
+                <td className="max-w-md truncate px-3 py-2 text-stone-600">{row.comment || "-"}</td>
+                <td className="px-3 py-2 text-right">
                   <Button type="button" size="sm" variant="outline" onClick={() => openDocument(row)}>Review</Button>
                 </td>
               </tr>
@@ -542,32 +542,32 @@ function DetailLayer({
     );
   }
   return (
-    <div className="flex h-[calc(100vh-3rem)] min-h-[760px] flex-col overflow-hidden">
-      <header className="mb-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+    <div className="flex h-[calc(100vh-1.5rem)] min-h-[660px] flex-col overflow-hidden">
+      <header className="mb-2 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex min-w-0 items-center gap-3">
-          <Button type="button" variant="outline" onClick={backToList} className="h-10 gap-2">
+          <Button type="button" variant="outline" onClick={backToList} className="h-8 gap-2 px-3">
             <ArrowLeft className="h-4 w-4" /> {client?.business_name || "Documents"}
           </Button>
           <div className="min-w-0">
-            <h1 className="truncate font-display text-2xl font-bold text-stone-900">{row.description || "Submitted document"}</h1>
-            <p className="truncate text-sm text-stone-500">{row.image_filename || "No file"} {row.comment ? `- ${row.comment}` : ""}</p>
+            <h1 className="truncate font-display text-lg font-bold text-stone-900">{row.description || "Submitted document"}</h1>
+            <p className="truncate text-xs text-stone-500">{row.image_filename || "No file"} {row.comment ? `- ${row.comment}` : ""}</p>
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button type="button" variant="outline" onClick={prefillSelected} disabled={busy} className="h-10 gap-2">
+          <Button type="button" variant="outline" onClick={prefillSelected} disabled={busy} className="h-8 gap-2 px-3">
             <Sparkles className="h-4 w-4" /> AI prefill
           </Button>
-          <Button type="button" variant="outline" onClick={() => moveSelected("archived")} disabled={busy} className="h-10 gap-2">
+          <Button type="button" variant="outline" onClick={() => moveSelected("archived")} disabled={busy} className="h-8 gap-2 px-3">
             <Archive className="h-4 w-4" /> Archive
           </Button>
-          <Button type="button" onClick={() => moveSelected("published")} disabled={busy} className="h-10 gap-2" style={{ background: "var(--brand)" }}>
+          <Button type="button" onClick={() => moveSelected("published")} disabled={busy} className="h-8 gap-2 px-3" style={{ background: "var(--brand)" }}>
             <CheckCircle2 className="h-4 w-4" /> Publish and Next
           </Button>
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 gap-3 xl:grid-cols-[minmax(480px,0.92fr)_minmax(560px,1.08fr)]">
-        <section className="min-h-0 overflow-hidden rounded-lg border border-stone-200 bg-white">
+      <div className="grid min-h-0 flex-1 gap-2 xl:grid-cols-[minmax(520px,0.95fr)_minmax(640px,1.05fr)]">
+        <section className="min-h-0 overflow-hidden rounded-md border border-stone-200 bg-white">
           <ReviewForm
             draft={draft}
             setDraft={setDraft}
@@ -579,36 +579,36 @@ function DetailLayer({
             busy={busy}
           />
         </section>
-        <section className="min-h-0 overflow-hidden rounded-lg border border-stone-200 bg-stone-100">
+        <section className="min-h-0 overflow-hidden rounded-md border border-stone-200 bg-stone-100">
           <div className="flex h-full min-h-0 flex-col">
-            <div className="flex items-center justify-between gap-3 border-b border-stone-200 bg-white px-3 py-3">
+            <div className="flex items-center justify-between gap-3 border-b border-stone-200 bg-white px-3 py-2">
               <div className="min-w-0">
                 <div className="truncate font-semibold text-stone-900">{row.image_filename || "Document preview"}</div>
                 <div className="truncate text-xs text-stone-500">{row.comment || "No client comment"}</div>
               </div>
               <Badge variant="secondary" className="shrink-0 capitalize">{row.review_status || "inbox"}</Badge>
             </div>
-            <div className="min-h-0 flex-1 overflow-auto p-3">
+            <div className="min-h-0 flex-1 overflow-auto p-2">
               {row.image_filename ? (
-                <div className="relative min-h-[720px] overflow-auto rounded-md border border-stone-200 bg-white">
+                <div className="relative min-h-[640px] overflow-auto rounded-md border border-stone-200 bg-white">
                   {previewUrl ? (
                     isPdfFile(row.image_filename) ? (
-                      <iframe title="Submitted PDF" src={previewUrl} className="h-[720px] w-full rounded-md bg-white" />
+                      <iframe title="Submitted PDF" src={previewUrl} className="h-[calc(100vh-9rem)] min-h-[640px] w-full rounded-md bg-white" />
                     ) : (
                       <img src={previewUrl} alt="Submitted" className="block w-full rounded-md bg-white" />
                     )
                   ) : previewError ? (
-                    <div className="flex h-full min-h-[720px] items-center justify-center p-6 text-center text-sm text-red-600">
+                    <div className="flex h-full min-h-[640px] items-center justify-center p-6 text-center text-sm text-red-600">
                       {previewError}
                     </div>
                   ) : (
-                    <div className="flex h-full min-h-[720px] items-center justify-center text-stone-500">
+                    <div className="flex h-full min-h-[640px] items-center justify-center text-stone-500">
                       Loading preview...
                     </div>
                   )}
                 </div>
               ) : (
-                <div className="flex h-full min-h-[720px] items-center justify-center rounded-md border border-dashed border-stone-300 bg-white text-stone-500">
+                <div className="flex h-full min-h-[640px] items-center justify-center rounded-md border border-dashed border-stone-300 bg-white text-stone-500">
                   No document attached
                 </div>
               )}
@@ -665,32 +665,33 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center justify-between gap-3 border-b border-stone-200 px-4 py-3">
+      <div className="flex items-center justify-between gap-3 border-b border-stone-200 bg-stone-50 px-3 py-2">
         <div>
-          <div className="font-display text-lg font-bold text-stone-900">Coding fields</div>
+          <div className="font-display text-base font-bold text-stone-900">Coding fields</div>
           <div className="text-xs text-stone-500">Active field: {fieldLabel(activeField)}</div>
         </div>
         <Badge variant="secondary">{draft.currency || "GBP"}</Badge>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto p-4">
-        <div className="grid gap-4 md:grid-cols-2">
+      <div className="min-h-0 flex-1 overflow-auto p-2.5">
+        <div className="grid gap-2 lg:grid-cols-3">
           <DatalistField id="vendor_name" label="Vendor Name" value={draft.vendor_name} options={options.supplierOptions} onChange={(v) => set("vendor_name", v)} activeField={activeField} setActiveField={setActiveField} />
           <div>
             <Label className="text-xs font-semibold text-stone-700">Type</Label>
-            <div className="mt-2 flex gap-4 text-sm">
+            <div className="mt-1 flex h-8 items-center gap-3 text-sm">
               <label className="flex items-center gap-2"><input type="radio" checked={draft.document_type === "bill"} onChange={() => set("document_type", "bill")} /> Bill</label>
               <label className="flex items-center gap-2"><input type="radio" checked={draft.document_type === "credit_note"} onChange={() => set("document_type", "credit_note")} /> Credit Note</label>
             </div>
           </div>
           <TextField id="bill_number" label="Bill #" value={draft.bill_number} onChange={(v) => set("bill_number", v)} activeField={activeField} setActiveField={setActiveField} />
-          <div className="md:col-span-2 -mt-2">
+          <div className="lg:col-span-3 -mt-1">
             <Button
               type="button"
               variant="outline"
               size="sm"
               onClick={createSupplierFromDraft}
               disabled={busy || !String(draft.vendor_name || "").trim() || supplierExists(draft.vendor_name, options.supplierOptions)}
+              className="h-8"
             >
               Create missing supplier
             </Button>
@@ -702,42 +703,38 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
           <TextField id="reference" label="Reference" value={draft.reference} onChange={(v) => set("reference", v)} activeField={activeField} setActiveField={setActiveField} />
           <TextField id="date" label="Date" value={draft.date} onChange={(v) => set("date", v)} activeField={activeField} setActiveField={setActiveField} />
           <TextField id="due_date" label="Due Date" value={draft.due_date} onChange={(v) => set("due_date", v)} activeField={activeField} setActiveField={setActiveField} />
+          <TextField id="payment_method" label="Payment Method" value={draft.payment_method} onChange={(v) => set("payment_method", v)} activeField={activeField} setActiveField={setActiveField} />
+          <TextField id="currency" label="Currency" value={draft.currency} onChange={(v) => set("currency", v)} activeField={activeField} setActiveField={setActiveField} />
         </div>
 
-        <div className="mt-4">
+        <div className="mt-2">
           <TextField id="description" label="Description" value={draft.description} onChange={(v) => set("description", v)} activeField={activeField} setActiveField={setActiveField} />
         </div>
 
-        <div className="mt-5 grid gap-4 border-t border-stone-200 pt-5 md:grid-cols-2">
-          <div className="grid grid-cols-3 gap-3 md:grid-cols-1">
-            <TextField id="net" label="Net" value={draft.net} onChange={(v) => set("net", v)} activeField={activeField} setActiveField={setActiveField} />
-            <TextField id="vat" label="VAT" value={draft.vat} onChange={(v) => set("vat", v)} activeField={activeField} setActiveField={setActiveField} />
-            <TextField id="total" label="Total" value={draft.total} onChange={(v) => set("total", v)} activeField={activeField} setActiveField={setActiveField} />
-            <label className="col-span-3 flex items-center gap-3 text-sm font-medium text-stone-700 md:col-span-1">
-              <input type="checkbox" checked={draft.mark_as_paid} onChange={(e) => set("mark_as_paid", e.target.checked)} />
-              Mark as Paid
-            </label>
-          </div>
-          <div className="grid grid-cols-3 gap-3 md:grid-cols-1">
-            <DatalistField id="vat_code" label="VAT Code" value={draft.vat_code} options={options.vatOptions} onChange={(v) => set("vat_code", v)} activeField={activeField} setActiveField={setActiveField} />
-            <TextField id="currency" label="Currency" value={draft.currency} onChange={(v) => set("currency", v)} activeField={activeField} setActiveField={setActiveField} />
-            <TextField id="payment_method" label="Payment Method" value={draft.payment_method} onChange={(v) => set("payment_method", v)} activeField={activeField} setActiveField={setActiveField} />
-            {draft.mark_as_paid && (
-              <DatalistField id="bank_account" label="Bank account" value={draft.bank_account} options={options.bankAccountOptions} onChange={(v) => set("bank_account", v)} activeField={activeField} setActiveField={setActiveField} />
-            )}
-          </div>
+        <div className="mt-2 grid gap-2 border-t border-stone-200 pt-2 lg:grid-cols-4">
+          <TextField id="net" label="Net" value={draft.net} onChange={(v) => set("net", v)} activeField={activeField} setActiveField={setActiveField} />
+          <TextField id="vat" label="VAT" value={draft.vat} onChange={(v) => set("vat", v)} activeField={activeField} setActiveField={setActiveField} />
+          <TextField id="total" label="Total" value={draft.total} onChange={(v) => set("total", v)} activeField={activeField} setActiveField={setActiveField} />
+          <DatalistField id="vat_code" label="VAT Code" value={draft.vat_code} options={options.vatOptions} onChange={(v) => set("vat_code", v)} activeField={activeField} setActiveField={setActiveField} />
+          <label className="flex h-8 items-center gap-2 text-sm font-medium text-stone-700">
+            <input type="checkbox" checked={draft.mark_as_paid} onChange={(e) => set("mark_as_paid", e.target.checked)} />
+            Mark as Paid
+          </label>
+          {draft.mark_as_paid && (
+            <DatalistField id="bank_account" label="Bank account" value={draft.bank_account} options={options.bankAccountOptions} onChange={(v) => set("bank_account", v)} activeField={activeField} setActiveField={setActiveField} />
+          )}
         </div>
 
-        <div className="mt-5 border-t border-stone-200 pt-5">
-          <div className="mb-3 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-            <div className="font-display text-lg font-semibold text-stone-900">Line Items ({draft.line_items.length})</div>
+        <div className="mt-2 border-t border-stone-200 pt-2">
+          <div className="mb-1.5 flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
+            <div className="font-display text-sm font-semibold text-stone-900">Line Items ({draft.line_items.length})</div>
             <div className="flex flex-wrap gap-2">
-              <select className="h-9 rounded-md border border-stone-200 bg-white px-2 text-sm" value={draft.price_is} onChange={(e) => set("price_is", e.target.value)}>
+              <select className="h-7 rounded-md border border-stone-200 bg-white px-2 text-xs" value={draft.price_is} onChange={(e) => set("price_is", e.target.value)}>
                 <option>Tax Exclusive</option>
                 <option>Tax Inclusive</option>
               </select>
-              <Button type="button" variant="outline" size="sm" onClick={clearLines} className="gap-2">
-                <RotateCcw className="h-4 w-4" /> Clear
+              <Button type="button" variant="outline" size="sm" onClick={clearLines} className="h-7 gap-1.5 px-2 text-xs">
+                <RotateCcw className="h-3.5 w-3.5" /> Clear
               </Button>
               <Button
                 type="button"
@@ -745,9 +742,9 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
                 size="sm"
                 onClick={() => suggestLinesFromPattern(draft.line_items[patternLineIndex])}
                 disabled={busy}
-                className="gap-2"
+                className="h-7 gap-1.5 px-2 text-xs"
               >
-                <Wand2 className="h-4 w-4" /> Suggest from pattern
+                <Wand2 className="h-3.5 w-3.5" /> Suggest from pattern
               </Button>
             </div>
           </div>
@@ -758,48 +755,48 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
             <datalist id="line-vat-options">
               {(options.vatOptions || []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
             </datalist>
-            <table className="w-full min-w-[900px] text-sm">
-              <thead className="border-b border-stone-200 text-left text-xs uppercase tracking-wider text-stone-500">
+            <table className="w-full min-w-[840px] text-xs">
+              <thead className="border-b border-stone-200 text-left text-[10px] uppercase tracking-wider text-stone-500">
                 <tr>
-                  <th className="py-2 pr-2">Pattern</th>
-                  <th className="py-2 pr-2">Description</th>
-                  <th className="py-2 pr-2">Category</th>
-                  <th className="py-2 pr-2">VAT Code</th>
-                  <th className="py-2 pr-2">Units</th>
-                  <th className="py-2 pr-2">Price</th>
-                  <th className="py-2 pr-2">Net</th>
-                  <th className="py-2 pr-2">VAT</th>
-                  <th className="py-2">Total</th>
-                  <th className="py-2 pl-2"></th>
+                  <th className="py-1 pr-1.5">Pattern</th>
+                  <th className="py-1 pr-1.5">Description</th>
+                  <th className="py-1 pr-1.5">Category</th>
+                  <th className="py-1 pr-1.5">VAT Code</th>
+                  <th className="py-1 pr-1.5">Units</th>
+                  <th className="py-1 pr-1.5">Price</th>
+                  <th className="py-1 pr-1.5">Net</th>
+                  <th className="py-1 pr-1.5">VAT</th>
+                  <th className="py-1">Total</th>
+                  <th className="py-1 pl-1.5"></th>
                 </tr>
               </thead>
               <tbody>
                 {draft.line_items.map((line, index) => (
                   <tr key={index}>
-                    <td className="py-2 pr-2 align-middle">
+                    <td className="py-0.5 pr-1.5 align-middle">
                       <input
                         type="radio"
                         name="line-pattern"
                         checked={patternLineIndex === index}
                         onChange={() => setPatternLineIndex(index)}
-                        className="h-4 w-4"
+                        className="h-3.5 w-3.5"
                         title="Use this line as the pattern"
                       />
                     </td>
                     {["description", "category", "vat_code", "units", "price", "net", "vat", "total"].map((key) => (
-                      <td key={key} className="py-2 pr-2">
+                      <td key={key} className="py-0.5 pr-1.5">
                         <Input
                           value={line[key]}
                           onChange={(e) => setLine(index, key, e.target.value)}
                           onFocus={() => setActiveField(`line_items.${index}.${key}`)}
                           list={key === "category" ? "line-category-options" : key === "vat_code" ? "line-vat-options" : undefined}
-                          className={`h-9 min-w-20 px-2 ${activeField === `line_items.${index}.${key}` ? "border-emerald-500 ring-2 ring-emerald-100" : ""}`}
+                          className={`h-7 min-w-16 px-1.5 text-xs ${activeField === `line_items.${index}.${key}` ? "border-emerald-500 ring-2 ring-emerald-100" : ""}`}
                         />
                       </td>
                     ))}
-                    <td className="py-2 pl-2 align-middle">
-                      <Button type="button" variant="ghost" size="icon" onClick={() => removeLine(index)} className="h-8 w-8 text-stone-500 hover:text-red-600">
-                        <Trash2 className="h-4 w-4" />
+                    <td className="py-0.5 pl-1.5 align-middle">
+                      <Button type="button" variant="ghost" size="icon" onClick={() => removeLine(index)} className="h-7 w-7 text-stone-500 hover:text-red-600">
+                        <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     </td>
                   </tr>
@@ -807,10 +804,10 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
               </tbody>
             </table>
           </div>
-          <Button type="button" variant="outline" size="sm" onClick={addLine} className="mt-3">
+          <Button type="button" variant="outline" size="sm" onClick={addLine} className="mt-1.5 h-7 px-2 text-xs">
             Add line item
           </Button>
-          <div className="mt-3 grid gap-2 rounded-lg border border-stone-200 bg-stone-50 p-3 md:grid-cols-3">
+          <div className="mt-1.5 grid gap-1.5 rounded-md border border-stone-200 bg-stone-50 p-1.5 md:grid-cols-3">
             <TotalComparison label="Net" lineValue={lineTotals.net} headerValue={headerTotals.net} />
             <TotalComparison label="VAT" lineValue={lineTotals.vat} headerValue={headerTotals.vat} />
             <TotalComparison label="Total" lineValue={lineTotals.total} headerValue={headerTotals.total} />
@@ -831,17 +828,17 @@ function TotalComparison({ label, lineValue, headerValue }) {
       ? "text-emerald-700"
       : "text-amber-700";
   return (
-    <div className="rounded-md border border-stone-200 bg-white px-3 py-2 text-sm">
+    <div className="rounded-md border border-stone-200 bg-white px-2 py-1.5 text-xs">
       <div className="text-xs font-semibold uppercase tracking-wide text-stone-500">{label}</div>
-      <div className="mt-1 flex items-center justify-between gap-3">
+      <div className="mt-0.5 flex items-center justify-between gap-2">
         <span className="text-stone-600">Lines</span>
         <span className="font-semibold text-stone-900">{formatMoney(lineValue)}</span>
       </div>
-      <div className="mt-1 flex items-center justify-between gap-3">
+      <div className="mt-0.5 flex items-center justify-between gap-2">
         <span className="text-stone-600">Header</span>
         <span className="font-semibold text-stone-900">{hasHeader ? formatMoney(headerValue) : "-"}</span>
       </div>
-      <div className={`mt-1 flex items-center justify-between gap-3 ${diffClass}`}>
+      <div className={`mt-0.5 flex items-center justify-between gap-2 ${diffClass}`}>
         <span>Difference</span>
         <span className="font-semibold">{diff === null ? "-" : formatMoney(diff)}</span>
       </div>
@@ -858,7 +855,7 @@ function TextField({ id, label, value, onChange, activeField, setActiveField }) 
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onFocus={() => setActiveField(id)}
-        className={`mt-1 h-10 px-2 ${active ? "border-emerald-500 ring-2 ring-emerald-100" : ""}`}
+        className={`mt-0.5 h-8 px-2 text-sm ${active ? "border-emerald-500 ring-2 ring-emerald-100" : ""}`}
       />
     </div>
   );
@@ -875,7 +872,7 @@ function DatalistField({ id, label, value, options = [], onChange, activeField, 
         list={listId}
         onChange={(e) => onChange(e.target.value)}
         onFocus={() => setActiveField(id)}
-        className={`mt-1 h-10 px-2 ${active ? "border-emerald-500 ring-2 ring-emerald-100" : ""}`}
+        className={`mt-0.5 h-8 px-2 text-sm ${active ? "border-emerald-500 ring-2 ring-emerald-100" : ""}`}
       />
       <datalist id={listId}>
         {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}

@@ -911,24 +911,8 @@ def serialize_integration(row: Optional[dict]) -> dict:
 
 def serialize_integration_record(row: dict) -> dict:
     d = dict(row)
-    raw = {}
-    try:
-        raw = json.loads(d.get("raw_json") or "{}")
-    except Exception:
-        raw = {}
-    d["active"] = quickbooks_active_value(raw) if isinstance(raw, dict) and ("Active" in raw or "active" in raw) else bool(d.get("active"))
+    d["active"] = bool(d.get("active"))
     return d
-
-
-def quickbooks_active_value(item: dict) -> bool:
-    if not isinstance(item, dict):
-        return True
-    value = item.get("Active", item.get("active", True))
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() not in {"false", "0", "inactive", "no"}
-    return bool(value)
 
 
 async def get_client_or_404(session: AsyncSession, client_id: str) -> dict:
@@ -1230,7 +1214,6 @@ async def save_client_integration_settings(
         "status": status,
         "company_id": (payload.company_id or "").strip(),
         "company_name": (payload.company_name or "").strip(),
-        "sandbox": bool(payload.sandbox),
         "auto_create_suppliers": bool(payload.auto_create_suppliers),
         "auto_create_customers": bool(payload.auto_create_customers),
         "default_purchase_account": (payload.default_purchase_account or "").strip(),
@@ -1240,6 +1223,10 @@ async def save_client_integration_settings(
         "updated_at": now,
     }
     existing = await one(session, select(client_integrations).where(client_integrations.c.client_id == client_id))
+    if existing and existing.get("refresh_token_enc") and existing.get("company_id"):
+        values["sandbox"] = bool(existing.get("sandbox"))
+    else:
+        values["sandbox"] = bool(payload.sandbox)
     if existing:
         await session.execute(update(client_integrations).where(client_integrations.c.client_id == client_id).values(**values))
     else:
@@ -1388,7 +1375,7 @@ async def replace_integration_records(session: AsyncSession, client_id: str, pro
                 "name": record.get("name") or "",
                 "email": record.get("email") or None,
                 "description": record.get("description") or "",
-                "active": quickbooks_active_value(record.get("raw") or {"Active": record.get("active", True)}),
+                "active": bool(record.get("active", True)),
                 "raw_json": json.dumps(record.get("raw") or {}),
                 "created_at": now,
                 "updated_at": now,
@@ -1408,7 +1395,28 @@ async def sync_quickbooks_lists_for_client(session: AsyncSession, client_id: str
     environment = "sandbox" if integration.get("sandbox") else "production"
     realm_id = integration["company_id"]
 
-    accounts_response = await quickbooks_query(access_token, realm_id, environment, "SELECT * FROM Account MAXRESULTS 1000")
+    try:
+        accounts_response = await quickbooks_query(access_token, realm_id, environment, "SELECT * FROM Account MAXRESULTS 1000")
+    except HTTPException as exc:
+        detail = str(exc.detail or "")
+        if "ApplicationAuthorizationFailed" not in detail and "003100" not in detail:
+            raise
+        alternate_environment = "production" if environment == "sandbox" else "sandbox"
+        logger.warning(
+            "QuickBooks %s query failed for client %s; retrying %s",
+            environment,
+            client_id,
+            alternate_environment,
+        )
+        accounts_response = await quickbooks_query(access_token, realm_id, alternate_environment, "SELECT * FROM Account MAXRESULTS 1000")
+        environment = alternate_environment
+        await session.execute(
+            update(client_integrations)
+            .where(client_integrations.c.client_id == client_id)
+            .values(sandbox=environment == "sandbox", updated_at=utc_now_iso())
+        )
+        await session.commit()
+        integration = await one(session, select(client_integrations).where(client_integrations.c.client_id == client_id))
     vendors_response = await quickbooks_query(access_token, realm_id, environment, "SELECT * FROM Vendor MAXRESULTS 1000")
     customers_response = await quickbooks_query(access_token, realm_id, environment, "SELECT * FROM Customer MAXRESULTS 1000")
     company_response = await quickbooks_query(access_token, realm_id, environment, "SELECT * FROM CompanyInfo")
@@ -1439,7 +1447,7 @@ async def sync_quickbooks_lists_for_client(session: AsyncSession, client_id: str
             "code": item.get("AcctNum") or item.get("Id") or "",
             "name": item.get("Name") or item.get("FullyQualifiedName") or "",
             "description": item.get("AccountType") or item.get("Classification") or "",
-            "active": quickbooks_active_value(item),
+            "active": item.get("Active", True),
             "raw": item,
         }
         for item in accounts_response.get("Account", []) or []
@@ -1451,7 +1459,7 @@ async def sync_quickbooks_lists_for_client(session: AsyncSession, client_id: str
             "name": item.get("DisplayName") or item.get("CompanyName") or item.get("PrintOnCheckName") or "",
             "email": ((item.get("PrimaryEmailAddr") or {}).get("Address") if isinstance(item.get("PrimaryEmailAddr"), dict) else None),
             "description": item.get("CompanyName") or "",
-            "active": quickbooks_active_value(item),
+            "active": item.get("Active", True),
             "raw": item,
         }
         for item in vendors_response.get("Vendor", []) or []
@@ -1463,7 +1471,7 @@ async def sync_quickbooks_lists_for_client(session: AsyncSession, client_id: str
             "name": item.get("DisplayName") or item.get("CompanyName") or item.get("FullyQualifiedName") or "",
             "email": ((item.get("PrimaryEmailAddr") or {}).get("Address") if isinstance(item.get("PrimaryEmailAddr"), dict) else None),
             "description": item.get("CompanyName") or "",
-            "active": quickbooks_active_value(item),
+            "active": item.get("Active", True),
             "raw": item,
         }
         for item in customers_response.get("Customer", []) or []
@@ -1474,7 +1482,7 @@ async def sync_quickbooks_lists_for_client(session: AsyncSession, client_id: str
             "code": item.get("Name") or item.get("Id") or "",
             "name": item.get("Name") or item.get("Description") or item.get("Id") or "",
             "description": item.get("Description") or ("Taxable" if item.get("Taxable") else "Non-taxable"),
-            "active": quickbooks_active_value(item),
+            "active": item.get("Active", True),
             "raw": item,
         }
         for item in tax_codes_response.get("TaxCode", []) or []
@@ -1491,7 +1499,7 @@ async def sync_quickbooks_lists_for_client(session: AsyncSession, client_id: str
             "code": rate_name,
             "name": rate_label,
             "description": item.get("Description") or "QuickBooks tax rate",
-            "active": quickbooks_active_value(item),
+            "active": item.get("Active", True),
             "raw": item,
         })
         existing_tax_names.add(rate_name.strip().lower())

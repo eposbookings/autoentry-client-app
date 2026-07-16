@@ -219,15 +219,15 @@ export default function AdminIntegrations() {
   }
 
   return (
-    <div className="space-y-6">
-      <header className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+    <div className="space-y-4">
+      <header className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <h1 className="font-display text-3xl font-bold tracking-tight text-stone-900">Client integrations</h1>
-          <p className="mt-1 text-stone-600">Keep each client&apos;s accounting software, accounts, suppliers, and customers ready for AI coding.</p>
+          <h1 className="font-display text-2xl font-bold tracking-tight text-stone-900">Client integrations</h1>
+          <p className="text-sm text-stone-600">Keep each client&apos;s accounting software, accounts, suppliers, and customers ready for AI coding.</p>
         </div>
         <div className="relative w-full max-w-md">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-stone-400" />
-          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search clients" className="h-11 pl-10" />
+          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search clients" className="h-9 pl-10" />
         </div>
       </header>
 
@@ -239,7 +239,7 @@ export default function AdminIntegrations() {
         busy={busy}
       />
 
-      <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
         {clients.map((client) => (
           <ClientCard key={client._id} client={client} onOpen={() => openClient(client._id)} disabled={busy} />
         ))}
@@ -257,7 +257,7 @@ export default function AdminIntegrations() {
 function QuickBooksGlobalSettings({ config, form, setForm, onSave, busy }) {
   const savedRedirect = config.redirect_uri || form.redirect_uri || localQuickBooksRedirectUri;
   return (
-    <section className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm">
+    <section className="rounded-md border border-stone-200 bg-white p-4 shadow-sm">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <div className="flex items-center gap-2">
@@ -273,7 +273,7 @@ function QuickBooksGlobalSettings({ config, form, setForm, onSave, busy }) {
         </Badge>
       </div>
 
-      <form onSubmit={onSave} className="mt-5 grid gap-4 lg:grid-cols-[1fr_1fr_220px_1.4fr_auto] lg:items-end">
+      <form onSubmit={onSave} className="mt-4 grid gap-3 lg:grid-cols-[1fr_1fr_200px_1.4fr_auto] lg:items-end">
         <Field
           label={config.client_id_saved ? "Client ID (saved)" : "Client ID"}
           value={form.client_id}
@@ -301,7 +301,7 @@ function QuickBooksGlobalSettings({ config, form, setForm, onSave, busy }) {
           onChange={(value) => setForm({ ...form, redirect_uri: value })}
           required={false}
         />
-        <Button type="submit" disabled={busy} className="h-10" style={{ background: "var(--brand)" }}>
+        <Button type="submit" disabled={busy} className="h-9" style={{ background: "var(--brand)" }}>
           Save
         </Button>
       </form>
@@ -331,16 +331,16 @@ function ClientCard({ client, onOpen, disabled }) {
       type="button"
       onClick={onOpen}
       disabled={disabled}
-      className="rounded-lg border border-stone-200 bg-white p-5 text-left shadow-sm transition hover:border-emerald-200 hover:shadow-md disabled:opacity-60"
+      className="rounded-md border border-stone-200 bg-white p-4 text-left shadow-sm transition hover:border-emerald-200 hover:shadow-md disabled:opacity-60"
     >
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="font-display text-lg font-bold text-stone-900">{client.business_name || "Unnamed client"}</h2>
+          <h2 className="font-display text-base font-bold text-stone-900">{client.business_name || "Unnamed client"}</h2>
           <p className="mt-1 text-sm text-stone-500">{client.email}</p>
         </div>
         <Badge variant="secondary">{providerLabel(integration.provider)}</Badge>
       </div>
-      <div className="mt-4 flex flex-wrap gap-2">
+      <div className="mt-3 flex flex-wrap gap-1.5">
         <SmallCount label="Accounts" value={counts.account || 0} />
         <SmallCount label="Suppliers" value={counts.supplier || 0} />
         <SmallCount label="Customers" value={counts.customer || 0} />
@@ -356,20 +356,22 @@ function DetailView({ detail, settings, setSettings, tab, setTab, busy, quickBoo
   const records = detail.records || {};
   const activeRecords = records[tab] || [];
   const activeTab = recordTabs.find((item) => item.key === tab) || recordTabs[0];
+  const connectedEnvironment = settings.sandbox ? "sandbox" : "production";
+  const environmentMismatch = settings.connected && quickBooksConfig.environment && quickBooksConfig.environment !== connectedEnvironment;
   const accountOptions = useMemo(() => (records.account || []).map((record) => ({
     value: record.code || record.name,
     label: [record.code, record.name].filter(Boolean).join(" - "),
   })), [records.account]);
 
   return (
-    <div className="flex h-[calc(100vh-3rem)] min-h-[760px] flex-col overflow-hidden">
-      <header className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+    <div className="flex h-[calc(100vh-2rem)] min-h-[680px] flex-col overflow-hidden">
+      <header className="mb-3 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex min-w-0 items-center gap-3">
-          <Button type="button" variant="outline" onClick={back} className="h-10 gap-2">
+          <Button type="button" variant="outline" onClick={back} className="h-9 gap-2">
             <ArrowLeft className="h-4 w-4" /> Clients
           </Button>
           <div className="min-w-0">
-            <h1 className="truncate font-display text-3xl font-bold text-stone-900">{client.business_name || "Client integration"}</h1>
+            <h1 className="truncate font-display text-2xl font-bold text-stone-900">{client.business_name || "Client integration"}</h1>
             <p className="truncate text-sm text-stone-500">{client.email}</p>
           </div>
         </div>
@@ -378,7 +380,7 @@ function DetailView({ detail, settings, setSettings, tab, setTab, busy, quickBoo
             type="button"
             onClick={connectQuickBooks}
             disabled={busy || settings.provider !== "quickbooks" || !quickBooksConfig.configured}
-            className="h-10 gap-2"
+            className="h-9 gap-2"
             style={{ background: "var(--brand)" }}
           >
             <Building2 className="h-4 w-4" /> {settings.connected ? "Reconnect QuickBooks" : "Connect QuickBooks"}
@@ -388,16 +390,16 @@ function DetailView({ detail, settings, setSettings, tab, setTab, busy, quickBoo
             variant="outline"
             onClick={syncQuickBooks}
             disabled={busy || settings.provider !== "quickbooks" || !settings.connected}
-            className="h-10 gap-2"
+            className="h-9 gap-2"
           >
             <RefreshCw className="h-4 w-4" /> Sync lists
           </Button>
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[minmax(420px,0.85fr)_minmax(620px,1.15fr)]">
-        <section className="min-h-0 overflow-auto rounded-lg border border-stone-200 bg-white">
-          <form onSubmit={saveSettings} className="space-y-5 p-5">
+      <div className="grid min-h-0 flex-1 gap-3 xl:grid-cols-[minmax(400px,0.8fr)_minmax(640px,1.2fr)]">
+        <section className="min-h-0 overflow-auto rounded-md border border-stone-200 bg-white">
+          <form onSubmit={saveSettings} className="space-y-4 p-4">
             <div>
               <h2 className="font-display text-xl font-bold text-stone-900">Integration</h2>
               <p className="mt-1 text-sm text-stone-500">QuickBooks is first; Sage and Xero use the same local profile shape for later connection.</p>
@@ -412,8 +414,19 @@ function DetailView({ detail, settings, setSettings, tab, setTab, busy, quickBoo
                 This client will use the admin QuickBooks app settings automatically ({quickBooksConfig.environment}).
               </div>
             )}
+            {settings.connected && (
+              <div className={`rounded-lg border p-3 text-sm ${settings.sandbox ? "border-amber-200 bg-amber-50 text-amber-900" : "border-emerald-100 bg-emerald-50 text-emerald-900"}`}>
+                Connected QuickBooks company: <strong>{settings.company_name || "Unknown company"}</strong> ({connectedEnvironment}).
+                {settings.sandbox && " Sandbox companies return sample US tax codes such as Arizona/Tucson, not the live UK VAT list."}
+              </div>
+            )}
+            {environmentMismatch && (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+                Admin QuickBooks app settings are now {quickBooksConfig.environment}, but this client is still connected to {connectedEnvironment}. Reconnect QuickBooks to switch company/environment before syncing lists.
+              </div>
+            )}
 
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-3 sm:grid-cols-2">
               <SelectField label="Software" value={settings.provider} onChange={(value) => setSettings({ ...settings, provider: value })}>
                 {providers.map((provider) => <option key={provider.value} value={provider.value}>{provider.label}</option>)}
               </SelectField>
@@ -427,18 +440,23 @@ function DetailView({ detail, settings, setSettings, tab, setTab, busy, quickBoo
               <Field label="Company name" value={settings.company_name || ""} onChange={(value) => setSettings({ ...settings, company_name: value })} />
             </div>
 
-            <div className="rounded-lg border border-stone-200 bg-stone-50 p-4">
+            <div className="rounded-md border border-stone-200 bg-stone-50 p-3">
               <h3 className="font-semibold text-stone-900">Account settings</h3>
-              <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 <ComboField label="Default purchase account" value={settings.default_purchase_account || ""} options={accountOptions} onChange={(value) => setSettings({ ...settings, default_purchase_account: value })} />
                 <ComboField label="Default sales account" value={settings.default_sales_account || ""} options={accountOptions} onChange={(value) => setSettings({ ...settings, default_sales_account: value })} />
                 <Field label="Default VAT code" value={settings.default_vat_code || ""} onChange={(value) => setSettings({ ...settings, default_vat_code: value })} />
                 <label className="flex items-center gap-2 pt-7 text-sm font-medium text-stone-700">
-                  <input type="checkbox" checked={!!settings.sandbox} onChange={(e) => setSettings({ ...settings, sandbox: e.target.checked })} />
-                  Sandbox company
+                  <input
+                    type="checkbox"
+                    checked={!!settings.sandbox}
+                    disabled={settings.connected}
+                    onChange={(e) => setSettings({ ...settings, sandbox: e.target.checked })}
+                  />
+                  {settings.connected ? "Environment set by connection" : "Sandbox company"}
                 </label>
               </div>
-              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
                 <label className="flex items-start gap-3 rounded-lg bg-white p-3 text-sm">
                   <input type="checkbox" checked={!!settings.auto_create_suppliers} onChange={(e) => setSettings({ ...settings, auto_create_suppliers: e.target.checked })} className="mt-1" />
                   <span><strong>Create missing suppliers</strong><span className="block text-stone-500">When publishing purchase documents later.</span></span>
@@ -461,9 +479,9 @@ function DetailView({ detail, settings, setSettings, tab, setTab, busy, quickBoo
           </form>
         </section>
 
-        <section className="min-h-0 overflow-hidden rounded-lg border border-stone-200 bg-white">
+        <section className="min-h-0 overflow-hidden rounded-md border border-stone-200 bg-white">
           <div className="flex h-full min-h-0 flex-col">
-            <div className="flex flex-col gap-3 border-b border-stone-200 p-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex flex-col gap-2 border-b border-stone-200 p-3 lg:flex-row lg:items-center lg:justify-between">
               <div className="flex flex-wrap gap-2">
                 {recordTabs.map((item) => {
                   const Icon = item.icon;
@@ -473,7 +491,7 @@ function DetailView({ detail, settings, setSettings, tab, setTab, busy, quickBoo
                       key={item.key}
                       type="button"
                       onClick={() => setTab(item.key)}
-                      className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold ${active ? "bg-emerald-900 text-white" : "bg-stone-100 text-stone-700 hover:bg-stone-200"}`}
+                      className={`flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-semibold ${active ? "bg-emerald-900 text-white" : "bg-stone-100 text-stone-700 hover:bg-stone-200"}`}
                     >
                       <Icon className="h-4 w-4" /> {item.label}
                     </button>
@@ -507,7 +525,7 @@ function DetailView({ detail, settings, setSettings, tab, setTab, busy, quickBoo
 
 function RecordRow({ record, recordType, onDelete, busy }) {
   return (
-    <div className="grid gap-3 p-4 lg:grid-cols-[minmax(0,1fr)_160px_120px_auto] lg:items-center">
+    <div className="grid gap-2 p-3 lg:grid-cols-[minmax(0,1fr)_150px_100px_auto] lg:items-center">
       <div className="min-w-0">
         <div className="truncate font-semibold text-stone-900">{record.name}</div>
         <div className="mt-1 truncate text-sm text-stone-500">{record.description || record.email || "No description"}</div>
@@ -534,7 +552,7 @@ function Field({ label, value, onChange, type = "text", required = true }) {
   return (
     <div>
       <Label>{label}</Label>
-      <Input type={type} required={required} value={value} onChange={(e) => onChange(e.target.value)} className="mt-1 h-10" />
+      <Input type={type} required={required} value={value} onChange={(e) => onChange(e.target.value)} className="mt-1 h-9" />
     </div>
   );
 }
@@ -543,7 +561,7 @@ function SelectField({ label, value, onChange, children }) {
   return (
     <div>
       <Label>{label}</Label>
-      <select value={value} onChange={(e) => onChange(e.target.value)} className="mt-1 h-10 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100">
+      <select value={value} onChange={(e) => onChange(e.target.value)} className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100">
         {children}
       </select>
     </div>
@@ -554,7 +572,7 @@ function ComboField({ label, value, options, onChange }) {
   return (
     <div>
       <Label>{label}</Label>
-      <Input value={value} onChange={(e) => onChange(e.target.value)} list={`${label.replace(/\W+/g, "-")}-options`} className="mt-1 h-10" />
+      <Input value={value} onChange={(e) => onChange(e.target.value)} list={`${label.replace(/\W+/g, "-")}-options`} className="mt-1 h-9" />
       <datalist id={`${label.replace(/\W+/g, "-")}-options`}>
         {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
       </datalist>

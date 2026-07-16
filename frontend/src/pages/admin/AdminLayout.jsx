@@ -7,7 +7,7 @@ import { Users, FileText, Settings, LogOut, PlugZap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 const linkBase =
-  "flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors";
+  "flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors";
 
 export default function AdminLayout() {
   const { user, logout } = useAuth();
@@ -29,17 +29,17 @@ export default function AdminLayout() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col md:flex-row" data-testid="admin-shell">
-      <aside className="md:w-64 md:min-h-screen border-b md:border-b-0 md:border-r border-stone-200 bg-white">
-        <div className="px-6 py-6 flex items-center gap-3">
-          <EposLogo size={42} />
+    <div className="min-h-screen flex flex-col md:flex-row text-[14px]" data-testid="admin-shell">
+      <aside className="md:w-52 md:min-h-screen border-b md:border-b-0 md:border-r border-stone-200 bg-white">
+        <div className="px-3 py-3 flex items-center gap-2.5">
+          <EposLogo size={34} />
           <div>
-            <div className="font-display font-bold text-stone-900 leading-tight">EPOS Accountancy</div>
+            <div className="font-display text-sm font-bold text-stone-900 leading-tight">EPOS Accountancy</div>
             <div className="text-[10px] uppercase tracking-[0.18em] text-stone-500 font-semibold">Practice Admin</div>
           </div>
         </div>
 
-        <nav className="px-3 pt-2 pb-6 space-y-1">
+        <nav className="px-2 pt-1 pb-4 space-y-1">
           <NavLink end to="/admin" data-testid="nav-clients"
             className={({isActive}) => `${linkBase} ${isActive ? "bg-stone-100 text-stone-900" : "text-stone-600 hover:bg-stone-50"}`}>
             <Users className="h-4 w-4" /> Client settings
@@ -60,14 +60,14 @@ export default function AdminLayout() {
           </NavLink>
         </nav>
 
-        <div className="px-4 pb-6 mt-auto md:absolute md:bottom-4 md:w-60">
-          <Button variant="outline" onClick={onLogout} className="w-full justify-start gap-2" data-testid="logout-btn">
+        <div className="px-3 pb-3 mt-auto md:absolute md:bottom-3 md:w-52">
+          <Button variant="outline" onClick={onLogout} className="h-8 w-full justify-start gap-2" data-testid="logout-btn">
             <LogOut className="h-4 w-4" /> Sign out
           </Button>
         </div>
       </aside>
 
-      <main className="flex-1 p-4 sm:p-6 max-w-none w-full fade-up overflow-hidden">
+      <main className="flex-1 p-2 sm:p-3 max-w-none w-full fade-up overflow-hidden">
         <Outlet />
       </main>
     </div>
