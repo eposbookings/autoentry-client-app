@@ -1430,15 +1430,6 @@ async def sync_quickbooks_lists_for_client(session: AsyncSession, client_id: str
             continue
         if tax_codes_response.get("TaxCode"):
             break
-    tax_rates_response = {}
-    for tax_rate_query in ("SELECT * FROM TaxRate MAXRESULTS 1000", "SELECT * FROM TaxRate"):
-        tax_rates_response, warning = await optional_quickbooks_query(access_token, realm_id, environment, tax_rate_query)
-        if warning:
-            sync_warnings.append(warning)
-            logger.warning("QuickBooks tax rate query skipped for client %s: %s", client_id, warning)
-            continue
-        if tax_rates_response.get("TaxRate"):
-            break
     company_info = (company_response.get("CompanyInfo") or [{}])[0] or {}
 
     accounts = [
@@ -1487,22 +1478,33 @@ async def sync_quickbooks_lists_for_client(session: AsyncSession, client_id: str
         }
         for item in tax_codes_response.get("TaxCode", []) or []
     ]
-    existing_tax_names = {str(item.get("name") or "").strip().lower() for item in tax_codes}
-    for item in tax_rates_response.get("TaxRate", []) or []:
-        rate_name = item.get("Name") or item.get("Description") or item.get("Id") or ""
-        if not rate_name or rate_name.strip().lower() in existing_tax_names:
-            continue
-        rate_value = item.get("RateValue")
-        rate_label = f"{rate_name} ({rate_value}%)" if rate_value not in (None, "") else rate_name
-        tax_codes.append({
-            "external_id": item.get("Id"),
-            "code": rate_name,
-            "name": rate_label,
-            "description": item.get("Description") or "QuickBooks tax rate",
-            "active": item.get("Active", True),
-            "raw": item,
-        })
-        existing_tax_names.add(rate_name.strip().lower())
+    if not tax_codes:
+        tax_rates_response = {}
+        for tax_rate_query in ("SELECT * FROM TaxRate MAXRESULTS 1000", "SELECT * FROM TaxRate"):
+            tax_rates_response, warning = await optional_quickbooks_query(access_token, realm_id, environment, tax_rate_query)
+            if warning:
+                sync_warnings.append(warning)
+                logger.warning("QuickBooks tax rate query skipped for client %s: %s", client_id, warning)
+                continue
+            if tax_rates_response.get("TaxRate"):
+                break
+        sync_warnings.append("QuickBooks returned no TaxCode rows, so TaxRate rows were used as a fallback.")
+        existing_tax_names = set()
+        for item in tax_rates_response.get("TaxRate", []) or []:
+            rate_name = item.get("Name") or item.get("Description") or item.get("Id") or ""
+            if not rate_name or rate_name.strip().lower() in existing_tax_names:
+                continue
+            rate_value = item.get("RateValue")
+            rate_label = f"{rate_name} ({rate_value}%)" if rate_value not in (None, "") else rate_name
+            tax_codes.append({
+                "external_id": item.get("Id"),
+                "code": rate_name,
+                "name": rate_label,
+                "description": item.get("Description") or "QuickBooks tax rate",
+                "active": item.get("Active", True),
+                "raw": item,
+            })
+            existing_tax_names.add(rate_name.strip().lower())
 
     await replace_integration_records(session, client_id, "quickbooks", "account", accounts)
     await replace_integration_records(session, client_id, "quickbooks", "supplier", suppliers)
