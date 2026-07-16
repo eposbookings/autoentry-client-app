@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, formatApiError, API } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -588,25 +588,13 @@ function DetailLayer({
               </div>
               <Badge variant="secondary" className="shrink-0 capitalize">{row.review_status || "inbox"}</Badge>
             </div>
-            <div className="min-h-0 flex-1 overflow-auto p-2">
+            <div className="min-h-0 flex-1 p-2">
               {row.image_filename ? (
-                <div className="relative min-h-[640px] overflow-auto rounded-md border border-stone-200 bg-white">
-                  {previewUrl ? (
-                    isPdfFile(row.image_filename) ? (
-                      <iframe title="Submitted PDF" src={previewUrl} className="h-[calc(100vh-9rem)] min-h-[640px] w-full rounded-md bg-white" />
-                    ) : (
-                      <img src={previewUrl} alt="Submitted" className="block w-full rounded-md bg-white" />
-                    )
-                  ) : previewError ? (
-                    <div className="flex h-full min-h-[640px] items-center justify-center p-6 text-center text-sm text-red-600">
-                      {previewError}
-                    </div>
-                  ) : (
-                    <div className="flex h-full min-h-[640px] items-center justify-center text-stone-500">
-                      Loading preview...
-                    </div>
-                  )}
-                </div>
+                <DraggablePreview
+                  previewUrl={previewUrl}
+                  previewError={previewError}
+                  filename={row.image_filename}
+                />
               ) : (
                 <div className="flex h-full min-h-[640px] items-center justify-center rounded-md border border-dashed border-stone-300 bg-white text-stone-500">
                   No document attached
@@ -616,6 +604,100 @@ function DetailLayer({
           </div>
         </section>
       </div>
+    </div>
+  );
+}
+
+function DraggablePreview({ previewUrl, previewError, filename }) {
+  const scrollerRef = useRef(null);
+  const iframeRef = useRef(null);
+  const dragRef = useRef({ active: false, x: 0, y: 0, left: 0, top: 0 });
+  const isPdf = isPdfFile(filename);
+
+  const beginDrag = (event) => {
+    if (event.button !== undefined && event.button !== 0) return;
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    dragRef.current = {
+      active: true,
+      x: event.clientX,
+      y: event.clientY,
+      left: scroller.scrollLeft,
+      top: scroller.scrollTop,
+    };
+    scroller.classList.add("cursor-grabbing");
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    event.preventDefault();
+  };
+
+  const moveDrag = (event) => {
+    const drag = dragRef.current;
+    const scroller = scrollerRef.current;
+    if (!drag.active || !scroller) return;
+    const dx = event.clientX - drag.x;
+    const dy = event.clientY - drag.y;
+    scroller.scrollLeft = drag.left - dx;
+    scroller.scrollTop = drag.top - dy;
+    if (isPdf && iframeRef.current?.contentWindow) {
+      try {
+        iframeRef.current.contentWindow.scrollBy(-event.movementX, -event.movementY);
+      } catch {
+        // Browser PDF viewers can block scripted scrolling; the outer pane still pans where possible.
+      }
+    }
+    event.preventDefault();
+  };
+
+  const endDrag = (event) => {
+    dragRef.current.active = false;
+    scrollerRef.current?.classList.remove("cursor-grabbing");
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+  };
+
+  return (
+    <div
+      ref={scrollerRef}
+      className="relative h-full min-h-[640px] overflow-auto rounded-md border border-stone-200 bg-white cursor-grab select-none"
+    >
+      {previewUrl ? (
+        isPdf ? (
+          <div className="relative min-h-[640px]">
+            <iframe
+              ref={iframeRef}
+              title="Submitted PDF"
+              src={previewUrl}
+              className="h-[calc(100vh-9rem)] min-h-[640px] w-full rounded-md bg-white"
+            />
+            <div
+              className="absolute inset-x-0 bottom-0 top-12 z-10"
+              onPointerDown={beginDrag}
+              onPointerMove={moveDrag}
+              onPointerUp={endDrag}
+              onPointerCancel={endDrag}
+              title="Drag to move around the preview"
+            />
+          </div>
+        ) : (
+          <img
+            src={previewUrl}
+            alt="Submitted"
+            draggable={false}
+            onPointerDown={beginDrag}
+            onPointerMove={moveDrag}
+            onPointerUp={endDrag}
+            onPointerCancel={endDrag}
+            className="block min-w-full rounded-md bg-white"
+          />
+        )
+      ) : previewError ? (
+        <div className="flex h-full min-h-[640px] items-center justify-center p-6 text-center text-sm text-red-600">
+          {previewError}
+        </div>
+      ) : (
+        <div className="flex h-full min-h-[640px] items-center justify-center text-stone-500">
+          Loading preview...
+        </div>
+      )}
     </div>
   );
 }

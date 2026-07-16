@@ -2728,7 +2728,7 @@ def normalize_ai_coding_fields(data: dict) -> dict:
         "currency": str(source.get("currency") or "GBP").strip()[:8] or "GBP",
         "payment_method": str(source.get("payment_method") or data.get("payment_method") or "not_clear").strip()[:64],
         "mark_as_paid": bool(source.get("mark_as_paid")),
-        "bank_account": str(source.get("bank_account") or "").strip()[:255],
+        "bank_account": "",
         "price_is": str(source.get("price_is") or "Tax Exclusive").strip()[:32],
         "line_items": [],
         "ocr_text_lines": ocr_text_lines,
@@ -2929,9 +2929,59 @@ def best_choice(value: Optional[str], choices: list[str], minimum: float = 0.62)
     return best if best_score >= minimum else ""
 
 
-def apply_synced_coding_choices(review: dict, coding_choices: Optional[dict]) -> dict:
-    if not coding_choices:
-        return review
+def zero_vat_choice(choices: list[str]) -> str:
+    best = ""
+    best_score = 0
+    for choice in choices:
+        text = normalize_lookup_value(choice)
+        if not text:
+            continue
+        score = 0
+        if any(term in text for term in ("no vat", "notax", "non-tax", "non taxable", "non-taxable")):
+            score = 100
+        elif "zero-rated" in text or "zero rated" in text:
+            score = 90
+        elif "exempt" in text:
+            score = 82
+        elif re.search(r"(^|[^\d-])0(?:\.0+)?\s*%", text):
+            score = 76
+        elif re.search(r"\b0(?:\.0+)?\b", text) and re.search(r"\bz\b|\bzero\b", text):
+            score = 70
+        if score > best_score:
+            best = choice
+            best_score = score
+    return best
+
+
+def normalize_non_vat_values(fields: dict, zero_code: str) -> dict:
+    fields["vat"] = "0.00"
+    if zero_code:
+        fields["vat_code"] = zero_code
+    total_value = parse_money_value(fields.get("total"))
+    net_value = parse_money_value(fields.get("net"))
+    if total_value is not None:
+        fields["net"] = format_money_value(total_value)
+    elif net_value is not None:
+        fields["total"] = format_money_value(net_value)
+    for line in fields.get("line_items") or []:
+        if not isinstance(line, dict):
+            continue
+        line["vat"] = "0.00"
+        if zero_code:
+            line["vat_code"] = zero_code
+        line_total = parse_money_value(line.get("total"))
+        line_net = parse_money_value(line.get("net"))
+        if line_total is not None:
+            line["net"] = format_money_value(line_total)
+        elif line_net is not None:
+            line["total"] = format_money_value(line_net)
+        if not str(line.get("price") or "").strip():
+            line["price"] = line.get("net") or line.get("total") or ""
+    return reconcile_coding_totals(fields)
+
+
+def apply_synced_coding_choices(review: dict, coding_choices: Optional[dict], is_vat_client: bool = True) -> dict:
+    coding_choices = coding_choices or {}
     fields = review.get("coding_fields") or {}
     if not isinstance(fields, dict):
         return review
@@ -2943,12 +2993,31 @@ def apply_synced_coding_choices(review: dict, coding_choices: Optional[dict]) ->
     if supplier_match:
         fields["vendor_name"] = supplier_match
     fields["category"] = best_choice(fields.get("category"), categories, 0.56)
-    fields["vat_code"] = best_choice(fields.get("vat_code"), vat_codes, 0.56)
+    zero_code = zero_vat_choice(vat_codes)
+    fields["bank_account"] = ""
+    if is_vat_client:
+        matched_vat = best_choice(fields.get("vat_code"), vat_codes, 0.56)
+        if matched_vat:
+            fields["vat_code"] = matched_vat
+        elif parse_money_value(fields.get("vat")) in (0, 0.0) and zero_code:
+            fields["vat_code"] = zero_code
+    else:
+        fields = normalize_non_vat_values(fields, zero_code)
     for line in fields.get("line_items") or []:
         if not isinstance(line, dict):
             continue
         line["category"] = best_choice(line.get("category") or fields.get("category"), categories, 0.56)
-        line["vat_code"] = best_choice(line.get("vat_code") or fields.get("vat_code"), vat_codes, 0.56)
+        line["bank_account"] = ""
+        if is_vat_client:
+            matched_line_vat = best_choice(line.get("vat_code") or fields.get("vat_code"), vat_codes, 0.56)
+            if matched_line_vat:
+                line["vat_code"] = matched_line_vat
+            elif parse_money_value(line.get("vat")) in (0, 0.0) and zero_code:
+                line["vat_code"] = zero_code
+        else:
+            line["vat"] = "0.00"
+            if zero_code:
+                line["vat_code"] = zero_code
     review["coding_fields"] = fields
     return review
 
@@ -2995,7 +3064,10 @@ async def review_document_with_openai(
         "(VAT number, VAT amount/rate, or net/gross breakdown where expected), use needs_review "
         "rather than rejected unless it is clearly not an invoice/receipt."
         if is_vat_client
-        else "This is not marked as a VAT client. Do not reject only because VAT details are absent."
+        else (
+            "This is not marked as a VAT client. Do not reject only because VAT details are absent. "
+            "For coding, treat VAT as 0.00 and use the closest synced zero/no-VAT VAT code."
+        )
     )
     prompt = (
         "Check whether the uploaded document is a valid invoice or receipt for accounting submission. "
@@ -3025,8 +3097,10 @@ async def review_document_with_openai(
         "Use the published accountant-corrected examples below as supplier memory. If the supplier, VAT number, "
         "receipt layout, or bill/reference style matches, reuse the coding pattern, VAT code/category, payment "
         "method style and line item approach. Do not copy old dates or amounts from examples. "
-        "If Mark as Paid is true or payment is by card/cash, include the most likely bank/cash account only "
-        "when there is a clear matching pattern in the published examples; otherwise leave bank_account blank. "
+        "Always leave bank_account blank. The accountant will choose the bank account at publish time; that "
+        "published choice is stored for future history but should not be prefilled by AI yet. "
+        "For VAT clients, evaluate VAT evidence and choose the closest synced active VAT code. For non-VAT "
+        "clients, treat VAT as 0.00 and choose the closest synced active zero/no-VAT VAT code. "
         "For supplier, category, line category, VAT code and line VAT code, use the synced QuickBooks choices below "
         "when possible. Do not invent category/account names or VAT codes. If no synced option is a reasonable match, "
         "leave that field blank for the accountant to choose. "
@@ -3179,7 +3253,7 @@ async def review_document_with_openai(
             if output_text:
                 break
     try:
-        return apply_synced_coding_choices(normalize_ai_review(json.loads(output_text or "{}")), coding_choices)
+        return apply_synced_coding_choices(normalize_ai_review(json.loads(output_text or "{}")), coding_choices, is_vat_client)
     except json.JSONDecodeError:
         logger.warning("OpenAI invoice check returned non-JSON output: %s", output_text)
         return {"status": "needs_review", "message": "Please check this document before submitting.", "document_type": "unknown", "payment_method": "not_clear", "confidence": "low"}
