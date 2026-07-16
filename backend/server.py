@@ -127,6 +127,26 @@ users = Table(
     Column("first_name", String(255)),
     Column("last_name", String(255)),
     Column("business_name", String(255), index=True),
+    Column("client_type", String(64)),
+    Column("industry", String(255)),
+    Column("company_number", String(32)),
+    Column("company_status", String(64)),
+    Column("incorporation_date", String(32)),
+    Column("registered_office_address", Text),
+    Column("trading_address", Text),
+    Column("phone", String(64)),
+    Column("utr", String(64)),
+    Column("vat_number", String(64)),
+    Column("paye_reference", String(64)),
+    Column("accounts_office_reference", String(64)),
+    Column("authorisation_codes", Text),
+    Column("services_required", Text),
+    Column("statutory_deadlines", Text),
+    Column("bookkeeping_frequency", String(64)),
+    Column("payroll_frequency", String(64)),
+    Column("year_end", String(32)),
+    Column("practice_manager", String(255)),
+    Column("companies_house_last_checked", String(64)),
     Column("autoentry_email", String(255)),
     Column("sales_autoentry_email", String(255)),
     Column("is_vat_client", Boolean, default=False),
@@ -188,10 +208,13 @@ settings = Table(
     Column("openai_api_key_enc", Text),
     Column("openai_model", String(128)),
     Column("document_processing_enabled", Boolean, default=True),
+    Column("quickbooks_enabled", Boolean, default=True),
     Column("quickbooks_client_id", String(255)),
     Column("quickbooks_client_secret_enc", Text),
     Column("quickbooks_environment", String(32)),
     Column("quickbooks_redirect_uri", String(512)),
+    Column("companies_house_enabled", Boolean, default=True),
+    Column("companies_house_api_key_enc", Text),
 )
 
 client_integrations = Table(
@@ -370,6 +393,25 @@ class ClientCreate(BaseModel):
     status: str = "active"
     is_vat_client: bool = False
     ai_analysis_enabled: bool = False
+    client_type: Optional[str] = None
+    industry: Optional[str] = None
+    company_number: Optional[str] = None
+    company_status: Optional[str] = None
+    incorporation_date: Optional[str] = None
+    registered_office_address: Optional[str] = None
+    trading_address: Optional[str] = None
+    phone: Optional[str] = None
+    utr: Optional[str] = None
+    vat_number: Optional[str] = None
+    paye_reference: Optional[str] = None
+    accounts_office_reference: Optional[str] = None
+    authorisation_codes: Optional[str] = None
+    services_required: Optional[str] = None
+    statutory_deadlines: Optional[str] = None
+    bookkeeping_frequency: Optional[str] = None
+    payroll_frequency: Optional[str] = None
+    year_end: Optional[str] = None
+    practice_manager: Optional[str] = None
 
 
 class ClientUpdate(BaseModel):
@@ -382,6 +424,26 @@ class ClientUpdate(BaseModel):
     status: Optional[str] = None
     is_vat_client: Optional[bool] = None
     ai_analysis_enabled: Optional[bool] = None
+    client_type: Optional[str] = None
+    industry: Optional[str] = None
+    company_number: Optional[str] = None
+    company_status: Optional[str] = None
+    incorporation_date: Optional[str] = None
+    registered_office_address: Optional[str] = None
+    trading_address: Optional[str] = None
+    phone: Optional[str] = None
+    utr: Optional[str] = None
+    vat_number: Optional[str] = None
+    paye_reference: Optional[str] = None
+    accounts_office_reference: Optional[str] = None
+    authorisation_codes: Optional[str] = None
+    services_required: Optional[str] = None
+    statutory_deadlines: Optional[str] = None
+    bookkeeping_frequency: Optional[str] = None
+    payroll_frequency: Optional[str] = None
+    year_end: Optional[str] = None
+    practice_manager: Optional[str] = None
+    companies_house_last_checked: Optional[str] = None
 
 
 class PasswordReset(BaseModel):
@@ -406,6 +468,36 @@ class OpenAISettingsIn(BaseModel):
 
 class FeatureSettingsIn(BaseModel):
     document_processing_enabled: bool = True
+
+
+CLIENT_PRACTICE_FIELDS = [
+    "client_type",
+    "industry",
+    "company_number",
+    "company_status",
+    "incorporation_date",
+    "registered_office_address",
+    "trading_address",
+    "phone",
+    "utr",
+    "vat_number",
+    "paye_reference",
+    "accounts_office_reference",
+    "authorisation_codes",
+    "services_required",
+    "statutory_deadlines",
+    "bookkeeping_frequency",
+    "payroll_frequency",
+    "year_end",
+    "practice_manager",
+    "companies_house_last_checked",
+]
+
+
+def clean_optional_text(value):
+    if value is None:
+        return None
+    return str(value).strip() or None
 
 
 class SubmissionReviewStatusIn(BaseModel):
@@ -441,6 +533,12 @@ class QuickBooksAppSettingsIn(BaseModel):
     client_secret: Optional[str] = None
     environment: str = "sandbox"
     redirect_uri: Optional[str] = None
+    enabled: bool = True
+
+
+class CompaniesHouseSettingsIn(BaseModel):
+    api_key: Optional[str] = None
+    enabled: bool = True
 
 
 class IntegrationRecordIn(BaseModel):
@@ -641,6 +739,26 @@ def serialize_user(u: dict) -> dict:
         "first_name": u.get("first_name"),
         "last_name": u.get("last_name"),
         "business_name": u.get("business_name"),
+        "client_type": u.get("client_type"),
+        "industry": u.get("industry"),
+        "company_number": u.get("company_number"),
+        "company_status": u.get("company_status"),
+        "incorporation_date": u.get("incorporation_date"),
+        "registered_office_address": u.get("registered_office_address"),
+        "trading_address": u.get("trading_address"),
+        "phone": u.get("phone"),
+        "utr": u.get("utr"),
+        "vat_number": u.get("vat_number"),
+        "paye_reference": u.get("paye_reference"),
+        "accounts_office_reference": u.get("accounts_office_reference"),
+        "authorisation_codes": u.get("authorisation_codes"),
+        "services_required": u.get("services_required"),
+        "statutory_deadlines": u.get("statutory_deadlines"),
+        "bookkeeping_frequency": u.get("bookkeeping_frequency"),
+        "payroll_frequency": u.get("payroll_frequency"),
+        "year_end": u.get("year_end"),
+        "practice_manager": u.get("practice_manager"),
+        "companies_house_last_checked": u.get("companies_house_last_checked"),
         "autoentry_email": u.get("autoentry_email"),
         "sales_autoentry_email": u.get("sales_autoentry_email"),
         "is_vat_client": bool(u.get("is_vat_client")),
@@ -677,6 +795,57 @@ def serialize_submission(d: dict) -> dict:
     d["ai_extracted_fields"] = parse_json_object(d.get("ai_extracted_fields")) or {}
     d["coding_fields"] = parse_json_object(d.get("coding_fields")) or {}
     return d
+
+
+def format_companies_house_address(address: dict) -> str:
+    if not address:
+        return ""
+    parts = [
+        address.get("premises"),
+        address.get("address_line_1"),
+        address.get("address_line_2"),
+        address.get("locality"),
+        address.get("region"),
+        address.get("postal_code"),
+        address.get("country"),
+    ]
+    return ", ".join(str(part).strip() for part in parts if part)
+
+
+async def get_companies_house_api_key(session: Optional[AsyncSession] = None) -> str:
+    env_key = os.environ.get("COMPANIES_HOUSE_API_KEY", "").strip()
+    if env_key:
+        return env_key
+    if session is None:
+        return ""
+    saved = await one(session, select(settings).where(settings.c.key == "companies_house"))
+    if saved and saved.get("companies_house_api_key_enc"):
+        try:
+            return decrypt_secret(saved["companies_house_api_key_enc"]) or ""
+        except Exception:
+            logger.exception("Failed to decrypt saved Companies House API key")
+    return ""
+
+
+async def companies_house_enabled(session: AsyncSession) -> bool:
+    saved = await one(session, select(settings).where(settings.c.key == "companies_house"))
+    return True if not saved or saved.get("companies_house_enabled") is None else bool(saved.get("companies_house_enabled"))
+
+
+async def companies_house_get(path: str, params: Optional[dict] = None, session: Optional[AsyncSession] = None) -> dict:
+    if session is not None and not await companies_house_enabled(session):
+        raise HTTPException(status_code=403, detail="Companies House integration is disabled")
+    api_key = await get_companies_house_api_key(session)
+    if not api_key:
+        raise HTTPException(status_code=503, detail="Companies House API key is not configured")
+    url = f"https://api.company-information.service.gov.uk{path}"
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.get(url, params=params or {}, auth=(api_key, ""))
+    if response.status_code == 404:
+        raise HTTPException(status_code=404, detail="Company not found")
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail="Companies House request failed")
+    return response.json()
 
 
 # ---------- Auth ----------
@@ -768,6 +937,8 @@ async def create_client(
         "status": payload.status or "active",
         "created_at": utc_now_iso(),
     }
+    for field in CLIENT_PRACTICE_FIELDS:
+        doc[field] = clean_optional_text(getattr(payload, field, None))
     await session.execute(insert(users).values(**doc))
     await session.commit()
     return serialize_user(doc)
@@ -809,6 +980,9 @@ async def update_client(
         values["autoentry_email"] = values["autoentry_email"].lower().strip()
     if "sales_autoentry_email" in values:
         values["sales_autoentry_email"] = values["sales_autoentry_email"].lower().strip() if values["sales_autoentry_email"] else None
+    for field in CLIENT_PRACTICE_FIELDS:
+        if field in values:
+            values[field] = clean_optional_text(values[field])
     if values:
         result = await session.execute(
             update(users).where(users.c.id == client_id, users.c.role == "client").values(**values)
@@ -837,6 +1011,63 @@ async def delete_client(
     await session.execute(delete(submissions).where(submissions.c.client_id == client_id))
     await session.commit()
     return {"ok": True}
+
+
+@api.get("/admin/companies-house/search")
+async def companies_house_search(
+    q: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    query = (q or "").strip()
+    if len(query) < 2:
+        raise HTTPException(status_code=400, detail="Enter at least 2 characters to search")
+    data = await companies_house_get("/search/companies", {"q": query, "items_per_page": 8}, session)
+    return [
+        {
+            "company_number": item.get("company_number"),
+            "title": item.get("title"),
+            "company_status": item.get("company_status"),
+            "company_type": item.get("company_type"),
+            "address": item.get("address_snippet"),
+            "date_of_creation": item.get("date_of_creation"),
+        }
+        for item in data.get("items", [])
+    ]
+
+
+@api.get("/admin/companies-house/profile/{company_number}")
+async def companies_house_profile(
+    company_number: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    number = re.sub(r"[^A-Za-z0-9]", "", company_number or "").upper()
+    if not number:
+        raise HTTPException(status_code=400, detail="Company number is required")
+    profile = await companies_house_get(f"/company/{number}", session=session)
+    accounts = profile.get("accounts") or {}
+    confirmation = profile.get("confirmation_statement") or {}
+    sic_codes = profile.get("sic_codes") or []
+    deadlines = []
+    if accounts.get("next_due"):
+        deadlines.append(f"Accounts due: {accounts.get('next_due')}")
+    if confirmation.get("next_due"):
+        deadlines.append(f"Confirmation statement due: {confirmation.get('next_due')}")
+    return {
+        "business_name": profile.get("company_name"),
+        "client_type": "limited_company" if profile.get("type") == "ltd" else profile.get("type"),
+        "company_number": profile.get("company_number") or number,
+        "company_status": profile.get("company_status"),
+        "incorporation_date": profile.get("date_of_creation"),
+        "registered_office_address": format_companies_house_address(profile.get("registered_office_address") or {}),
+        "industry": ", ".join(sic_codes),
+        "year_end": accounts.get("accounting_reference_date", {}).get("month") and (
+            f"{accounts.get('accounting_reference_date', {}).get('day')}/{accounts.get('accounting_reference_date', {}).get('month')}"
+        ),
+        "statutory_deadlines": "\n".join(deadlines),
+        "companies_house_last_checked": utc_now_iso(),
+    }
 
 
 @api.post("/admin/clients/{client_id}/reset-password")
@@ -939,6 +1170,7 @@ async def get_quickbooks_credentials(session: Optional[AsyncSession] = None) -> 
     saved = None
     if session is not None:
         saved = await one(session, select(settings).where(settings.c.key == "quickbooks"))
+    enabled = True if not saved or saved.get("quickbooks_enabled") is None else bool(saved.get("quickbooks_enabled"))
     env_client_id = os.environ.get("QUICKBOOKS_CLIENT_ID", "").strip()
     env_client_secret = os.environ.get("QUICKBOOKS_CLIENT_SECRET", "").strip()
     client_id = env_client_id or ((saved or {}).get("quickbooks_client_id") or "").strip()
@@ -961,6 +1193,7 @@ async def get_quickbooks_credentials(session: Optional[AsyncSession] = None) -> 
         "redirect_uri": redirect_uri,
         "environment": environment,
         "configured": bool(client_id and client_secret and redirect_uri),
+        "enabled": enabled,
         "source": "environment" if env_client_id or env_client_secret else ("saved" if saved else "missing"),
     }
 
@@ -1240,6 +1473,7 @@ async def get_quickbooks_config(user: dict = Depends(require_admin), session: As
     creds = await get_quickbooks_credentials(session)
     return {
         "configured": creds["configured"],
+        "enabled": creds["enabled"],
         "environment": creds["environment"],
         "redirect_uri": creds["redirect_uri"],
         "scope": QUICKBOOKS_SCOPE,
@@ -1261,6 +1495,7 @@ async def save_quickbooks_config(
         raise HTTPException(status_code=400, detail="Invalid QuickBooks environment")
     values = {
         "key": "quickbooks",
+        "quickbooks_enabled": bool(payload.enabled),
         "quickbooks_client_id": (payload.client_id or existing.get("quickbooks_client_id") or "").strip(),
         "quickbooks_environment": environment,
         "quickbooks_redirect_uri": (payload.redirect_uri or "").strip(),
@@ -1279,12 +1514,50 @@ async def save_quickbooks_config(
     creds = await get_quickbooks_credentials(session)
     return {
         "configured": creds["configured"],
+        "enabled": creds["enabled"],
         "environment": creds["environment"],
         "redirect_uri": creds["redirect_uri"],
         "source": creds["source"],
         "client_id_saved": bool(creds["client_id"]),
         "client_secret_saved": bool(creds["client_secret"]),
     }
+
+
+@api.get("/admin/integrations/companies-house/config")
+async def get_companies_house_config(user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    env_key = bool(os.environ.get("COMPANIES_HOUSE_API_KEY", "").strip())
+    saved = await one(session, select(settings).where(settings.c.key == "companies_house"))
+    saved_key = bool(saved and saved.get("companies_house_api_key_enc"))
+    enabled = True if not saved or saved.get("companies_house_enabled") is None else bool(saved.get("companies_house_enabled"))
+    return {
+        "configured": env_key or saved_key,
+        "enabled": enabled,
+        "source": "environment" if env_key else ("saved" if saved_key else "missing"),
+        "api_key_saved": env_key or saved_key,
+    }
+
+
+@api.put("/admin/integrations/companies-house/config")
+async def save_companies_house_config(
+    payload: CompaniesHouseSettingsIn,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    existing = await one(session, select(settings).where(settings.c.key == "companies_house")) or {}
+    values = {"key": "companies_house", "companies_house_enabled": bool(payload.enabled)}
+    if payload.api_key and payload.api_key.strip():
+        values["companies_house_api_key_enc"] = encrypt_secret(payload.api_key.strip())
+    elif existing.get("companies_house_api_key_enc"):
+        values["companies_house_api_key_enc"] = existing["companies_house_api_key_enc"]
+    else:
+        values["companies_house_api_key_enc"] = None
+
+    if existing:
+        await session.execute(update(settings).where(settings.c.key == "companies_house").values(**values))
+    else:
+        await session.execute(insert(settings).values(**values))
+    await session.commit()
+    return await get_companies_house_config(user=user, session=session)
 
 
 @api.get("/admin/integrations/clients/{client_id}/quickbooks/connect")
@@ -1295,6 +1568,8 @@ async def start_quickbooks_connect(
 ):
     await get_client_or_404(session, client_id)
     creds = await get_quickbooks_credentials(session)
+    if not creds["enabled"]:
+        raise HTTPException(status_code=403, detail="Accounting software integration is disabled")
     if not creds["configured"]:
         raise HTTPException(status_code=400, detail="QuickBooks OAuth is not configured. Add QUICKBOOKS_CLIENT_ID and QUICKBOOKS_CLIENT_SECRET to the API environment.")
     params = {
@@ -1324,6 +1599,8 @@ async def quickbooks_oauth_callback(
     client_id = verify_quickbooks_state(state)
     await get_client_or_404(session, client_id)
     creds = await get_quickbooks_credentials(session)
+    if not creds["enabled"]:
+        return RedirectResponse(f"{frontend_url}/admin/clients/{client_id}?quickbooks=error&message=Accounting%20software%20integration%20is%20disabled")
     token_data = await exchange_quickbooks_code(session, code, creds["redirect_uri"])
     now = datetime.now(timezone.utc)
     values = {
@@ -1347,11 +1624,11 @@ async def quickbooks_oauth_callback(
     await session.commit()
     try:
         await sync_quickbooks_lists_for_client(session, client_id)
-        return RedirectResponse(f"{frontend_url}/admin/integrations?quickbooks=connected&sync=ok")
+        return RedirectResponse(f"{frontend_url}/admin/clients/{client_id}?quickbooks=connected&sync=ok")
     except Exception as exc:
         logger.exception("QuickBooks connected but initial sync failed for client %s", client_id)
         message = urlencode({"m": f"QuickBooks connected, but list sync failed: {str(exc)}"})[2:]
-        return RedirectResponse(f"{frontend_url}/admin/integrations?quickbooks=connected&sync=error&message={message}")
+        return RedirectResponse(f"{frontend_url}/admin/clients/{client_id}?quickbooks=connected&sync=error&message={message}")
 
 
 async def replace_integration_records(session: AsyncSession, client_id: str, provider: str, record_type: str, records: list[dict]):
@@ -1539,6 +1816,9 @@ async def sync_quickbooks_lists(
     user: dict = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ):
+    creds = await get_quickbooks_credentials(session)
+    if not creds["enabled"]:
+        raise HTTPException(status_code=403, detail="Accounting software integration is disabled")
     return await sync_quickbooks_lists_for_client(session, client_id)
 
 
