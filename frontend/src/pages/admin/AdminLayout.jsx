@@ -52,7 +52,7 @@ export default function AdminLayout() {
           )}
           <NavLink to="/admin/integrations" data-testid="nav-integrations"
             className={({isActive}) => `${linkBase} ${isActive ? "admin-nav-link-active" : "text-stone-600 hover:bg-white/80 hover:text-stone-900"}`}>
-            <PlugZap className="h-4 w-4" /> Client integrations
+            <PlugZap className="h-4 w-4" /> Global integrations
           </NavLink>
           <NavLink to="/admin/settings" data-testid="nav-settings"
             className={({isActive}) => `${linkBase} ${isActive ? "admin-nav-link-active" : "text-stone-600 hover:bg-white/80 hover:text-stone-900"}`}>
