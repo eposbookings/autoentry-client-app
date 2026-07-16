@@ -915,6 +915,24 @@ def serialize_integration_record(row: dict) -> dict:
     return d
 
 
+def quickbooks_is_active(item: dict) -> bool:
+    if not isinstance(item, dict):
+        return True
+    for key in ("Active", "active"):
+        if key not in item:
+            continue
+        value = item.get(key)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() not in {"false", "0", "inactive", "disabled", "deleted", "no"}
+        return bool(value)
+    status = str(item.get("Status") or item.get("status") or "").strip().lower()
+    if status in {"inactive", "disabled", "deleted"}:
+        return False
+    return True
+
+
 async def get_client_or_404(session: AsyncSession, client_id: str) -> dict:
     client = await one(session, select(users).where(users.c.id == client_id, users.c.role == "client"))
     if not client:
@@ -1373,7 +1391,7 @@ async def replace_integration_records(session: AsyncSession, client_id: str, pro
                 "name": record.get("name") or "",
                 "email": record.get("email") or None,
                 "description": record.get("description") or "",
-                "active": bool(record.get("active", True)),
+                "active": quickbooks_is_active(record.get("raw") or {}) and bool(record.get("active", True)),
                 "raw_json": json.dumps(record.get("raw") or {}),
                 "created_at": now,
                 "updated_at": now,
@@ -1424,7 +1442,7 @@ async def sync_quickbooks_lists_for_client(session: AsyncSession, client_id: str
             "code": item.get("AcctNum") or item.get("Id") or "",
             "name": item.get("Name") or item.get("FullyQualifiedName") or "",
             "description": item.get("AccountType") or item.get("Classification") or "",
-            "active": item.get("Active", True),
+            "active": quickbooks_is_active(item),
             "raw": item,
         }
         for item in accounts_response.get("Account", []) or []
@@ -1436,7 +1454,7 @@ async def sync_quickbooks_lists_for_client(session: AsyncSession, client_id: str
             "name": item.get("DisplayName") or item.get("CompanyName") or item.get("PrintOnCheckName") or "",
             "email": ((item.get("PrimaryEmailAddr") or {}).get("Address") if isinstance(item.get("PrimaryEmailAddr"), dict) else None),
             "description": item.get("CompanyName") or "",
-            "active": item.get("Active", True),
+            "active": quickbooks_is_active(item),
             "raw": item,
         }
         for item in vendors_response.get("Vendor", []) or []
@@ -1448,7 +1466,7 @@ async def sync_quickbooks_lists_for_client(session: AsyncSession, client_id: str
             "name": item.get("DisplayName") or item.get("CompanyName") or item.get("FullyQualifiedName") or "",
             "email": ((item.get("PrimaryEmailAddr") or {}).get("Address") if isinstance(item.get("PrimaryEmailAddr"), dict) else None),
             "description": item.get("CompanyName") or "",
-            "active": item.get("Active", True),
+            "active": quickbooks_is_active(item),
             "raw": item,
         }
         for item in customers_response.get("Customer", []) or []
@@ -1459,7 +1477,7 @@ async def sync_quickbooks_lists_for_client(session: AsyncSession, client_id: str
             "code": item.get("Name") or item.get("Id") or "",
             "name": item.get("Name") or item.get("Description") or item.get("Id") or "",
             "description": item.get("Description") or ("Taxable" if item.get("Taxable") else "Non-taxable"),
-            "active": item.get("Active", True),
+            "active": quickbooks_is_active(item),
             "raw": item,
         }
         for item in tax_codes_response.get("TaxCode", []) or []
@@ -1476,7 +1494,7 @@ async def sync_quickbooks_lists_for_client(session: AsyncSession, client_id: str
             "code": rate_name,
             "name": rate_label,
             "description": item.get("Description") or "QuickBooks tax rate",
-            "active": item.get("Active", True),
+            "active": quickbooks_is_active(item),
             "raw": item,
         })
         existing_tax_names.add(rate_name.strip().lower())

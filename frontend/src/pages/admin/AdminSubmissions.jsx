@@ -1124,9 +1124,9 @@ function fieldLabel(key) {
 }
 
 function buildIntegrationOptions(records = {}) {
-  const accounts = Array.isArray(records.account) ? records.account.filter((record) => record.active !== false) : [];
-  const suppliers = Array.isArray(records.supplier) ? records.supplier.filter((record) => record.active !== false) : [];
-  const taxCodes = Array.isArray(records.tax_code) ? records.tax_code.filter((record) => record.active !== false) : [];
+  const accounts = Array.isArray(records.account) ? records.account.filter(isActiveIntegrationRecord) : [];
+  const suppliers = Array.isArray(records.supplier) ? records.supplier.filter(isActiveIntegrationRecord) : [];
+  const taxCodes = Array.isArray(records.tax_code) ? records.tax_code.filter(isActiveIntegrationRecord) : [];
   const supplierOptions = uniqueOptions(suppliers.map((record) => ({
     value: record.name || record.code || record.external_id || "",
     label: [record.code, record.name].filter(Boolean).join(" - ") || record.name || record.code || "",
@@ -1157,6 +1157,23 @@ function buildIntegrationOptions(records = {}) {
     vatOptions: syncedVatOptions,
     vatSource: "integration",
   };
+}
+
+function isInactiveValue(value) {
+  if (value === false) return true;
+  if (typeof value === "string") {
+    return ["false", "0", "inactive", "disabled", "deleted", "no"].includes(value.trim().toLowerCase());
+  }
+  return false;
+}
+
+function isActiveIntegrationRecord(record) {
+  if (!record) return false;
+  if (isInactiveValue(record.active)) return false;
+  const raw = safeJson(record.raw_json);
+  if (isInactiveValue(raw.Active) || isInactiveValue(raw.active)) return false;
+  const status = String(raw.Status || raw.status || record.status || "").trim().toLowerCase();
+  return !["inactive", "disabled", "deleted"].includes(status);
 }
 
 function uniqueOptions(options) {
