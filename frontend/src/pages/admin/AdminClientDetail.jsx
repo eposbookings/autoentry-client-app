@@ -37,7 +37,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 
-const CLIENT_TYPES = [
+const DEFAULT_CLIENT_TYPES = [
   ["limited_company", "Limited company"],
   ["sole_trader", "Sole trader"],
   ["partnership", "Partnership"],
@@ -70,23 +70,24 @@ const INDUSTRIES = [
   "Other service activities",
 ];
 
-const SERVICES = [
-  { key: "accounts", label: "Accounts", deadline: "companies_house_accounts", recurrence: "annual" },
-  { key: "bookkeeping", label: "Bookkeeping", deadline: null },
-  { key: "ct600_return", label: "CT600 Return", deadline: "manual", recurrence: "annual" },
-  { key: "payroll", label: "Payroll", deadline: "manual", recurrence: "monthly" },
-  { key: "auto_enrolment", label: "Auto-Enrolment", deadline: "manual", recurrence: "annual" },
-  { key: "vat_returns", label: "VAT Returns", deadline: "manual", recurrence: "quarterly" },
-  { key: "management_accounts", label: "Management Accounts", deadline: "manual", recurrence: "monthly" },
-  { key: "confirmation_statement", label: "Confirmation Statement", deadline: "companies_house_confirmation", recurrence: "annual" },
-  { key: "cis", label: "CIS", deadline: "manual", recurrence: "monthly" },
-  { key: "p11d", label: "P11D", deadline: "manual", recurrence: "annual" },
-  { key: "fee_protection", label: "Fee Protection Service", deadline: null },
-  { key: "registered_address", label: "Registered Address", deadline: null },
-  { key: "bill_payment", label: "Bill Payment", deadline: null },
-  { key: "consultation_advice", label: "Consultation/Advice", deadline: null },
-  { key: "software", label: "Software", deadline: null },
-  { key: "ct600e", label: "CT600E", deadline: "manual", recurrence: "annual" },
+const DEFAULT_SERVICES = [
+  { key: "accounts", label: "Accounts", deadline: "statutory", recurrence: null, start_date: null, statutory_key: "companies_house_accounts_due" },
+  { key: "bookkeeping", label: "Bookkeeping", deadline: null, recurrence: null, start_date: null },
+  { key: "ct600_return", label: "CT600 Return", deadline: "statutory", recurrence: null, start_date: null, statutory_key: "hmrc_ct600_filing_due" },
+  { key: "payroll", label: "Payroll", deadline: "scheduled", recurrence: "monthly", start_date: null },
+  { key: "auto_enrolment", label: "Auto-Enrolment", deadline: "scheduled", recurrence: "annual", start_date: null },
+  { key: "vat_returns", label: "VAT Returns", deadline: "statutory", recurrence: null, start_date: null, statutory_key: "hmrc_vat_return_due" },
+  { key: "management_accounts", label: "Management Accounts", deadline: "scheduled", recurrence: "monthly", start_date: null },
+  { key: "confirmation_statement", label: "Confirmation Statement", deadline: "statutory", recurrence: null, start_date: null, statutory_key: "companies_house_confirmation_due" },
+  { key: "cis", label: "CIS", deadline: "scheduled", recurrence: "monthly", start_date: null },
+  { key: "p11d", label: "P11D", deadline: "scheduled", recurrence: "annual", start_date: null },
+  { key: "fee_protection", label: "Fee Protection Service", deadline: null, recurrence: null, start_date: null },
+  { key: "registered_address", label: "Registered Address", deadline: null, recurrence: null, start_date: null },
+  { key: "bill_payment", label: "Bill Payment", deadline: null, recurrence: null, start_date: null },
+  { key: "consultation_advice", label: "Consultation/Advice", deadline: null, recurrence: null, start_date: null },
+  { key: "software", label: "Software", deadline: null, recurrence: null, start_date: null },
+  { key: "ct600e", label: "CT600E", deadline: "scheduled", recurrence: "annual", start_date: null },
+  { key: "self_assessment", label: "Self Assessment", deadline: "scheduled", recurrence: "annual", start_date: null },
 ];
 
 const COMBINED_PRICING = [
@@ -168,15 +169,19 @@ export default function AdminClientDetail() {
   const [integrationTab, setIntegrationTab] = useState("account");
   const [quickBooksConfig, setQuickBooksConfig] = useState({ configured: false, enabled: true, environment: "sandbox" });
   const [integrationBusy, setIntegrationBusy] = useState(false);
+  const [serviceCatalog, setServiceCatalog] = useState(DEFAULT_SERVICES);
+  const [clientTypes, setClientTypes] = useState(DEFAULT_CLIENT_TYPES.map(([key, label]) => ({ key, label, service_keys: [] })));
 
   const load = useCallback(async () => {
     try {
-      const [c, p, s, integration, quickBooks] = await Promise.all([
+      const [c, p, s, integration, quickBooks, services, accountancyClientTypes] = await Promise.all([
         api.get(`/admin/clients/${id}`),
         api.get(`/admin/clients/${id}/items`, { params: { type: "purchase" } }),
         api.get(`/admin/clients/${id}/items`, { params: { type: "sales" } }),
         api.get(`/admin/integrations/clients/${id}`),
         api.get("/admin/integrations/quickbooks/config"),
+        api.get("/admin/accountancy/services").catch(() => ({ data: { services: DEFAULT_SERVICES } })),
+        api.get("/admin/accountancy/client-types").catch(() => ({ data: { client_types: DEFAULT_CLIENT_TYPES.map(([key, label]) => ({ key, label, service_keys: [] })) } })),
       ]);
       setClient(c.data);
       setCompanyQuery(c.data?.business_name || "");
@@ -184,6 +189,12 @@ export default function AdminClientDetail() {
       setIntegrationDetail(integration.data);
       setIntegrationSettings({ ...DEFAULT_INTEGRATION_SETTINGS, ...(integration.data.integration || {}) });
       setQuickBooksConfig(quickBooks.data);
+      const nextServices = Array.isArray(services.data.services) && services.data.services.length ? services.data.services : DEFAULT_SERVICES;
+      const nextClientTypes = Array.isArray(accountancyClientTypes.data.client_types) && accountancyClientTypes.data.client_types.length
+        ? accountancyClientTypes.data.client_types
+        : DEFAULT_CLIENT_TYPES.map(([key, label]) => ({ key, label, service_keys: [] }));
+      setServiceCatalog(nextServices.filter((service) => service.enabled !== false));
+      setClientTypes(nextClientTypes);
     } catch (e) {
       toast.error(formatApiError(e));
     }
@@ -209,11 +220,21 @@ export default function AdminClientDetail() {
     if (quickbooks) window.history.replaceState({}, "", window.location.pathname);
   }, [load]);
 
-  const selectedServices = useMemo(
-    () => enabledServiceLabels(client?.service_settings, client?.services_required),
-    [client?.service_settings, client?.services_required]
+  const clientTypeOptions = useMemo(
+    () => (clientTypes.length ? clientTypes : DEFAULT_CLIENT_TYPES.map(([key, label]) => ({ key, label }))).map((type) => [type.key, type.label]),
+    [clientTypes]
   );
-  const serviceSettings = useMemo(() => normaliseServiceSettings(client?.service_settings, client?.services_required), [client?.service_settings, client?.services_required]);
+  const availableServices = useMemo(() => {
+    const type = clientTypes.find((item) => item.key === client?.client_type);
+    if (!type || !Array.isArray(type.service_keys) || type.service_keys.length === 0) return serviceCatalog;
+    const allowed = new Set(type.service_keys);
+    return serviceCatalog.filter((service) => allowed.has(service.key));
+  }, [clientTypes, client?.client_type, serviceCatalog]);
+  const selectedServices = useMemo(
+    () => enabledServiceLabels(availableServices, client?.service_settings, client?.services_required),
+    [availableServices, client?.service_settings, client?.services_required]
+  );
+  const serviceSettings = useMemo(() => normaliseServiceSettings(availableServices, client?.service_settings, client?.services_required), [availableServices, client?.service_settings, client?.services_required]);
   const deadlineTasks = useMemo(() => parseStoredList(client?.deadline_tasks), [client?.deadline_tasks]);
   const directors = useMemo(() => parseStoredList(client?.company_directors), [client?.company_directors]);
   const pscs = useMemo(() => parseStoredList(client?.company_pscs), [client?.company_pscs]);
@@ -316,7 +337,7 @@ export default function AdminClientDetail() {
   }
 
   function toggleService(service) {
-    const current = normaliseServiceSettings(client?.service_settings, client?.services_required);
+    const current = normaliseServiceSettings(availableServices, client?.service_settings, client?.services_required);
     const nextEnabled = !current[service.key]?.enabled;
     const next = {
       ...current,
@@ -330,7 +351,7 @@ export default function AdminClientDetail() {
   }
 
   function updateServiceFee(serviceKey, fee) {
-    const current = normaliseServiceSettings(client?.service_settings, client?.services_required);
+    const current = normaliseServiceSettings(availableServices, client?.service_settings, client?.services_required);
     const next = {
       ...current,
       [serviceKey]: {
@@ -342,7 +363,7 @@ export default function AdminClientDetail() {
   }
 
   function updateServices(next) {
-    const enabledLabels = SERVICES.filter((service) => next[service.key]?.enabled).map((service) => service.label);
+    const enabledLabels = availableServices.filter((service) => next[service.key]?.enabled).map((service) => service.label);
     setClient((current) => ({
       ...current,
       service_settings: JSON.stringify(next),
@@ -351,7 +372,7 @@ export default function AdminClientDetail() {
   }
 
   function updateCombinedPricing(key, value) {
-    const current = normaliseServiceSettings(client?.service_settings, client?.services_required);
+    const current = normaliseServiceSettings(availableServices, client?.service_settings, client?.services_required);
     const next = {
       ...current,
       combined: {
@@ -376,7 +397,7 @@ export default function AdminClientDetail() {
   }
 
   function addManualDeadline(serviceKey, dueDate) {
-    const service = SERVICES.find((item) => item.key === serviceKey);
+    const service = availableServices.find((item) => item.key === serviceKey);
     if (!service || !dueDate) return;
     setField("deadline_tasks", JSON.stringify([...deadlineTasks, createDeadlineTask(service, dueDate, "manual")]));
   }
@@ -503,7 +524,7 @@ export default function AdminClientDetail() {
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="truncate font-display text-2xl font-bold text-stone-900">{client.business_name}</h1>
-            {client.client_type && <Badge variant="secondary">{labelFor(CLIENT_TYPES, client.client_type)}</Badge>}
+            {client.client_type && <Badge variant="secondary">{labelFor(clientTypeOptions, client.client_type)}</Badge>}
             {client.company_status && <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">{client.company_status}</Badge>}
           </div>
           <p className="mt-1 text-sm text-stone-600">{client.first_name} {client.last_name} - {client.email}</p>
@@ -549,7 +570,7 @@ export default function AdminClientDetail() {
             </div>
 
             <div className="grid gap-3 lg:grid-cols-4">
-              <SelectField label="Client type" value={client.client_type || ""} onChange={(v) => setField("client_type", v)} options={CLIENT_TYPES} />
+              <SelectField label="Client type" value={client.client_type || ""} onChange={(v) => setField("client_type", v)} options={clientTypeOptions} />
               <SelectField label="Industry" value={client.industry || ""} onChange={(v) => setField("industry", v)} options={INDUSTRIES.map((v) => [v, v])} />
               <Field label="Practice manager" value={client.practice_manager} onChange={(v) => setField("practice_manager", v)} />
               <SelectField label="Status" value={client.status || "active"} onChange={(v) => setField("status", v)} options={[["active", "Active"], ["inactive", "Inactive"]]} />
@@ -591,7 +612,7 @@ export default function AdminClientDetail() {
             />
 
             <ServicePricingPanel
-              services={SERVICES}
+              services={availableServices}
               combinedPricing={COMBINED_PRICING}
               settings={serviceSettings}
               selectedServices={selectedServices}
@@ -617,7 +638,7 @@ export default function AdminClientDetail() {
           <DeadlinesPanel
             client={client}
             tasks={deadlineTasks}
-            services={SERVICES}
+            services={availableServices}
             setField={setField}
             addManualDeadline={addManualDeadline}
             completeDeadline={completeDeadline}
@@ -703,6 +724,7 @@ function DeadlinesPanel({ client, tasks, services, setField, addManualDeadline, 
   const [dueDate, setDueDate] = useState("");
   const openTasks = tasks.filter((task) => task.status !== "completed").sort((a, b) => String(a.due_date).localeCompare(String(b.due_date)));
   const completedTasks = tasks.filter((task) => task.status === "completed").slice(-8).reverse();
+  const sourcedDeadlines = integratedDeadlineRows(client?.statutory_deadlines);
 
   return (
     <section className="grid gap-4 xl:grid-cols-[1fr_0.85fr]">
@@ -732,7 +754,7 @@ function DeadlinesPanel({ client, tasks, services, setField, addManualDeadline, 
             <div key={task.id} className="grid gap-3 rounded-md border border-stone-200 bg-white px-3 py-3 sm:grid-cols-[1fr_130px_auto] sm:items-center">
               <div>
                 <div className="font-semibold text-stone-900">{task.label}</div>
-                <div className="text-xs text-stone-500">{serviceLabel(task.service)}{task.source ? ` - ${task.source}` : ""}</div>
+                <div className="text-xs text-stone-500">{serviceLabel(task.service, services)}{task.source ? ` - ${task.source}` : ""}</div>
               </div>
               <DueBadge date={task.due_date} />
               <Button type="button" size="sm" onClick={() => completeDeadline(task.id)} className="gap-2" style={{ background: "var(--brand)" }}>
@@ -746,8 +768,19 @@ function DeadlinesPanel({ client, tasks, services, setField, addManualDeadline, 
       <div className="space-y-4">
         <div className="rounded-md border border-stone-200 bg-white p-4">
           <h2 className="font-display text-lg font-semibold">Source dates</h2>
+          {sourcedDeadlines.length > 0 && (
+            <div className="mt-3 space-y-2">
+              {sourcedDeadlines.map((row) => (
+                <div key={row.label} className="rounded-md border border-emerald-100 bg-emerald-50 px-3 py-2">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-emerald-700">{row.source}</div>
+                  <div className="text-sm font-semibold text-stone-900">{row.label}</div>
+                  <div className="text-sm text-stone-700">{formatDisplayDate(row.date)}</div>
+                </div>
+              ))}
+            </div>
+          )}
           <TextAreaField className="mt-3" label="Statutory deadlines / notes" value={client.statutory_deadlines} onChange={(v) => setField("statutory_deadlines", v)} placeholder="Accounts due, confirmation statement, VAT quarters..." />
-          <p className="mt-2 text-xs text-stone-500">Companies House can fill accounts and confirmation statement dates. Other services ask for the first next deadline.</p>
+          <p className="mt-2 text-xs text-stone-500">Companies House and future HMRC dates are integration-sourced. Service catalogue deadlines are used only where no integration source exists.</p>
         </div>
         <div className="rounded-md border border-stone-200 bg-white p-4">
           <h2 className="font-display text-lg font-semibold">Recently completed</h2>
@@ -1278,11 +1311,11 @@ function splitMulti(value) {
     .filter(Boolean);
 }
 
-function normaliseServiceSettings(value, legacyServices = "") {
+function normaliseServiceSettings(services = DEFAULT_SERVICES, value, legacyServices = "") {
   const parsed = parseJsonObject(value);
   const legacy = new Set(splitMulti(legacyServices));
   const result = { ...(parsed || {}) };
-  SERVICES.forEach((service) => {
+  services.forEach((service) => {
     result[service.key] = {
       fee: result[service.key]?.fee || "",
       enabled: !!result[service.key]?.enabled || legacy.has(service.label),
@@ -1295,9 +1328,9 @@ function normaliseServiceSettings(value, legacyServices = "") {
   return result;
 }
 
-function enabledServiceLabels(serviceSettings, legacyServices = "") {
-  const settings = normaliseServiceSettings(serviceSettings, legacyServices);
-  return SERVICES.filter((service) => settings[service.key]?.enabled).map((service) => service.label);
+function enabledServiceLabels(services = DEFAULT_SERVICES, serviceSettings, legacyServices = "") {
+  const settings = normaliseServiceSettings(services, serviceSettings, legacyServices);
+  return services.filter((service) => settings[service.key]?.enabled).map((service) => service.label);
 }
 
 function parseJsonObject(value) {
@@ -1329,6 +1362,8 @@ function createDeadlineTask(service, dueDate, source = "manual") {
     label: `${service.label} deadline`,
     due_date: normaliseDateInput(dueDate),
     recurrence: service.recurrence || null,
+    start_date: service.start_date || null,
+    statutory_key: service.statutory_key || null,
     source,
     status: "open",
     created_at: new Date().toISOString(),
@@ -1337,13 +1372,23 @@ function createDeadlineTask(service, dueDate, source = "manual") {
 }
 
 function suggestedDeadlineForService(service, client) {
-  if (service.deadline === "companies_house_accounts") {
-    return extractDeadline(client?.statutory_deadlines, "Accounts due");
+  if (service.deadline === "statutory" && service.statutory_key) {
+    return statutoryDateForService(service.statutory_key, client);
   }
-  if (service.deadline === "companies_house_confirmation") {
-    return extractDeadline(client?.statutory_deadlines, "Confirmation statement due");
-  }
+  if (service.recurrence) return nextScheduledDate(service);
   return "";
+}
+
+function statutoryDateForService(key, client) {
+  const text = client?.statutory_deadlines || "";
+  const labels = {
+    companies_house_accounts_due: "Accounts due",
+    companies_house_accounts_made_up_to: "Accounts next made up to",
+    companies_house_confirmation_due: "Confirmation statement due",
+    companies_house_confirmation_next_statement: "Confirmation next statement date",
+  };
+  if (!labels[key]) return "";
+  return extractDeadline(text, labels[key]);
 }
 
 function extractDeadline(text, label) {
@@ -1353,15 +1398,67 @@ function extractDeadline(text, label) {
   return match ? normaliseDateInput(match[1]) : "";
 }
 
+function integratedDeadlineRows(text) {
+  return [
+    ["Companies House", "Accounts next made up to", extractDeadline(text, "Accounts next made up to")],
+    ["Companies House", "Accounts due", extractDeadline(text, "Accounts due")],
+    ["Companies House", "Accounts last made up to", extractDeadline(text, "Accounts last made up to")],
+    ["Companies House", "Confirmation next statement date", extractDeadline(text, "Confirmation next statement date")],
+    ["Companies House", "Confirmation statement due", extractDeadline(text, "Confirmation statement due")],
+    ["Companies House", "Confirmation last statement date", extractDeadline(text, "Confirmation last statement date")],
+  ]
+    .filter(([, , date]) => !!date)
+    .map(([source, label, date]) => ({ source, label, date }));
+}
+
 function nextDueFromTask(task) {
   const date = parseLooseDate(task.due_date);
   if (!date || !task.recurrence) return null;
-  const next = new Date(date);
-  if (task.recurrence === "monthly") next.setMonth(next.getMonth() + 1);
-  else if (task.recurrence === "quarterly") next.setMonth(next.getMonth() + 3);
-  else if (task.recurrence === "annual") next.setFullYear(next.getFullYear() + 1);
-  else return null;
+  const next = addRecurrence(date, task.recurrence);
+  if (!next) return null;
   return toIsoDate(next);
+}
+
+function nextScheduledDate(service) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (!service.recurrence || !service.start_date) return "";
+  let next = parseLooseDate(service.start_date);
+  if (!next) return "";
+  next.setHours(0, 0, 0, 0);
+  while (next < today) {
+    const following = addRecurrence(next, service.recurrence);
+    if (!following) return "";
+    next = following;
+  }
+  return toIsoDate(next);
+}
+
+function addRecurrence(date, recurrence) {
+  if (!date) return null;
+  const anchorDay = date.getDate();
+  const next = new Date(date);
+  if (recurrence === "weekly") {
+    next.setDate(next.getDate() + 7);
+    return next;
+  }
+  if (recurrence === "monthly") return addMonthsClamped(next, 1, anchorDay);
+  if (recurrence === "quarterly") return addMonthsClamped(next, 3, anchorDay);
+  if (recurrence === "half_year") return addMonthsClamped(next, 6, anchorDay);
+  if (recurrence === "annual") return addMonthsClamped(next, 12, anchorDay);
+  return null;
+}
+
+function addMonthsClamped(date, months, anchorDay) {
+  const next = new Date(date);
+  next.setDate(1);
+  next.setMonth(next.getMonth() + months);
+  next.setDate(Math.min(anchorDay, daysInMonth(next.getFullYear(), next.getMonth())));
+  return next;
+}
+
+function daysInMonth(year, month) {
+  return new Date(year, month + 1, 0).getDate();
 }
 
 function normaliseDateInput(value) {
@@ -1407,8 +1504,8 @@ function makeLocalId() {
   return `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function serviceLabel(key) {
-  return SERVICES.find((service) => service.key === key)?.label || key;
+function serviceLabel(key, services = DEFAULT_SERVICES) {
+  return services.find((service) => service.key === key)?.label || key;
 }
 
 function mergeCompanyProfile(current, data) {
