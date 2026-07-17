@@ -141,7 +141,9 @@ users = Table(
     Column("accounts_office_reference", String(64)),
     Column("authorisation_codes", Text),
     Column("services_required", Text),
+    Column("service_settings", Text),
     Column("statutory_deadlines", Text),
+    Column("deadline_tasks", Text),
     Column("bookkeeping_frequency", String(64)),
     Column("payroll_frequency", String(64)),
     Column("year_end", String(32)),
@@ -413,7 +415,9 @@ class ClientCreate(BaseModel):
     accounts_office_reference: Optional[str] = None
     authorisation_codes: Optional[str] = None
     services_required: Optional[str] = None
+    service_settings: Optional[str] = None
     statutory_deadlines: Optional[str] = None
+    deadline_tasks: Optional[str] = None
     bookkeeping_frequency: Optional[str] = None
     payroll_frequency: Optional[str] = None
     year_end: Optional[str] = None
@@ -451,7 +455,9 @@ class ClientUpdate(BaseModel):
     accounts_office_reference: Optional[str] = None
     authorisation_codes: Optional[str] = None
     services_required: Optional[str] = None
+    service_settings: Optional[str] = None
     statutory_deadlines: Optional[str] = None
+    deadline_tasks: Optional[str] = None
     bookkeeping_frequency: Optional[str] = None
     payroll_frequency: Optional[str] = None
     year_end: Optional[str] = None
@@ -504,7 +510,9 @@ CLIENT_PRACTICE_FIELDS = [
     "accounts_office_reference",
     "authorisation_codes",
     "services_required",
+    "service_settings",
     "statutory_deadlines",
+    "deadline_tasks",
     "bookkeeping_frequency",
     "payroll_frequency",
     "year_end",
@@ -778,7 +786,9 @@ def serialize_user(u: dict) -> dict:
         "accounts_office_reference": u.get("accounts_office_reference"),
         "authorisation_codes": u.get("authorisation_codes"),
         "services_required": u.get("services_required"),
+        "service_settings": u.get("service_settings"),
         "statutory_deadlines": u.get("statutory_deadlines"),
+        "deadline_tasks": u.get("deadline_tasks"),
         "bookkeeping_frequency": u.get("bookkeeping_frequency"),
         "payroll_frequency": u.get("payroll_frequency"),
         "year_end": u.get("year_end"),

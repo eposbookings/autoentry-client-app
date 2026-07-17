@@ -11,6 +11,7 @@ import {
   BookOpen,
   Building2,
   CalendarClock,
+  CheckCircle2,
   KeyRound,
   ListChecks,
   Percent,
@@ -70,16 +71,27 @@ const INDUSTRIES = [
 ];
 
 const SERVICES = [
-  "Bookkeeping",
-  "VAT returns",
-  "Payroll",
-  "Year-end accounts",
-  "Corporation tax",
-  "Self assessment",
-  "Management accounts",
-  "Confirmation statement",
-  "Company secretarial",
-  "CIS returns",
+  { key: "accounts", label: "Accounts", deadline: "companies_house_accounts", recurrence: "annual" },
+  { key: "bookkeeping", label: "Bookkeeping", deadline: null },
+  { key: "ct600_return", label: "CT600 Return", deadline: "manual", recurrence: "annual" },
+  { key: "payroll", label: "Payroll", deadline: "manual", recurrence: "monthly" },
+  { key: "auto_enrolment", label: "Auto-Enrolment", deadline: "manual", recurrence: "annual" },
+  { key: "vat_returns", label: "VAT Returns", deadline: "manual", recurrence: "quarterly" },
+  { key: "management_accounts", label: "Management Accounts", deadline: "manual", recurrence: "monthly" },
+  { key: "confirmation_statement", label: "Confirmation Statement", deadline: "companies_house_confirmation", recurrence: "annual" },
+  { key: "cis", label: "CIS", deadline: "manual", recurrence: "monthly" },
+  { key: "p11d", label: "P11D", deadline: "manual", recurrence: "annual" },
+  { key: "fee_protection", label: "Fee Protection Service", deadline: null },
+  { key: "registered_address", label: "Registered Address", deadline: null },
+  { key: "bill_payment", label: "Bill Payment", deadline: null },
+  { key: "consultation_advice", label: "Consultation/Advice", deadline: null },
+  { key: "software", label: "Software", deadline: null },
+  { key: "ct600e", label: "CT600E", deadline: "manual", recurrence: "annual" },
+];
+
+const COMBINED_PRICING = [
+  { key: "annual_charge", label: "Annual Charge" },
+  { key: "monthly_charge", label: "Monthly Charge" },
 ];
 
 const PRACTICE_FIELDS = [
@@ -97,7 +109,9 @@ const PRACTICE_FIELDS = [
   "accounts_office_reference",
   "authorisation_codes",
   "services_required",
+  "service_settings",
   "statutory_deadlines",
+  "deadline_tasks",
   "bookkeeping_frequency",
   "payroll_frequency",
   "year_end",
@@ -196,9 +210,11 @@ export default function AdminClientDetail() {
   }, [load]);
 
   const selectedServices = useMemo(
-    () => splitMulti(client?.services_required),
-    [client?.services_required]
+    () => enabledServiceLabels(client?.service_settings, client?.services_required),
+    [client?.service_settings, client?.services_required]
   );
+  const serviceSettings = useMemo(() => normaliseServiceSettings(client?.service_settings, client?.services_required), [client?.service_settings, client?.services_required]);
+  const deadlineTasks = useMemo(() => parseStoredList(client?.deadline_tasks), [client?.deadline_tasks]);
   const directors = useMemo(() => parseStoredList(client?.company_directors), [client?.company_directors]);
   const pscs = useMemo(() => parseStoredList(client?.company_pscs), [client?.company_pscs]);
   const contacts = useMemo(() => parseStoredList(client?.company_contacts), [client?.company_contacts]);
@@ -300,10 +316,88 @@ export default function AdminClientDetail() {
   }
 
   function toggleService(service) {
-    const next = new Set(selectedServices);
-    if (next.has(service)) next.delete(service);
-    else next.add(service);
-    setField("services_required", Array.from(next).join("\n"));
+    const current = normaliseServiceSettings(client?.service_settings, client?.services_required);
+    const nextEnabled = !current[service.key]?.enabled;
+    const next = {
+      ...current,
+      [service.key]: {
+        ...(current[service.key] || {}),
+        enabled: nextEnabled,
+      },
+    };
+    updateServices(next);
+    if (nextEnabled && service.deadline) ensureDeadlineTask(service);
+  }
+
+  function updateServiceFee(serviceKey, fee) {
+    const current = normaliseServiceSettings(client?.service_settings, client?.services_required);
+    const next = {
+      ...current,
+      [serviceKey]: {
+        ...(current[serviceKey] || {}),
+        fee,
+      },
+    };
+    updateServices(next);
+  }
+
+  function updateServices(next) {
+    const enabledLabels = SERVICES.filter((service) => next[service.key]?.enabled).map((service) => service.label);
+    setClient((current) => ({
+      ...current,
+      service_settings: JSON.stringify(next),
+      services_required: enabledLabels.join("\n"),
+    }));
+  }
+
+  function updateCombinedPricing(key, value) {
+    const current = normaliseServiceSettings(client?.service_settings, client?.services_required);
+    const next = {
+      ...current,
+      combined: {
+        ...(current.combined || {}),
+        [key]: value,
+      },
+    };
+    updateServices(next);
+  }
+
+  function ensureDeadlineTask(service) {
+    const existing = parseStoredList(client?.deadline_tasks).some((task) => task.service === service.key && task.status !== "completed");
+    if (existing) return;
+    const dueDate = suggestedDeadlineForService(service, client);
+    let nextDue = dueDate;
+    if (!nextDue) {
+      nextDue = window.prompt(`Enter the next deadline for ${service.label} (YYYY-MM-DD or DD/MM/YYYY)`);
+    }
+    if (!nextDue) return;
+    const task = createDeadlineTask(service, nextDue, dueDate ? "auto" : "manual");
+    setField("deadline_tasks", JSON.stringify([...parseStoredList(client?.deadline_tasks), task]));
+  }
+
+  function addManualDeadline(serviceKey, dueDate) {
+    const service = SERVICES.find((item) => item.key === serviceKey);
+    if (!service || !dueDate) return;
+    setField("deadline_tasks", JSON.stringify([...deadlineTasks, createDeadlineTask(service, dueDate, "manual")]));
+  }
+
+  function completeDeadline(taskId) {
+    const nextTasks = deadlineTasks.map((task) => (
+      task.id === taskId ? { ...task, status: "completed", completed_at: new Date().toISOString() } : task
+    ));
+    const completed = deadlineTasks.find((task) => task.id === taskId);
+    const nextDue = completed ? nextDueFromTask(completed) : null;
+    if (completed && nextDue) {
+      nextTasks.push({
+        ...completed,
+        id: makeLocalId(),
+        due_date: nextDue,
+        status: "open",
+        completed_at: null,
+        created_at: new Date().toISOString(),
+      });
+    }
+    setField("deadline_tasks", JSON.stringify(nextTasks));
   }
 
   function selectContactAsMain(contact) {
@@ -437,8 +531,9 @@ export default function AdminClientDetail() {
       </header>
 
       <Tabs value={pageTab} onValueChange={setPageTab}>
-        <TabsList className="grid w-full max-w-3xl grid-cols-3">
+        <TabsList className="grid w-full max-w-4xl grid-cols-4">
           <TabsTrigger value="details" className="gap-2"><Building2 className="h-4 w-4" /> Account details</TabsTrigger>
+          <TabsTrigger value="deadlines" className="gap-2"><CalendarClock className="h-4 w-4" /> Deadlines</TabsTrigger>
           <TabsTrigger value="items" className="gap-2"><ListChecks className="h-4 w-4" /> Outstanding items</TabsTrigger>
           <TabsTrigger value="software" className="gap-2"><PlugZap className="h-4 w-4" /> Accountancy software</TabsTrigger>
         </TabsList>
@@ -495,25 +590,15 @@ export default function AdminClientDetail() {
               selectContactAsMain={selectContactAsMain}
             />
 
-            <div className="rounded-md border border-stone-200 bg-white p-4">
-              <div className="mb-3 flex items-center gap-2">
-                <CalendarClock className="h-4 w-4 text-[var(--brand)]" />
-                <h2 className="font-display text-lg font-semibold">Deadlines and services</h2>
-              </div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <SelectField label="Bookkeeping" value={client.bookkeeping_frequency || ""} onChange={(v) => setField("bookkeeping_frequency", v)} options={frequencyOptions()} />
-                <SelectField label="Payroll" value={client.payroll_frequency || ""} onChange={(v) => setField("payroll_frequency", v)} options={frequencyOptions()} />
-              </div>
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                {SERVICES.map((service) => (
-                  <label key={service} className="flex items-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-2.5 py-2 text-xs font-semibold text-stone-700">
-                    <input type="checkbox" checked={selectedServices.includes(service)} onChange={() => toggleService(service)} className="h-3.5 w-3.5" />
-                    {service}
-                  </label>
-                ))}
-              </div>
-              <TextAreaField className="mt-3" label="Statutory deadlines" value={client.statutory_deadlines} onChange={(v) => setField("statutory_deadlines", v)} placeholder="Accounts due, confirmation statement, VAT quarters..." />
-            </div>
+            <ServicePricingPanel
+              services={SERVICES}
+              combinedPricing={COMBINED_PRICING}
+              settings={serviceSettings}
+              selectedServices={selectedServices}
+              toggleService={toggleService}
+              updateServiceFee={updateServiceFee}
+              updateCombinedPricing={updateCombinedPricing}
+            />
           </section>
 
           <section className="rounded-md border border-stone-200 bg-white p-4">
@@ -526,6 +611,17 @@ export default function AdminClientDetail() {
             </div>
             <TextAreaField className="mt-3" label="Authorisation codes / access notes" value={client.authorisation_codes} onChange={(v) => setField("authorisation_codes", v)} placeholder="HMRC agent codes, gateway notes, Companies House auth code, client-specific access notes..." />
           </section>
+        </TabsContent>
+
+        <TabsContent value="deadlines" className="mt-4">
+          <DeadlinesPanel
+            client={client}
+            tasks={deadlineTasks}
+            services={SERVICES}
+            setField={setField}
+            addManualDeadline={addManualDeadline}
+            completeDeadline={completeDeadline}
+          />
         </TabsContent>
 
         <TabsContent value="items" className="mt-4">
@@ -550,6 +646,126 @@ export default function AdminClientDetail() {
         </TabsContent>
       </Tabs>
     </div>
+  );
+}
+
+function ServicePricingPanel({
+  services,
+  combinedPricing,
+  settings,
+  selectedServices,
+  toggleService,
+  updateServiceFee,
+  updateCombinedPricing,
+}) {
+  return (
+    <div className="rounded-md border border-stone-200 bg-white p-4">
+      <div className="mb-3 flex items-center gap-2">
+        <CalendarClock className="h-4 w-4 text-[var(--brand)]" />
+        <div>
+          <h2 className="font-display text-lg font-semibold">Services and pricing</h2>
+          <p className="text-xs text-stone-500">Enable services, add fees, and deadline tasks are created only where relevant.</p>
+        </div>
+      </div>
+      <div className="divide-y divide-stone-100 rounded-md border border-stone-200">
+        {services.map((service) => {
+          const active = !!settings[service.key]?.enabled || selectedServices.includes(service.label);
+          return (
+            <div key={service.key} className="grid gap-3 px-3 py-2.5 sm:grid-cols-[1fr_84px_180px] sm:items-center">
+              <div className="flex items-center gap-2">
+                <span className={`h-1.5 w-1.5 rounded-full ${service.deadline ? "bg-emerald-500" : "bg-stone-300"}`} title={service.deadline ? "Deadline tracked" : "No deadline"} />
+                <span className="text-sm font-semibold text-stone-800">{service.label}</span>
+                {service.deadline && <Badge variant="secondary" className="text-[10px]">deadline</Badge>}
+              </div>
+              <Switch checked={active} onChange={() => toggleService(service)} />
+              <CurrencyInput value={settings[service.key]?.fee || ""} onChange={(value) => updateServiceFee(service.key, value)} disabled={!active} />
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-4">
+        <h3 className="mb-2 text-sm font-semibold text-stone-900">Combined pricing</h3>
+        <div className="divide-y divide-stone-100 rounded-md border border-stone-200">
+          {combinedPricing.map((item) => (
+            <div key={item.key} className="grid gap-3 px-3 py-2.5 sm:grid-cols-[1fr_180px] sm:items-center">
+              <span className="text-sm font-semibold text-stone-800">{item.label}</span>
+              <CurrencyInput value={settings.combined?.[item.key] || ""} onChange={(value) => updateCombinedPricing(item.key, value)} />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DeadlinesPanel({ client, tasks, services, setField, addManualDeadline, completeDeadline }) {
+  const [serviceKey, setServiceKey] = useState(services.find((service) => service.deadline)?.key || "");
+  const [dueDate, setDueDate] = useState("");
+  const openTasks = tasks.filter((task) => task.status !== "completed").sort((a, b) => String(a.due_date).localeCompare(String(b.due_date)));
+  const completedTasks = tasks.filter((task) => task.status === "completed").slice(-8).reverse();
+
+  return (
+    <section className="grid gap-4 xl:grid-cols-[1fr_0.85fr]">
+      <div className="rounded-md border border-stone-200 bg-white p-4">
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <div>
+            <h2 className="font-display text-lg font-semibold">Deadline tasks</h2>
+            <p className="text-sm text-stone-600">Relevant services create task-style deadlines. Completing one creates the next date when the recurrence is known.</p>
+          </div>
+          <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">{openTasks.length} open</Badge>
+        </div>
+
+        <div className="grid gap-2 rounded-md border border-stone-200 bg-stone-50 p-3 sm:grid-cols-[1fr_180px_auto]">
+          <select value={serviceKey} onChange={(e) => setServiceKey(e.target.value)} className="h-9 rounded-md border border-stone-200 bg-white px-3 text-sm">
+            {services.filter((service) => service.deadline).map((service) => (
+              <option key={service.key} value={service.key}>{service.label}</option>
+            ))}
+          </select>
+          <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className="h-9 bg-white" />
+          <Button type="button" variant="outline" onClick={() => { addManualDeadline(serviceKey, dueDate); setDueDate(""); }}>Add deadline</Button>
+        </div>
+
+        <div className="mt-4 space-y-2">
+          {openTasks.length === 0 ? (
+            <p className="rounded-md border border-dashed border-stone-300 py-10 text-center text-sm text-stone-500">No open deadlines yet. Enable a deadline service or add one manually.</p>
+          ) : openTasks.map((task) => (
+            <div key={task.id} className="grid gap-3 rounded-md border border-stone-200 bg-white px-3 py-3 sm:grid-cols-[1fr_130px_auto] sm:items-center">
+              <div>
+                <div className="font-semibold text-stone-900">{task.label}</div>
+                <div className="text-xs text-stone-500">{serviceLabel(task.service)}{task.source ? ` - ${task.source}` : ""}</div>
+              </div>
+              <DueBadge date={task.due_date} />
+              <Button type="button" size="sm" onClick={() => completeDeadline(task.id)} className="gap-2" style={{ background: "var(--brand)" }}>
+                <CheckCircle2 className="h-4 w-4" /> Complete
+              </Button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <div className="rounded-md border border-stone-200 bg-white p-4">
+          <h2 className="font-display text-lg font-semibold">Source dates</h2>
+          <TextAreaField className="mt-3" label="Statutory deadlines / notes" value={client.statutory_deadlines} onChange={(v) => setField("statutory_deadlines", v)} placeholder="Accounts due, confirmation statement, VAT quarters..." />
+          <p className="mt-2 text-xs text-stone-500">Companies House can fill accounts and confirmation statement dates. Other services ask for the first next deadline.</p>
+        </div>
+        <div className="rounded-md border border-stone-200 bg-white p-4">
+          <h2 className="font-display text-lg font-semibold">Recently completed</h2>
+          {completedTasks.length === 0 ? (
+            <p className="mt-3 text-sm text-stone-500">No completed deadlines yet.</p>
+          ) : (
+            <div className="mt-3 space-y-2">
+              {completedTasks.map((task) => (
+                <div key={`${task.id}-done`} className="rounded-md bg-stone-50 px-3 py-2 text-sm">
+                  <div className="font-semibold text-stone-800">{task.label}</div>
+                  <div className="text-xs text-stone-500">Completed {formatShortDate(task.completed_at)}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -985,6 +1201,46 @@ function Toggle({ label, description, checked, onChange, testid }) {
   );
 }
 
+function Switch({ checked, onChange }) {
+  return (
+    <button
+      type="button"
+      onClick={onChange}
+      className={`relative h-6 w-11 rounded-full border transition ${checked ? "border-emerald-600 bg-emerald-600" : "border-stone-300 bg-white"}`}
+      aria-pressed={checked}
+    >
+      <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition ${checked ? "left-5" : "left-0.5"}`} />
+    </button>
+  );
+}
+
+function CurrencyInput({ value, onChange, disabled = false }) {
+  return (
+    <div className={`flex h-9 overflow-hidden rounded-md border border-stone-200 bg-white shadow-sm ${disabled ? "opacity-50" : ""}`}>
+      <span className="flex w-9 items-center justify-center border-r border-stone-200 bg-stone-50 text-sm font-semibold text-stone-500">£</span>
+      <input
+        value={value || ""}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        inputMode="decimal"
+        className="min-w-0 flex-1 px-2 text-sm outline-none disabled:bg-white"
+      />
+    </div>
+  );
+}
+
+function DueBadge({ date }) {
+  const days = daysUntil(date);
+  const tone = days < 0 ? "bg-red-100 text-red-800" : days <= 14 ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800";
+  const label = days < 0 ? `${Math.abs(days)}d overdue` : days === 0 ? "Due today" : `${days}d left`;
+  return (
+    <div className="flex flex-col items-start gap-1 sm:items-end">
+      <span className="font-semibold text-stone-900">{formatDisplayDate(date)}</span>
+      <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${tone}`}>{label}</span>
+    </div>
+  );
+}
+
 function PasswordReset({ pwd, setPwd, resetPassword }) {
   return (
     <div className="rounded-md border border-stone-200 bg-stone-50 p-3">
@@ -1022,6 +1278,39 @@ function splitMulti(value) {
     .filter(Boolean);
 }
 
+function normaliseServiceSettings(value, legacyServices = "") {
+  const parsed = parseJsonObject(value);
+  const legacy = new Set(splitMulti(legacyServices));
+  const result = { ...(parsed || {}) };
+  SERVICES.forEach((service) => {
+    result[service.key] = {
+      fee: result[service.key]?.fee || "",
+      enabled: !!result[service.key]?.enabled || legacy.has(service.label),
+    };
+  });
+  result.combined = {
+    annual_charge: result.combined?.annual_charge || "",
+    monthly_charge: result.combined?.monthly_charge || "",
+  };
+  return result;
+}
+
+function enabledServiceLabels(serviceSettings, legacyServices = "") {
+  const settings = normaliseServiceSettings(serviceSettings, legacyServices);
+  return SERVICES.filter((service) => settings[service.key]?.enabled).map((service) => service.label);
+}
+
+function parseJsonObject(value) {
+  if (!value) return null;
+  if (typeof value === "object" && !Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function parseStoredList(value) {
   if (Array.isArray(value)) return value;
   if (!value) return [];
@@ -1031,6 +1320,95 @@ function parseStoredList(value) {
   } catch {
     return [];
   }
+}
+
+function createDeadlineTask(service, dueDate, source = "manual") {
+  return {
+    id: makeLocalId(),
+    service: service.key,
+    label: `${service.label} deadline`,
+    due_date: normaliseDateInput(dueDate),
+    recurrence: service.recurrence || null,
+    source,
+    status: "open",
+    created_at: new Date().toISOString(),
+    completed_at: null,
+  };
+}
+
+function suggestedDeadlineForService(service, client) {
+  if (service.deadline === "companies_house_accounts") {
+    return extractDeadline(client?.statutory_deadlines, "Accounts due");
+  }
+  if (service.deadline === "companies_house_confirmation") {
+    return extractDeadline(client?.statutory_deadlines, "Confirmation statement due");
+  }
+  return "";
+}
+
+function extractDeadline(text, label) {
+  const line = String(text || "").split(/\r?\n/).find((item) => item.toLowerCase().startsWith(label.toLowerCase()));
+  if (!line) return "";
+  const match = line.match(/(\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4})/);
+  return match ? normaliseDateInput(match[1]) : "";
+}
+
+function nextDueFromTask(task) {
+  const date = parseLooseDate(task.due_date);
+  if (!date || !task.recurrence) return null;
+  const next = new Date(date);
+  if (task.recurrence === "monthly") next.setMonth(next.getMonth() + 1);
+  else if (task.recurrence === "quarterly") next.setMonth(next.getMonth() + 3);
+  else if (task.recurrence === "annual") next.setFullYear(next.getFullYear() + 1);
+  else return null;
+  return toIsoDate(next);
+}
+
+function normaliseDateInput(value) {
+  const parsed = parseLooseDate(value);
+  return parsed ? toIsoDate(parsed) : String(value || "").trim();
+}
+
+function parseLooseDate(value) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    const parsed = new Date(`${text}T00:00:00`);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  const match = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (match) {
+    const parsed = new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1]));
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  return null;
+}
+
+function toIsoDate(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function formatDisplayDate(value) {
+  const parsed = parseLooseDate(value);
+  if (!parsed) return value || "-";
+  return parsed.toLocaleDateString("en-GB");
+}
+
+function daysUntil(value) {
+  const parsed = parseLooseDate(value);
+  if (!parsed) return 9999;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  parsed.setHours(0, 0, 0, 0);
+  return Math.round((parsed - today) / 86400000);
+}
+
+function makeLocalId() {
+  return `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function serviceLabel(key) {
+  return SERVICES.find((service) => service.key === key)?.label || key;
 }
 
 function mergeCompanyProfile(current, data) {
