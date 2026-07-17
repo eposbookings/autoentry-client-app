@@ -733,6 +733,7 @@ function DeadlinesPanel({ client, tasks, services, setField, addManualDeadline, 
   const openTasks = tasks.filter((task) => task.status !== "completed").sort((a, b) => String(a.due_date).localeCompare(String(b.due_date)));
   const completedTasks = tasks.filter((task) => task.status === "completed").slice(-8).reverse();
   const sourcedDeadlines = integratedDeadlineRows(client?.statutory_deadlines);
+  const filingEvidence = companiesHouseFilingEvidence(client);
 
   return (
     <section className="grid gap-4 xl:grid-cols-[1fr_0.85fr]">
@@ -789,6 +790,30 @@ function DeadlinesPanel({ client, tasks, services, setField, addManualDeadline, 
           )}
           <TextAreaField className="mt-3" label="Statutory deadlines / notes" value={client.statutory_deadlines} onChange={(v) => setField("statutory_deadlines", v)} placeholder="Accounts due, confirmation statement, VAT quarters..." />
           <p className="mt-2 text-xs text-stone-500">Companies House and future HMRC dates are integration-sourced. Service catalogue deadlines are used only where no integration source exists.</p>
+        </div>
+        <div className="rounded-md border border-stone-200 bg-white p-4">
+          <h2 className="font-display text-lg font-semibold">Companies House filing history used</h2>
+          <p className="text-xs text-stone-500">Used as evidence and as a fallback estimate only when the official next due date is missing.</p>
+          {filingEvidence.length === 0 ? (
+            <p className="mt-3 text-sm text-stone-500">No Companies House accounts or confirmation statement filings stored yet.</p>
+          ) : (
+            <div className="mt-3 space-y-2">
+              {filingEvidence.map((row) => (
+                <div key={`${row.kind}-${row.date}-${row.type}`} className="rounded-md border border-stone-200 bg-stone-50 px-3 py-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-sm font-semibold text-stone-900">{row.kind}</div>
+                    <Badge variant="secondary">{formatDisplayDate(row.date)}</Badge>
+                  </div>
+                  <div className="mt-1 text-xs text-stone-600">{friendlyFilingDescription(row)}</div>
+                  {row.estimated_next_due && (
+                    <div className="mt-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-900">
+                      Fallback estimate if no official due date exists: {formatDisplayDate(row.estimated_next_due)}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
         <div className="rounded-md border border-stone-200 bg-white p-4">
           <h2 className="font-display text-lg font-semibold">Recently completed</h2>
@@ -1381,7 +1406,7 @@ function createDeadlineTask(service, dueDate, source = "manual") {
 
 function suggestedDeadlineForService(service, client) {
   if (service.deadline === "statutory" && service.statutory_key) {
-    return statutoryDateForService(service.statutory_key, client);
+    return statutoryDateForService(service.statutory_key, client) || filingHistoryDeadlineForService(service.statutory_key, client);
   }
   if (service.recurrence) return nextScheduledDate(service);
   return "";
@@ -1417,6 +1442,98 @@ function integratedDeadlineRows(text) {
   ]
     .filter(([, , date]) => !!date)
     .map(([source, label, date]) => ({ source, label, date }));
+}
+
+function companiesHouseFilingEvidence(client) {
+  const filings = parseStoredList(client?.companies_house_filings);
+  const rows = [];
+  const accounts = latestFilingByKind(filings, "accounts");
+  const confirmation = latestFilingByKind(filings, "confirmation");
+  if (accounts) {
+    rows.push({
+      kind: "Accounts filing",
+      ...accounts,
+      estimated_next_due: filingHistoryDeadlineForService("companies_house_accounts_due", client, { allowOfficialDate: false }),
+    });
+  }
+  if (confirmation) {
+    rows.push({
+      kind: "Confirmation statement filing",
+      ...confirmation,
+      estimated_next_due: filingHistoryDeadlineForService("companies_house_confirmation_due", client, { allowOfficialDate: false }),
+    });
+  }
+  return rows;
+}
+
+function filingHistoryDeadlineForService(key, client, options = {}) {
+  const { allowOfficialDate = true } = options;
+  if (allowOfficialDate) {
+    const direct = statutoryDateForService(key, client);
+    if (direct) return direct;
+  }
+  const text = client?.statutory_deadlines || "";
+  const filings = parseStoredList(client?.companies_house_filings);
+  if (key === "companies_house_accounts_due") {
+    const nextMadeUpTo = extractDeadline(text, "Accounts next made up to");
+    const lastMadeUpTo = extractDeadline(text, "Accounts last made up to");
+    if (nextMadeUpTo) return addMonthsToIso(nextMadeUpTo, 9);
+    if (lastMadeUpTo) return addMonthsToIso(lastMadeUpTo, 21);
+    const filing = latestFilingByKind(filings, "accounts");
+    return filing?.date ? addMonthsToIso(filing.date, 21) : "";
+  }
+  if (key === "companies_house_confirmation_due") {
+    const nextStatementDate = extractDeadline(text, "Confirmation next statement date");
+    const lastStatementDate = extractDeadline(text, "Confirmation last statement date");
+    if (nextStatementDate) return addDaysToIso(nextStatementDate, 14);
+    if (lastStatementDate) return addDaysToIso(addMonthsToIso(lastStatementDate, 12), 14);
+    const filing = latestFilingByKind(filings, "confirmation");
+    return filing?.date ? addDaysToIso(addMonthsToIso(filing.date, 12), 14) : "";
+  }
+  return "";
+}
+
+function latestFilingByKind(filings, kind) {
+  const matches = filings
+    .filter((filing) => filingMatchesKind(filing, kind) && parseLooseDate(filing.date))
+    .sort((a, b) => parseLooseDate(b.date) - parseLooseDate(a.date));
+  return matches[0] || null;
+}
+
+function filingMatchesKind(filing, kind) {
+  const text = [
+    filing?.category,
+    filing?.type,
+    filing?.description,
+  ].join(" ").toLowerCase();
+  if (kind === "accounts") {
+    return text.includes("accounts") || /^aa/.test(String(filing?.type || "").toLowerCase());
+  }
+  if (kind === "confirmation") {
+    return text.includes("confirmation") || text.includes("statement") || String(filing?.type || "").toLowerCase().startsWith("cs");
+  }
+  return false;
+}
+
+function friendlyFilingDescription(filing) {
+  const description = String(filing?.description || "").replaceAll("-", " ").trim();
+  const type = filing?.type ? `Type ${filing.type}` : "";
+  const category = filing?.category ? filing.category : "";
+  return [description, type, category].filter(Boolean).join(" - ") || "Companies House filing";
+}
+
+function addMonthsToIso(value, months) {
+  const date = parseLooseDate(value);
+  if (!date) return "";
+  return toIsoDate(addMonthsClamped(date, months, date.getDate()));
+}
+
+function addDaysToIso(value, days) {
+  const date = parseLooseDate(value);
+  if (!date) return "";
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return toIsoDate(next);
 }
 
 function nextDueFromTask(task) {
