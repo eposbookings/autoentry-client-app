@@ -1411,24 +1411,24 @@ function statutoryWindowForService(key, client) {
   if (key === "companies_house_accounts_due") {
     const explicitDueDate = extractDeadline(text, "Accounts due");
     const periodEnd = accountsPeriodEndForDeadline(client, explicitDueDate);
-    const availableFrom = periodEnd ? addDaysToIso(periodEnd, 1) : "";
+    const availableFrom = periodEnd || "";
     const dueDate = explicitDueDate || (periodEnd ? addMonthsToIso(periodEnd, 9) : filingHistoryDeadlineForService(key, client, { allowOfficialDate: false }));
     return {
       available_from: availableFrom,
       due_date: dueDate,
       source: dueDate ? "Companies House" : "manual",
-      note: dueDate ? "Uses Companies House accounts due date. Start date is the day after the next accounts made up to/period end." : "",
+      note: dueDate ? "Uses Companies House accounts due date. Start date is the next accounts made up to/period end." : "",
     };
   }
   if (key === "hmrc_ct600_filing_due") {
     const accountsDue = extractDeadline(text, "Accounts due");
     const periodEnd = accountsPeriodEndForDeadline(client, accountsDue);
-    const availableFrom = periodEnd ? addDaysToIso(periodEnd, 1) : "";
+    const availableFrom = periodEnd || "";
     return {
       available_from: availableFrom,
       due_date: periodEnd ? addMonthsToIso(periodEnd, 12) : "",
       source: periodEnd ? "HMRC rule" : "manual",
-      note: periodEnd ? "CT600 starts after the accounts period end and is due 12 months after that period end." : "",
+      note: periodEnd ? "CT600 starts from the accounts period end and is due 12 months after that period end." : "",
     };
   }
   if (key === "companies_house_confirmation_due") {
@@ -1781,7 +1781,11 @@ function parseLooseDate(value) {
 }
 
 function toIsoDate(date) {
-  return date.toISOString().slice(0, 10);
+  if (!date || Number.isNaN(date.getTime())) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function formatDisplayDate(value) {
