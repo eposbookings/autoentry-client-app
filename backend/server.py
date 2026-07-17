@@ -223,6 +223,9 @@ settings = Table(
     Column("quickbooks_redirect_uri", String(512)),
     Column("companies_house_enabled", Boolean, default=True),
     Column("companies_house_api_key_enc", Text),
+    Column("accountancy_services", Text),
+    Column("accountancy_client_types", Text),
+    Column("accountancy_statutory_deadlines", Text),
 )
 
 client_integrations = Table(
@@ -493,6 +496,98 @@ class OpenAISettingsIn(BaseModel):
 
 class FeatureSettingsIn(BaseModel):
     document_processing_enabled: bool = True
+
+
+DEFAULT_ACCOUNTANCY_SERVICES = [
+    {"key": "accounts", "label": "Accounts", "deadline": "statutory", "recurrence": None, "start_date": None, "statutory_key": "companies_house_accounts_due", "enabled": True},
+    {"key": "bookkeeping", "label": "Bookkeeping", "deadline": None, "recurrence": None, "start_date": None, "enabled": True},
+    {"key": "ct600_return", "label": "CT600 Return", "deadline": "statutory", "recurrence": None, "start_date": None, "statutory_key": "hmrc_ct600_filing_due", "enabled": True},
+    {"key": "payroll", "label": "Payroll", "deadline": "scheduled", "recurrence": "monthly", "start_date": None, "enabled": True},
+    {"key": "auto_enrolment", "label": "Auto-Enrolment", "deadline": "scheduled", "recurrence": "annual", "start_date": None, "enabled": True},
+    {"key": "vat_returns", "label": "VAT Returns", "deadline": "statutory", "recurrence": None, "start_date": None, "statutory_key": "hmrc_vat_return_due", "enabled": True},
+    {"key": "management_accounts", "label": "Management Accounts", "deadline": "scheduled", "recurrence": "monthly", "start_date": None, "enabled": True},
+    {"key": "confirmation_statement", "label": "Confirmation Statement", "deadline": "statutory", "recurrence": None, "start_date": None, "statutory_key": "companies_house_confirmation_due", "enabled": True},
+    {"key": "cis", "label": "CIS", "deadline": "scheduled", "recurrence": "monthly", "start_date": None, "enabled": True},
+    {"key": "p11d", "label": "P11D", "deadline": "scheduled", "recurrence": "annual", "start_date": None, "enabled": True},
+    {"key": "fee_protection", "label": "Fee Protection Service", "deadline": None, "recurrence": None, "start_date": None, "enabled": True},
+    {"key": "registered_address", "label": "Registered Address", "deadline": None, "recurrence": None, "start_date": None, "enabled": True},
+    {"key": "bill_payment", "label": "Bill Payment", "deadline": None, "recurrence": None, "start_date": None, "enabled": True},
+    {"key": "consultation_advice", "label": "Consultation/Advice", "deadline": None, "recurrence": None, "start_date": None, "enabled": True},
+    {"key": "software", "label": "Software", "deadline": None, "recurrence": None, "start_date": None, "enabled": True},
+    {"key": "ct600e", "label": "CT600E", "deadline": "scheduled", "recurrence": "annual", "start_date": None, "enabled": True},
+    {"key": "self_assessment", "label": "Self Assessment", "deadline": "scheduled", "recurrence": "annual", "start_date": None, "enabled": True},
+]
+
+
+DEFAULT_ACCOUNTANCY_STATUTORY_DEADLINES = [
+    {"key": "companies_house_accounts_due", "label": "Accounts due", "source": "Companies House", "description": "Next accounts filing deadline from Companies House.", "rule_description": "Used by the Accounts service. The app stores the Companies House returned accounts due date on the client as 'Accounts due' and uses that exact date when creating the next accounts deadline task. This is preferred over a local formula because Companies House already handles first accounts, changed accounting periods, and overdue flags. Human check: private company annual accounts are normally due 9 months after the accounting reference date; first accounts or changed periods can differ.", "ai_update_enabled": True, "enabled": True},
+    {"key": "companies_house_accounts_made_up_to", "label": "Accounts made up to", "source": "Companies House", "description": "Next accounts period end from Companies House.", "rule_description": "Reference date only. The app stores the Companies House returned next accounts period end as 'Accounts next made up to'. Use it to verify the accounts period, but do not use it as the filing deadline.", "ai_update_enabled": True, "enabled": True},
+    {"key": "companies_house_confirmation_due", "label": "Confirmation statement due", "source": "Companies House", "description": "Next confirmation statement filing deadline from Companies House.", "rule_description": "Used by the Confirmation Statement service. The app stores the Companies House returned confirmation statement due date and uses that exact date for the next deadline task.", "ai_update_enabled": True, "enabled": True},
+    {"key": "companies_house_confirmation_next_statement", "label": "Confirmation statement date", "source": "Companies House", "description": "Next statement date from Companies House.", "rule_description": "Reference date only. This is the next confirmation statement date/period date from Companies House, not the filing deadline.", "ai_update_enabled": True, "enabled": True},
+    {"key": "hmrc_ct600_filing_due", "label": "CT600 filing due", "source": "HMRC", "description": "Corporation Tax return filing deadline.", "rule_description": "Rule: file the Company Tax Return 12 months after the end of the Corporation Tax accounting period. Data needed: accounting period end date, normally aligned to the accounts period. If HMRC CT data is not connected, the app can calculate this from the client accounting period/account year end and show it for review.", "ai_update_enabled": True, "enabled": True},
+    {"key": "hmrc_corporation_tax_payment_due", "label": "Corporation Tax payment due", "source": "HMRC", "description": "Corporation Tax payment deadline.", "rule_description": "Rule: Corporation Tax is usually payable 9 months and 1 day after the end of the Corporation Tax accounting period. Data needed: accounting period end date. Exception: large and very large companies may pay by quarterly instalments, so those clients need a separate rule later.", "ai_update_enabled": True, "enabled": True},
+    {"key": "hmrc_vat_return_due", "label": "VAT return due", "source": "HMRC", "description": "VAT return deadline from HMRC MTD obligations or VAT period settings.", "rule_description": "Best source: HMRC VAT MTD API obligations endpoint, which returns the period due date. Fallback rule: VAT returns are normally due 1 month and 7 days after the VAT period end. Data needed: VAT registration, VAT period frequency and period end date.", "ai_update_enabled": True, "enabled": True},
+    {"key": "hmrc_vat_payment_due", "label": "VAT payment due", "source": "HMRC", "description": "VAT payment deadline from HMRC MTD obligations or VAT period settings.", "rule_description": "Best source: HMRC VAT MTD API liabilities/payments and obligations where connected. Fallback rule: VAT payment is normally due on the same 1 month and 7 days deadline as the VAT return, but Direct Debit and special schemes may differ.", "ai_update_enabled": True, "enabled": True},
+    {"key": "hmrc_paye_monthly_due", "label": "PAYE monthly due", "source": "HMRC", "description": "PAYE/NIC monthly payment deadline.", "rule_description": "Rule: PAYE/NIC for a tax month ending on the 5th is due by the 22nd of the following month if paid electronically, or the 19th if paid by post. App default should be the 22nd, with an option to use the 19th for cheque/post clients.", "ai_update_enabled": True, "enabled": True},
+    {"key": "hmrc_cis_return_due", "label": "CIS return due", "source": "HMRC", "description": "Monthly CIS contractor return deadline.", "rule_description": "Rule: the CIS tax month runs from the 6th to the 5th. The contractor monthly return is due within 14 days of the tax month end, which is normally the 19th of the month. Example: 6 May to 5 June is due by 19 June. CIS deductions are paid with PAYE/CIS payments by the 22nd electronically, or 19th by post.", "ai_update_enabled": True, "enabled": True},
+    {"key": "hmrc_p11d_due", "label": "P11D due", "source": "HMRC", "description": "Annual P11D and P11D(b) submission deadline.", "rule_description": "Rule: P11D and P11D(b) are due by 6 July after the tax year ends on 5 April. Related payment: Class 1A National Insurance is due by 22 July if paid electronically, or 19 July by cheque/post.", "ai_update_enabled": True, "enabled": True},
+    {"key": "hmrc_self_assessment_due", "label": "Self Assessment return due", "source": "HMRC", "description": "Self Assessment tax return filing deadline.", "rule_description": "Rule: online Self Assessment returns are normally due by 31 January after the tax year. Paper returns are normally due by 31 October. App default should be online filing on 31 January, with paper filing as an optional client setting later.", "ai_update_enabled": True, "enabled": True},
+    {"key": "hmrc_self_assessment_payment_due", "label": "Self Assessment payment due", "source": "HMRC", "description": "Self Assessment balancing payment and first payment on account deadline.", "rule_description": "Rule: the balancing payment for the previous tax year and the first payment on account are normally due by 31 January after the tax year.", "ai_update_enabled": True, "enabled": True},
+    {"key": "hmrc_payment_on_account_due", "label": "Payment on account due", "source": "HMRC", "description": "Self Assessment second payment on account deadline.", "rule_description": "Rule: the second Self Assessment payment on account is normally due by 31 July after the tax year.", "ai_update_enabled": True, "enabled": True},
+]
+
+
+DEFAULT_ACCOUNTANCY_CLIENT_TYPES = [
+    {"key": "limited_company", "label": "Limited company", "service_keys": ["accounts", "bookkeeping", "ct600_return", "confirmation_statement"]},
+    {"key": "sole_trader", "label": "Sole trader", "service_keys": ["bookkeeping", "self_assessment"]},
+    {"key": "partnership", "label": "Partnership", "service_keys": ["bookkeeping", "self_assessment"]},
+    {"key": "llp", "label": "LLP", "service_keys": ["accounts", "bookkeeping", "confirmation_statement"]},
+    {"key": "charity", "label": "Charity", "service_keys": ["accounts", "bookkeeping"]},
+    {"key": "community_interest_company", "label": "CIC", "service_keys": ["accounts", "bookkeeping", "ct600_return", "confirmation_statement"]},
+    {"key": "club_or_association", "label": "Club / association", "service_keys": ["accounts", "bookkeeping"]},
+    {"key": "landlord", "label": "Landlord", "service_keys": ["bookkeeping", "self_assessment"]},
+    {"key": "individual", "label": "Individual", "service_keys": ["self_assessment"]},
+    {"key": "other", "label": "Other", "service_keys": []},
+]
+
+
+class AccountancyServiceIn(BaseModel):
+    key: str
+    label: str
+    deadline: Optional[str] = None
+    recurrence: Optional[str] = None
+    start_date: Optional[str] = None
+    statutory_key: Optional[str] = None
+    day_of_month: Optional[int] = None
+    enabled: bool = True
+
+
+class AccountancyServicesIn(BaseModel):
+    services: List[AccountancyServiceIn]
+
+
+class AccountancyClientTypeIn(BaseModel):
+    key: str
+    label: str
+    service_keys: List[str] = []
+
+
+class AccountancyClientTypesIn(BaseModel):
+    client_types: List[AccountancyClientTypeIn]
+
+
+class AccountancyStatutoryDeadlineIn(BaseModel):
+    key: str
+    label: str
+    source: str
+    description: Optional[str] = None
+    rule_description: Optional[str] = None
+    ai_update_enabled: bool = True
+    enabled: bool = True
+
+
+class AccountancyStatutoryDeadlinesIn(BaseModel):
+    statutory_deadlines: List[AccountancyStatutoryDeadlineIn]
 
 
 CLIENT_PRACTICE_FIELDS = [
@@ -1201,10 +1296,21 @@ async def companies_house_profile(
     filings = [ch_filing(item) for item in (filings_data.get("items") or []) if item.get("date")][:20]
     contacts = directors + [psc for psc in pscs if psc.get("name") not in {director.get("name") for director in directors}]
     deadlines = []
-    if accounts.get("next_due"):
-        deadlines.append(f"Accounts due: {accounts.get('next_due')}")
+    next_accounts = accounts.get("next_accounts") or {}
+    last_accounts = accounts.get("last_accounts") or {}
+    if next_accounts.get("made_up_to"):
+        deadlines.append(f"Accounts next made up to: {next_accounts.get('made_up_to')}")
+    accounts_due = next_accounts.get("due_on") or accounts.get("next_due")
+    if accounts_due:
+        deadlines.append(f"Accounts due: {accounts_due}")
+    if last_accounts.get("made_up_to"):
+        deadlines.append(f"Accounts last made up to: {last_accounts.get('made_up_to')}")
+    if confirmation.get("next_made_up_to"):
+        deadlines.append(f"Confirmation next statement date: {confirmation.get('next_made_up_to')}")
     if confirmation.get("next_due"):
         deadlines.append(f"Confirmation statement due: {confirmation.get('next_due')}")
+    if confirmation.get("last_made_up_to"):
+        deadlines.append(f"Confirmation last statement date: {confirmation.get('last_made_up_to')}")
     for filing in filings[:5]:
         if filing.get("description"):
             deadlines.append(f"Recent filing {filing.get('date')}: {filing.get('description')}")
@@ -2593,6 +2699,209 @@ async def update_admin_feature_settings(
         await session.execute(insert(settings).values(**values))
     await session.commit()
     return await get_feature_settings(session)
+
+
+def normalise_accountancy_services(raw: Any) -> list[dict]:
+    source = raw if isinstance(raw, list) and raw else DEFAULT_ACCOUNTANCY_SERVICES
+    statutory_keys = {item["key"] for item in DEFAULT_ACCOUNTANCY_STATUTORY_DEADLINES}
+    services = []
+    seen = set()
+    for item in source:
+        if not isinstance(item, dict):
+            continue
+        key = re.sub(r"[^a-z0-9_]+", "_", str(item.get("key") or item.get("label") or "").lower()).strip("_")
+        label = str(item.get("label") or "").strip()
+        if not key or not label or key in seen:
+            continue
+        recurrence = item.get("recurrence") or None
+        if recurrence not in (None, "weekly", "monthly", "quarterly", "half_year", "annual"):
+            recurrence = None
+        deadline = item.get("deadline") or None
+        if deadline in ("companies_house_accounts", "companies_house_confirmation"):
+            deadline = None
+            recurrence = None
+        if deadline not in (None, "scheduled", "statutory"):
+            deadline = "scheduled" if recurrence else None
+        start_date = str(item.get("start_date") or "").strip() or None
+        if start_date and not re.match(r"^\d{4}-\d{2}-\d{2}$", start_date):
+            start_date = None
+        statutory_key = str(item.get("statutory_key") or "").strip() or None
+        if statutory_key and statutory_key not in statutory_keys:
+            statutory_key = None
+        if deadline == "statutory":
+            recurrence = None
+            start_date = None
+        elif deadline == "scheduled":
+            statutory_key = None
+        else:
+            recurrence = None
+            statutory_key = None
+        day = item.get("day_of_month")
+        try:
+            day = int(day) if day not in (None, "") else None
+        except (TypeError, ValueError):
+            day = None
+        if day is not None:
+            day = max(1, min(31, day))
+        services.append({
+            "key": key,
+            "label": label,
+            "deadline": deadline,
+            "recurrence": recurrence,
+            "start_date": start_date,
+            "statutory_key": statutory_key,
+            "day_of_month": day,
+            "enabled": bool(item.get("enabled", True)),
+        })
+        seen.add(key)
+    return services or DEFAULT_ACCOUNTANCY_SERVICES
+
+
+def normalise_accountancy_client_types(raw: Any, services: Optional[list[dict]] = None) -> list[dict]:
+    source = raw if isinstance(raw, list) and raw else DEFAULT_ACCOUNTANCY_CLIENT_TYPES
+    service_keys = {service["key"] for service in (services or DEFAULT_ACCOUNTANCY_SERVICES)}
+    client_types = []
+    seen = set()
+    for item in source:
+        if not isinstance(item, dict):
+            continue
+        key = re.sub(r"[^a-z0-9_]+", "_", str(item.get("key") or item.get("label") or "").lower()).strip("_")
+        label = str(item.get("label") or "").strip()
+        if not key or not label or key in seen:
+            continue
+        allocations = []
+        for service_key in item.get("service_keys") or []:
+            service_key = str(service_key).strip()
+            if service_key in service_keys and service_key not in allocations:
+                allocations.append(service_key)
+        client_types.append({"key": key, "label": label, "service_keys": allocations})
+        seen.add(key)
+    return client_types or DEFAULT_ACCOUNTANCY_CLIENT_TYPES
+
+
+def normalise_accountancy_statutory_deadlines(raw: Any) -> list[dict]:
+    source = raw if isinstance(raw, list) and raw else DEFAULT_ACCOUNTANCY_STATUTORY_DEADLINES
+    defaults_by_key = {item["key"]: item for item in DEFAULT_ACCOUNTANCY_STATUTORY_DEADLINES}
+    deadlines = []
+    seen = set()
+    for item in source:
+        if not isinstance(item, dict):
+            continue
+        key = re.sub(r"[^a-z0-9_]+", "_", str(item.get("key") or item.get("label") or "").lower()).strip("_")
+        label = str(item.get("label") or "").strip()
+        source_name = str(item.get("source") or "").strip()
+        if not key or not label or not source_name or key in seen:
+            continue
+        default = defaults_by_key.get(key, {})
+        deadlines.append({
+            "key": key,
+            "label": label,
+            "source": source_name,
+            "description": str(item.get("description") or default.get("description") or "").strip(),
+            "rule_description": str(item.get("rule_description") or default.get("rule_description") or "").strip(),
+            "ai_update_enabled": bool(item.get("ai_update_enabled", True)),
+            "enabled": bool(item.get("enabled", True)),
+        })
+        seen.add(key)
+    return deadlines or DEFAULT_ACCOUNTANCY_STATUTORY_DEADLINES
+
+
+async def get_accountancy_services_payload(session: AsyncSession) -> dict:
+    saved = await one(session, select(settings).where(settings.c.key == "accountancy_services"))
+    if saved and saved.get("accountancy_services"):
+        try:
+            return {"services": normalise_accountancy_services(json.loads(saved["accountancy_services"]))}
+        except Exception:
+            logger.warning("Could not parse saved accountancy services", exc_info=True)
+    return {"services": DEFAULT_ACCOUNTANCY_SERVICES}
+
+
+async def get_accountancy_client_types_payload(session: AsyncSession) -> dict:
+    services = (await get_accountancy_services_payload(session))["services"]
+    saved = await one(session, select(settings).where(settings.c.key == "accountancy_client_types"))
+    if saved and saved.get("accountancy_client_types"):
+        try:
+            return {"client_types": normalise_accountancy_client_types(json.loads(saved["accountancy_client_types"]), services)}
+        except Exception:
+            logger.warning("Could not parse saved accountancy client types", exc_info=True)
+    return {"client_types": normalise_accountancy_client_types(DEFAULT_ACCOUNTANCY_CLIENT_TYPES, services)}
+
+
+async def get_accountancy_statutory_deadlines_payload(session: AsyncSession) -> dict:
+    saved = await one(session, select(settings).where(settings.c.key == "accountancy_statutory_deadlines"))
+    if saved and saved.get("accountancy_statutory_deadlines"):
+        try:
+            return {"statutory_deadlines": normalise_accountancy_statutory_deadlines(json.loads(saved["accountancy_statutory_deadlines"]))}
+        except Exception:
+            logger.warning("Could not parse saved accountancy statutory deadlines", exc_info=True)
+    return {"statutory_deadlines": DEFAULT_ACCOUNTANCY_STATUTORY_DEADLINES}
+
+
+@api.get("/admin/accountancy/services")
+async def get_accountancy_services(user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    return await get_accountancy_services_payload(session)
+
+
+@api.put("/admin/accountancy/services")
+async def update_accountancy_services(
+    payload: AccountancyServicesIn,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    services = normalise_accountancy_services([service.model_dump() for service in payload.services])
+    existing = await one(session, select(settings).where(settings.c.key == "accountancy_services")) or {}
+    values = {"key": "accountancy_services", "accountancy_services": json_compact(services)}
+    if existing:
+        await session.execute(update(settings).where(settings.c.key == "accountancy_services").values(**values))
+    else:
+        await session.execute(insert(settings).values(**values))
+    await session.commit()
+    return {"services": services}
+
+
+@api.get("/admin/accountancy/client-types")
+async def get_accountancy_client_types(user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    return await get_accountancy_client_types_payload(session)
+
+
+@api.put("/admin/accountancy/client-types")
+async def update_accountancy_client_types(
+    payload: AccountancyClientTypesIn,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    services = (await get_accountancy_services_payload(session))["services"]
+    client_types = normalise_accountancy_client_types([client_type.model_dump() for client_type in payload.client_types], services)
+    existing = await one(session, select(settings).where(settings.c.key == "accountancy_client_types")) or {}
+    values = {"key": "accountancy_client_types", "accountancy_client_types": json_compact(client_types)}
+    if existing:
+        await session.execute(update(settings).where(settings.c.key == "accountancy_client_types").values(**values))
+    else:
+        await session.execute(insert(settings).values(**values))
+    await session.commit()
+    return {"client_types": client_types}
+
+
+@api.get("/admin/accountancy/statutory-deadlines")
+async def get_accountancy_statutory_deadlines(user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    return await get_accountancy_statutory_deadlines_payload(session)
+
+
+@api.put("/admin/accountancy/statutory-deadlines")
+async def update_accountancy_statutory_deadlines(
+    payload: AccountancyStatutoryDeadlinesIn,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    statutory_deadlines = normalise_accountancy_statutory_deadlines([item.model_dump() for item in payload.statutory_deadlines])
+    existing = await one(session, select(settings).where(settings.c.key == "accountancy_statutory_deadlines")) or {}
+    values = {"key": "accountancy_statutory_deadlines", "accountancy_statutory_deadlines": json_compact(statutory_deadlines)}
+    if existing:
+        await session.execute(update(settings).where(settings.c.key == "accountancy_statutory_deadlines").values(**values))
+    else:
+        await session.execute(insert(settings).values(**values))
+    await session.commit()
+    return {"statutory_deadlines": statutory_deadlines}
 
 
 async def require_document_processing_module(session: AsyncSession):
