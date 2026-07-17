@@ -1298,13 +1298,19 @@ async def companies_house_profile(
     deadlines = []
     next_accounts = accounts.get("next_accounts") or {}
     last_accounts = accounts.get("last_accounts") or {}
-    if next_accounts.get("made_up_to"):
-        deadlines.append(f"Accounts next made up to: {next_accounts.get('made_up_to')}")
+    next_accounts_made_up_to = (
+        next_accounts.get("period_end_on")
+        or next_accounts.get("made_up_to")
+        or accounts.get("next_made_up_to")
+    )
+    if next_accounts_made_up_to:
+        deadlines.append(f"Accounts next made up to: {next_accounts_made_up_to}")
     accounts_due = next_accounts.get("due_on") or accounts.get("next_due")
     if accounts_due:
         deadlines.append(f"Accounts due: {accounts_due}")
-    if last_accounts.get("made_up_to"):
-        deadlines.append(f"Accounts last made up to: {last_accounts.get('made_up_to')}")
+    last_accounts_made_up_to = last_accounts.get("period_end_on") or last_accounts.get("made_up_to")
+    if last_accounts_made_up_to:
+        deadlines.append(f"Accounts last made up to: {last_accounts_made_up_to}")
     if confirmation.get("next_made_up_to"):
         deadlines.append(f"Confirmation next statement date: {confirmation.get('next_made_up_to')}")
     if confirmation.get("next_due"):
