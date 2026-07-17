@@ -346,8 +346,29 @@ export default function AdminClientDetail() {
         enabled: nextEnabled,
       },
     };
-    updateServices(next);
-    if (nextEnabled && service.deadline) ensureDeadlineTask(service);
+    const enabledLabels = availableServices.filter((item) => next[item.key]?.enabled).map((item) => item.label);
+    const existingTasks = parseStoredList(client?.deadline_tasks);
+    let nextTasks = existingTasks;
+
+    if (!nextEnabled) {
+      nextTasks = existingTasks.filter((task) => task.service !== service.key || task.status === "completed");
+    } else if (service.deadline && !existingTasks.some((task) => task.service === service.key && task.status !== "completed")) {
+      const dueDate = suggestedDeadlineForService(service, client);
+      let nextDue = dueDate;
+      if (!nextDue) {
+        nextDue = window.prompt(`Enter the next deadline for ${service.label} (YYYY-MM-DD or DD/MM/YYYY)`);
+      }
+      if (nextDue) {
+        nextTasks = [...existingTasks, createDeadlineTask(service, nextDue, dueDate ? "auto" : "manual")];
+      }
+    }
+
+    setClient((currentClient) => ({
+      ...currentClient,
+      service_settings: JSON.stringify(next),
+      services_required: enabledLabels.join("\n"),
+      deadline_tasks: JSON.stringify(nextTasks),
+    }));
   }
 
   function updateServiceFee(serviceKey, fee) {
@@ -381,19 +402,6 @@ export default function AdminClientDetail() {
       },
     };
     updateServices(next);
-  }
-
-  function ensureDeadlineTask(service) {
-    const existing = parseStoredList(client?.deadline_tasks).some((task) => task.service === service.key && task.status !== "completed");
-    if (existing) return;
-    const dueDate = suggestedDeadlineForService(service, client);
-    let nextDue = dueDate;
-    if (!nextDue) {
-      nextDue = window.prompt(`Enter the next deadline for ${service.label} (YYYY-MM-DD or DD/MM/YYYY)`);
-    }
-    if (!nextDue) return;
-    const task = createDeadlineTask(service, nextDue, dueDate ? "auto" : "manual");
-    setField("deadline_tasks", JSON.stringify([...parseStoredList(client?.deadline_tasks), task]));
   }
 
   function addManualDeadline(serviceKey, dueDate) {
