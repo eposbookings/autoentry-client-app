@@ -353,16 +353,10 @@ export default function AdminAccountancySettings() {
               <p className="p-8 text-sm text-stone-500">Loading statutory deadlines...</p>
             ) : (
               <div>
-                <div className="border-b border-stone-100 bg-emerald-50/60 px-4 py-3 text-sm text-emerald-950">
-                  <div className="font-semibold">How statutory rules apply</div>
-                  <p className="mt-1 text-xs leading-relaxed">
-                    Service catalogue maps a service to a statutory key. The client account stores the source date from Companies House or HMRC notes. When that service is enabled for a client, the deadline task uses the matching source date; if no source date exists, the app asks for the next deadline manually.
-                  </p>
-                </div>
                 <div className="grid grid-cols-[96px_170px_1fr_240px] gap-3 border-b border-stone-100 px-4 py-2 text-xs font-bold uppercase tracking-wide text-stone-500">
                   <span>Status</span>
                   <span>Source</span>
-                  <span>Rule and calculation</span>
+                  <span>Deadline information</span>
                   <span>Mapped services</span>
                 </div>
                 <div className="divide-y divide-stone-100">
@@ -379,13 +373,7 @@ export default function AdminAccountancySettings() {
                         </div>
                         <div>
                           <div className="font-semibold text-stone-900">{item.label}</div>
-                          <p className="text-xs text-stone-500">{item.description}</p>
-                          {item.rule_description && (
-                            <p className="mt-2 rounded-md border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs leading-relaxed text-emerald-950">
-                              {item.rule_description}
-                            </p>
-                          )}
-                          <p className="mt-1 text-[11px] font-mono text-stone-400">{item.key}</p>
+                          <p className="text-xs text-stone-500">{statutoryDeadlineSummary(item)}</p>
                         </div>
                         <div className="flex flex-wrap gap-1.5">
                           {usage.length ? usage.map((label) => (
@@ -562,6 +550,22 @@ function statutoryUsage(statutoryKey, services) {
   return services
     .filter((service) => service.deadline === "statutory" && service.statutory_key === statutoryKey && service.enabled !== false)
     .map((service) => service.label);
+}
+
+function statutoryDeadlineSummary(item) {
+  const key = item?.key || "";
+  if (key === "companies_house_accounts_due") return "Start: accounts period end. Due: Companies House accounts due date.";
+  if (key === "companies_house_accounts_made_up_to") return "Reference date: accounts period end / made up to.";
+  if (key === "companies_house_confirmation_due") return "Start: confirmation statement date. Due: Companies House due date.";
+  if (key === "companies_house_confirmation_next_statement") return "Reference date: confirmation statement date.";
+  if (key === "hmrc_ct600_filing_due") return "Start: accounts period end. Due: 12 months after period end.";
+  if (key === "hmrc_corporation_tax_payment_due") return "Due: normally 9 months and 1 day after period end.";
+  if (key === "hmrc_vat_return_due" || key === "hmrc_vat_payment_due") return "Due: from HMRC VAT obligation, or 1 month and 7 days after VAT period end.";
+  if (key === "hmrc_paye_monthly_due") return "Window: after tax month closes. Due: 22nd electronically, 19th by post.";
+  if (key === "hmrc_cis_return_due") return "Window: after CIS tax month closes. Due: 19th of the following month.";
+  if (key === "hmrc_p11d_due") return "Window: after tax year closes. Due: 6 July.";
+  if (key === "hmrc_self_assessment_due") return "Window: from 6 April. Due: 31 January online.";
+  return item.description || item.label;
 }
 
 function normaliseUiClientType(type) {

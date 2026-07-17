@@ -736,19 +736,16 @@ function DeadlinesPanel({ client, tasks, services, setField, addManualDeadline, 
   const [dueDate, setDueDate] = useState("");
   const openTasks = tasks.filter((task) => task.status !== "completed").sort((a, b) => String(a.due_date).localeCompare(String(b.due_date)));
   const completedTasks = tasks.filter((task) => task.status === "completed").slice(-8).reverse();
-  const sourcedDeadlines = integratedDeadlineRows(client?.statutory_deadlines);
-  const statutoryWindows = statutoryDeadlineWindows(client);
-  const filingEvidence = companiesHouseFilingEvidence(client);
+  const deadlineRows = deadlineDisplayRows(openTasks, client, services);
 
   return (
-    <section className="grid gap-4 xl:grid-cols-[1fr_0.85fr]">
-      <div className="rounded-md border border-stone-200 bg-white p-4">
+    <section className="rounded-md border border-stone-200 bg-white p-4">
         <div className="mb-4 flex items-start justify-between gap-3">
           <div>
             <h2 className="font-display text-lg font-semibold">Deadline tasks</h2>
             <p className="text-sm text-stone-600">Relevant services create task-style deadlines. Completing one creates the next date when the recurrence is known.</p>
           </div>
-          <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">{openTasks.length} open</Badge>
+          <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">{deadlineRows.length} open</Badge>
         </div>
 
         <div className="grid gap-2 rounded-md border border-stone-200 bg-stone-50 p-3 sm:grid-cols-[1fr_180px_auto]">
@@ -761,104 +758,39 @@ function DeadlinesPanel({ client, tasks, services, setField, addManualDeadline, 
           <Button type="button" variant="outline" onClick={() => { addManualDeadline(serviceKey, dueDate); setDueDate(""); }}>Add deadline</Button>
         </div>
 
-        {statutoryWindows.length > 0 && (
-          <div className="mb-4 grid gap-2 lg:grid-cols-3">
-            {statutoryWindows.map((row) => (
-              <div key={row.key} className="rounded-md border border-emerald-100 bg-emerald-50/70 p-3">
-                <div className="text-sm font-semibold text-stone-900">{row.label}</div>
-                <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
-                  <div className="rounded border border-emerald-100 bg-white px-2 py-1">
-                    <div className="font-semibold uppercase tracking-wide text-emerald-700">Start</div>
-                    <div className="mt-0.5 text-stone-800">{formatDisplayDate(row.available_from)}</div>
-                  </div>
-                  <div className="rounded border border-emerald-100 bg-white px-2 py-1">
-                    <div className="font-semibold uppercase tracking-wide text-emerald-700">Due</div>
-                    <div className="mt-0.5 text-stone-800">{formatDisplayDate(row.due_date)}</div>
-                  </div>
-                </div>
-                <div className="mt-2 text-xs text-stone-600">{row.note}</div>
-              </div>
-            ))}
-          </div>
-        )}
-
         <div className="mt-4 space-y-2">
-          {openTasks.length === 0 ? (
+          {deadlineRows.length === 0 ? (
             <p className="rounded-md border border-dashed border-stone-300 py-10 text-center text-sm text-stone-500">No open deadlines yet. Enable a deadline service or add one manually.</p>
-          ) : openTasks.map((task) => {
-            const refreshedWindow = task.statutory_key ? statutoryWindowForService(task.statutory_key, client) : null;
-            const availableFrom = refreshedWindow?.available_from || task.available_from;
-            const dueDate = refreshedWindow?.due_date || task.due_date;
-            const calculationNote = refreshedWindow?.note || task.calculation_note;
+          ) : deadlineRows.map((task) => {
             return (
               <div key={task.id} className="grid gap-3 rounded-md border border-stone-200 bg-white px-3 py-3 sm:grid-cols-[1fr_220px_auto] sm:items-center">
                 <div>
                   <div className="font-semibold text-stone-900">{task.label}</div>
                   <div className="text-xs text-stone-500">{serviceLabel(task.service, services)}{task.source ? ` - ${task.source}` : ""}</div>
-                  {calculationNote && <div className="mt-1 text-xs text-stone-600">{calculationNote}</div>}
+                  {task.calculation_note && <div className="mt-1 text-xs text-stone-600">{task.calculation_note}</div>}
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div className="rounded-md bg-stone-50 px-2 py-1 text-xs">
                     <div className="font-semibold uppercase tracking-wide text-stone-500">Start</div>
-                    <div className="text-stone-800">{availableFrom ? formatDisplayDate(availableFrom) : "-"}</div>
+                    <div className="text-stone-800">{task.available_from ? formatDisplayDate(task.available_from) : "-"}</div>
                   </div>
-                  <DueBadge date={dueDate} />
+                  <DueBadge date={task.due_date} />
                 </div>
-                <Button type="button" size="sm" onClick={() => completeDeadline(task.id)} className="gap-2" style={{ background: "var(--brand)" }}>
-                  <CheckCircle2 className="h-4 w-4" /> Complete
-                </Button>
+                {task.synthetic ? (
+                  <Badge variant="secondary" className="justify-center">Calculated</Badge>
+                ) : (
+                  <Button type="button" size="sm" onClick={() => completeDeadline(task.id)} className="gap-2" style={{ background: "var(--brand)" }}>
+                    <CheckCircle2 className="h-4 w-4" /> Complete
+                  </Button>
+                )}
               </div>
             );
           })}
         </div>
-      </div>
 
-      <div className="space-y-4">
-        <div className="rounded-md border border-stone-200 bg-white p-4">
-          <h2 className="font-display text-lg font-semibold">Source dates</h2>
-          {sourcedDeadlines.length > 0 && (
-            <div className="mt-3 space-y-2">
-              {sourcedDeadlines.map((row) => (
-                <div key={row.label} className="rounded-md border border-emerald-100 bg-emerald-50 px-3 py-2">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-emerald-700">{row.source}</div>
-                  <div className="text-sm font-semibold text-stone-900">{row.label}</div>
-                  <div className="text-sm text-stone-700">{formatDisplayDate(row.date)}</div>
-                </div>
-              ))}
-            </div>
-          )}
-          <TextAreaField className="mt-3" label="Statutory deadlines / notes" value={client.statutory_deadlines} onChange={(v) => setField("statutory_deadlines", v)} placeholder="Accounts due, confirmation statement, VAT quarters..." />
-          <p className="mt-2 text-xs text-stone-500">Companies House and future HMRC dates are integration-sourced. Service catalogue deadlines are used only where no integration source exists.</p>
-        </div>
-        <div className="rounded-md border border-stone-200 bg-white p-4">
-          <h2 className="font-display text-lg font-semibold">Companies House filing history used</h2>
-          <p className="text-xs text-stone-500">Used as evidence and as a fallback estimate only when the official next due date is missing.</p>
-          {filingEvidence.length === 0 ? (
-            <p className="mt-3 text-sm text-stone-500">No Companies House accounts or confirmation statement filings stored yet.</p>
-          ) : (
-            <div className="mt-3 space-y-2">
-              {filingEvidence.map((row) => (
-                <div key={`${row.kind}-${row.date}-${row.type}`} className="rounded-md border border-stone-200 bg-stone-50 px-3 py-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-sm font-semibold text-stone-900">{row.kind}</div>
-                    <Badge variant="secondary">{formatDisplayDate(row.date)}</Badge>
-                  </div>
-                  <div className="mt-1 text-xs text-stone-600">{friendlyFilingDescription(row)}</div>
-                  {row.estimated_next_due && (
-                    <div className="mt-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-900">
-                      Fallback estimate if no official due date exists: {formatDisplayDate(row.estimated_next_due)}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        {completedTasks.length > 0 && (
         <div className="rounded-md border border-stone-200 bg-white p-4">
           <h2 className="font-display text-lg font-semibold">Recently completed</h2>
-          {completedTasks.length === 0 ? (
-            <p className="mt-3 text-sm text-stone-500">No completed deadlines yet.</p>
-          ) : (
             <div className="mt-3 space-y-2">
               {completedTasks.map((task) => (
                 <div key={`${task.id}-done`} className="rounded-md bg-stone-50 px-3 py-2 text-sm">
@@ -867,9 +799,8 @@ function DeadlinesPanel({ client, tasks, services, setField, addManualDeadline, 
                 </div>
               ))}
             </div>
-          )}
         </div>
-      </div>
+        )}
     </section>
   );
 }
@@ -1478,8 +1409,9 @@ function statutoryWindowForService(key, client) {
     companies_house_confirmation_next_statement: "Confirmation next statement date",
   };
   if (key === "companies_house_accounts_due") {
-    const availableFrom = extractDeadline(text, "Accounts next made up to") || fallbackAccountsPeriodEnd(client);
-    const dueDate = extractDeadline(text, "Accounts due") || (availableFrom ? addMonthsToIso(availableFrom, 9) : filingHistoryDeadlineForService(key, client, { allowOfficialDate: false }));
+    const explicitDueDate = extractDeadline(text, "Accounts due");
+    const availableFrom = extractDeadline(text, "Accounts next made up to") || (explicitDueDate ? addMonthsToIso(explicitDueDate, -9) : fallbackAccountsPeriodEnd(client));
+    const dueDate = explicitDueDate || (availableFrom ? addMonthsToIso(availableFrom, 9) : filingHistoryDeadlineForService(key, client, { allowOfficialDate: false }));
     return {
       available_from: availableFrom,
       due_date: dueDate,
@@ -1488,7 +1420,8 @@ function statutoryWindowForService(key, client) {
     };
   }
   if (key === "hmrc_ct600_filing_due") {
-    const availableFrom = extractDeadline(text, "Accounts next made up to") || fallbackAccountsPeriodEnd(client);
+    const accountsDue = extractDeadline(text, "Accounts due");
+    const availableFrom = extractDeadline(text, "Accounts next made up to") || (accountsDue ? addMonthsToIso(accountsDue, -9) : fallbackAccountsPeriodEnd(client));
     return {
       available_from: availableFrom,
       due_date: availableFrom ? addMonthsToIso(availableFrom, 12) : "",
@@ -1497,8 +1430,9 @@ function statutoryWindowForService(key, client) {
     };
   }
   if (key === "companies_house_confirmation_due") {
-    const availableFrom = extractDeadline(text, "Confirmation next statement date") || fallbackConfirmationStatementDate(client);
-    const dueDate = extractDeadline(text, "Confirmation statement due") || (availableFrom ? addDaysToIso(availableFrom, 14) : filingHistoryDeadlineForService(key, client, { allowOfficialDate: false }));
+    const explicitDueDate = extractDeadline(text, "Confirmation statement due");
+    const availableFrom = extractDeadline(text, "Confirmation next statement date") || (explicitDueDate ? addDaysToIso(explicitDueDate, -14) : fallbackConfirmationStatementDate(client));
+    const dueDate = explicitDueDate || (availableFrom ? addDaysToIso(availableFrom, 14) : filingHistoryDeadlineForService(key, client, { allowOfficialDate: false }));
     return {
       available_from: availableFrom,
       due_date: dueDate,
@@ -1514,6 +1448,42 @@ function statutoryWindowForService(key, client) {
     return { available_from: "", due_date: dueDate, source: dueDate ? "Companies House" : "manual", note: "" };
   }
   return { available_from: "", due_date: "", source: "manual", note: "" };
+}
+
+function deadlineDisplayRows(openTasks, client, services) {
+  const rowsByService = new Map();
+  openTasks.forEach((task) => {
+    const refreshedWindow = task.statutory_key ? statutoryWindowForService(task.statutory_key, client) : null;
+    rowsByService.set(task.service, {
+      ...task,
+      available_from: refreshedWindow?.available_from || task.available_from || "",
+      due_date: refreshedWindow?.due_date || task.due_date || "",
+      source: refreshedWindow?.source || task.source,
+      calculation_note: refreshedWindow?.note || task.calculation_note || "",
+    });
+  });
+
+  ["accounts", "ct600_return", "confirmation_statement"].forEach((serviceKey) => {
+    if (rowsByService.has(serviceKey)) return;
+    const service = services.find((item) => item.key === serviceKey);
+    if (!service?.statutory_key) return;
+    const windowDates = statutoryWindowForService(service.statutory_key, client);
+    if (!windowDates.due_date) return;
+    rowsByService.set(serviceKey, {
+      id: `calculated_${serviceKey}`,
+      service: serviceKey,
+      label: `${service.label} deadline`,
+      available_from: windowDates.available_from,
+      due_date: windowDates.due_date,
+      source: windowDates.source,
+      calculation_note: windowDates.note,
+      synthetic: true,
+    });
+  });
+
+  return Array.from(rowsByService.values())
+    .filter((row) => row.due_date)
+    .sort((a, b) => String(a.due_date).localeCompare(String(b.due_date)));
 }
 
 function statutoryDeadlineWindows(client) {
