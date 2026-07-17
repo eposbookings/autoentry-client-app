@@ -11,6 +11,7 @@ const FALLBACK_SERVICES = [
   { key: "accounts", label: "Accounts", deadline: "statutory", recurrence: null, start_date: null, statutory_key: "companies_house_accounts_due", enabled: true },
   { key: "bookkeeping", label: "Bookkeeping", deadline: null, recurrence: null, start_date: null, enabled: true },
   { key: "ct600_return", label: "CT600 Return", deadline: "statutory", recurrence: null, start_date: null, statutory_key: "hmrc_ct600_filing_due", enabled: true },
+  { key: "corporation_tax_payment", label: "Corporation Tax Payment", deadline: "statutory", recurrence: null, start_date: null, statutory_key: "hmrc_corporation_tax_payment_due", enabled: true },
   { key: "payroll", label: "Payroll", deadline: "scheduled", recurrence: "monthly", start_date: null, enabled: true },
   { key: "auto_enrolment", label: "Auto-Enrolment", deadline: "scheduled", recurrence: "annual", start_date: null, enabled: true },
   { key: "vat_returns", label: "VAT Returns", deadline: "statutory", recurrence: null, start_date: null, statutory_key: "hmrc_vat_return_due", enabled: true },
@@ -25,6 +26,8 @@ const FALLBACK_SERVICES = [
   { key: "software", label: "Software", deadline: null, recurrence: null, start_date: null, enabled: true },
   { key: "ct600e", label: "CT600E", deadline: "scheduled", recurrence: "annual", start_date: null, enabled: true },
   { key: "self_assessment", label: "Self Assessment", deadline: "scheduled", recurrence: "annual", start_date: null, enabled: true },
+  { key: "self_assessment_payment", label: "Self Assessment Payment", deadline: "scheduled", recurrence: "annual", start_date: null, enabled: true },
+  { key: "payment_on_account", label: "Payment on Account", deadline: "scheduled", recurrence: "annual", start_date: null, enabled: true },
 ];
 
 const FALLBACK_STATUTORY_DEADLINES = [
@@ -45,15 +48,15 @@ const FALLBACK_STATUTORY_DEADLINES = [
 ];
 
 const FALLBACK_CLIENT_TYPES = [
-  { key: "limited_company", label: "Limited company", service_keys: ["accounts", "bookkeeping", "ct600_return", "confirmation_statement"] },
-  { key: "sole_trader", label: "Sole trader", service_keys: ["bookkeeping", "self_assessment"] },
-  { key: "partnership", label: "Partnership", service_keys: ["bookkeeping", "self_assessment"] },
+  { key: "limited_company", label: "Limited company", service_keys: ["accounts", "bookkeeping", "ct600_return", "corporation_tax_payment", "confirmation_statement"] },
+  { key: "sole_trader", label: "Sole trader", service_keys: ["bookkeeping", "self_assessment", "self_assessment_payment", "payment_on_account"] },
+  { key: "partnership", label: "Partnership", service_keys: ["bookkeeping", "self_assessment", "self_assessment_payment", "payment_on_account"] },
   { key: "llp", label: "LLP", service_keys: ["accounts", "bookkeeping", "confirmation_statement"] },
   { key: "charity", label: "Charity", service_keys: ["accounts", "bookkeeping"] },
   { key: "community_interest_company", label: "CIC", service_keys: ["accounts", "bookkeeping", "ct600_return", "confirmation_statement"] },
   { key: "club_or_association", label: "Club / association", service_keys: ["accounts", "bookkeeping"] },
-  { key: "landlord", label: "Landlord", service_keys: ["bookkeeping", "self_assessment"] },
-  { key: "individual", label: "Individual", service_keys: ["self_assessment"] },
+  { key: "landlord", label: "Landlord", service_keys: ["bookkeeping", "self_assessment", "self_assessment_payment", "payment_on_account"] },
+  { key: "individual", label: "Individual", service_keys: ["self_assessment", "self_assessment_payment", "payment_on_account"] },
   { key: "other", label: "Other", service_keys: [] },
 ];
 
@@ -267,17 +270,16 @@ export default function AdminAccountancySettings() {
             ) : (
               <div className="overflow-x-auto">
                 <div className="min-w-[1220px]">
-                  <div className="grid grid-cols-[78px_1.15fr_180px_260px_160px_44px] gap-2 border-b border-stone-100 px-4 py-2 text-xs font-bold uppercase tracking-wide text-stone-500">
+                  <div className="grid grid-cols-[78px_1.15fr_180px_260px_44px] gap-2 border-b border-stone-100 px-4 py-2 text-xs font-bold uppercase tracking-wide text-stone-500">
                     <span>Use</span>
                     <span>Service</span>
                     <span>Deadline</span>
                     <span>Source / repeat</span>
-                    <span>Start date</span>
                     <span />
                   </div>
                   <div className="divide-y divide-stone-100">
                     {services.map((service, index) => (
-                      <div key={service.key || index} className="grid grid-cols-[78px_1.15fr_180px_260px_160px_44px] gap-2 px-4 py-2.5">
+                      <div key={service.key || index} className="grid grid-cols-[78px_1.15fr_180px_260px_44px] gap-2 px-4 py-2.5">
                         <label className="flex items-center gap-2 text-sm font-semibold text-stone-700">
                           <input type="checkbox" checked={!!service.enabled} onChange={(e) => updateService(index, { enabled: e.target.checked })} />
                           Active
@@ -288,7 +290,7 @@ export default function AdminAccountancySettings() {
                           onChange={(e) => updateService(index, {
                             deadline: e.target.value || null,
                             recurrence: e.target.value === "scheduled" ? (service.recurrence || "") : null,
-                            start_date: e.target.value === "scheduled" ? service.start_date : null,
+                            start_date: null,
                             statutory_key: e.target.value === "statutory" ? (service.statutory_key || activeStatutoryDeadlines[0]?.key || null) : null,
                           })}
                           className="h-9 rounded-md border border-stone-200 bg-white px-3 text-sm"
@@ -316,13 +318,6 @@ export default function AdminAccountancySettings() {
                             {RECURRENCE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                           </select>
                         )}
-                        <Input
-                          type="date"
-                          value={service.start_date || ""}
-                          onChange={(e) => updateService(index, { start_date: e.target.value || null })}
-                          disabled={service.deadline !== "scheduled"}
-                          className="h-9 disabled:bg-stone-100"
-                        />
                         <Button type="button" variant="ghost" size="icon" onClick={() => removeService(index)} title="Remove service">
                           <Trash2 className="h-4 w-4 text-stone-500" />
                         </Button>
@@ -477,7 +472,12 @@ export default function AdminAccountancySettings() {
 
 function normaliseServiceList(list) {
   const source = Array.isArray(list) && list.length ? list : FALLBACK_SERVICES;
-  return source.map(normaliseUiService).filter((service) => service.key && service.label);
+  const seen = new Set(source.map((service) => slugify(service?.key || service?.label)).filter(Boolean));
+  const withFallbacks = [
+    ...source,
+    ...FALLBACK_SERVICES.filter((service) => !seen.has(service.key)),
+  ];
+  return withFallbacks.map(normaliseUiService).filter((service) => service.key && service.label);
 }
 
 function normaliseStatutoryList(list) {
@@ -501,7 +501,7 @@ function normaliseUiService(service) {
     key: service.key || slugify(service.label),
     deadline,
     recurrence: deadline === "scheduled" ? (service.recurrence || null) : null,
-    start_date: deadline === "scheduled" ? (normaliseDate(service.start_date) || null) : null,
+    start_date: null,
     statutory_key: deadline === "statutory" ? (service.statutory_key || null) : null,
     enabled: service.enabled !== false,
   };
@@ -514,7 +514,7 @@ function normaliseForSave(service) {
     label: String(service.label || "").trim(),
     deadline,
     recurrence: deadline === "scheduled" ? (service.recurrence || null) : null,
-    start_date: deadline === "scheduled" ? (normaliseDate(service.start_date) || null) : null,
+    start_date: null,
     statutory_key: deadline === "statutory" ? (service.statutory_key || null) : null,
     enabled: service.enabled !== false,
   };

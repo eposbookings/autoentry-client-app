@@ -74,6 +74,7 @@ const DEFAULT_SERVICES = [
   { key: "accounts", label: "Accounts", deadline: "statutory", recurrence: null, start_date: null, statutory_key: "companies_house_accounts_due" },
   { key: "bookkeeping", label: "Bookkeeping", deadline: null, recurrence: null, start_date: null },
   { key: "ct600_return", label: "CT600 Return", deadline: "statutory", recurrence: null, start_date: null, statutory_key: "hmrc_ct600_filing_due" },
+  { key: "corporation_tax_payment", label: "Corporation Tax Payment", deadline: "statutory", recurrence: null, start_date: null, statutory_key: "hmrc_corporation_tax_payment_due" },
   { key: "payroll", label: "Payroll", deadline: "scheduled", recurrence: "monthly", start_date: null },
   { key: "auto_enrolment", label: "Auto-Enrolment", deadline: "scheduled", recurrence: "annual", start_date: null },
   { key: "vat_returns", label: "VAT Returns", deadline: "statutory", recurrence: null, start_date: null, statutory_key: "hmrc_vat_return_due" },
@@ -88,6 +89,8 @@ const DEFAULT_SERVICES = [
   { key: "software", label: "Software", deadline: null, recurrence: null, start_date: null },
   { key: "ct600e", label: "CT600E", deadline: "scheduled", recurrence: "annual", start_date: null },
   { key: "self_assessment", label: "Self Assessment", deadline: "scheduled", recurrence: "annual", start_date: null },
+  { key: "self_assessment_payment", label: "Self Assessment Payment", deadline: "scheduled", recurrence: "annual", start_date: null },
+  { key: "payment_on_account", label: "Payment on Account", deadline: "scheduled", recurrence: "annual", start_date: null },
 ];
 
 const COMBINED_PRICING = [
@@ -339,6 +342,7 @@ export default function AdminClientDetail() {
   function toggleService(service) {
     const current = normaliseServiceSettings(availableServices, client?.service_settings, client?.services_required);
     const nextEnabled = !current[service.key]?.enabled;
+    const serviceForDeadline = applyClientServiceSettings(service, current[service.key]);
     const next = {
       ...current,
       [service.key]: {
@@ -353,13 +357,13 @@ export default function AdminClientDetail() {
     if (!nextEnabled) {
       nextTasks = existingTasks.filter((task) => task.service !== service.key || task.status === "completed");
     } else if (service.deadline && !existingTasks.some((task) => task.service === service.key && task.status !== "completed")) {
-      const windowDates = suggestedDeadlineWindowForService(service, client);
+      const windowDates = suggestedDeadlineWindowForService(serviceForDeadline, client);
       let nextDue = windowDates.due_date;
-      if (!nextDue) {
+      if (!nextDue && !serviceNeedsClientStartDate(service)) {
         nextDue = window.prompt(`Enter the next deadline for ${service.label} (YYYY-MM-DD or DD/MM/YYYY)`);
       }
       if (nextDue) {
-        nextTasks = [...existingTasks, createDeadlineTask(service, nextDue, nextDue === windowDates.due_date ? windowDates.source : "manual", windowDates.available_from, windowDates.note)];
+        nextTasks = [...existingTasks, createDeadlineTask(serviceForDeadline, nextDue, nextDue === windowDates.due_date ? windowDates.source : "manual", windowDates.available_from, windowDates.note)];
       }
     }
 
@@ -381,6 +385,35 @@ export default function AdminClientDetail() {
       },
     };
     updateServices(next);
+  }
+
+  function updateServiceStartDate(service, startDate) {
+    const current = normaliseServiceSettings(availableServices, client?.service_settings, client?.services_required);
+    const next = {
+      ...current,
+      [service.key]: {
+        ...(current[service.key] || {}),
+        start_date: startDate,
+      },
+    };
+    const serviceForDeadline = applyClientServiceSettings(service, next[service.key]);
+    const existingTasks = parseStoredList(client?.deadline_tasks);
+    let nextTasks = existingTasks;
+    if (next[service.key]?.enabled && service.deadline) {
+      const windowDates = suggestedDeadlineWindowForService(serviceForDeadline, client);
+      if (windowDates.due_date) {
+        const replacement = createDeadlineTask(serviceForDeadline, windowDates.due_date, windowDates.source, windowDates.available_from, windowDates.note);
+        nextTasks = existingTasks.filter((task) => task.service !== service.key || task.status === "completed");
+        nextTasks.push(replacement);
+      }
+    }
+    const enabledLabels = availableServices.filter((item) => next[item.key]?.enabled).map((item) => item.label);
+    setClient((currentClient) => ({
+      ...currentClient,
+      service_settings: JSON.stringify(next),
+      services_required: enabledLabels.join("\n"),
+      deadline_tasks: JSON.stringify(nextTasks),
+    }));
   }
 
   function updateServices(next) {
@@ -630,6 +663,7 @@ export default function AdminClientDetail() {
               selectedServices={selectedServices}
               toggleService={toggleService}
               updateServiceFee={updateServiceFee}
+              updateServiceStartDate={updateServiceStartDate}
               updateCombinedPricing={updateCombinedPricing}
             />
           </section>
@@ -689,6 +723,7 @@ function ServicePricingPanel({
   selectedServices,
   toggleService,
   updateServiceFee,
+  updateServiceStartDate,
   updateCombinedPricing,
 }) {
   return (
@@ -704,13 +739,24 @@ function ServicePricingPanel({
         {services.map((service) => {
           const active = !!settings[service.key]?.enabled || selectedServices.includes(service.label);
           return (
-            <div key={service.key} className="grid gap-3 px-3 py-2.5 sm:grid-cols-[1fr_84px_180px] sm:items-center">
+            <div key={service.key} className="grid gap-3 px-3 py-2.5 sm:grid-cols-[1fr_84px_160px_180px] sm:items-center">
               <div className="flex items-center gap-2">
                 <span className={`h-1.5 w-1.5 rounded-full ${service.deadline ? "bg-emerald-500" : "bg-stone-300"}`} title={service.deadline ? "Deadline tracked" : "No deadline"} />
                 <span className="text-sm font-semibold text-stone-800">{service.label}</span>
                 {service.deadline && <Badge variant="secondary" className="text-[10px]">deadline</Badge>}
               </div>
               <Switch checked={active} onChange={() => toggleService(service)} />
+              {serviceNeedsClientStartDate(service) && active ? (
+                <Input
+                  type="date"
+                  value={settings[service.key]?.start_date || ""}
+                  onChange={(e) => updateServiceStartDate(service, e.target.value)}
+                  className="h-9"
+                  title="First period/start date for deadline calculation"
+                />
+              ) : (
+                <span className="text-xs text-stone-400">{service.deadline && active ? "automatic" : ""}</span>
+              )}
               <CurrencyInput value={settings[service.key]?.fee || ""} onChange={(value) => updateServiceFee(service.key, value)} disabled={!active} />
             </div>
           );
@@ -1381,8 +1427,10 @@ function suggestedDeadlineForService(service, client) {
 }
 
 function suggestedDeadlineWindowForService(service, client) {
+  const keyedWindow = serviceSpecificDeadlineWindow(service, client);
+  if (keyedWindow) return keyedWindow;
   if (service.deadline === "statutory" && service.statutory_key) {
-    return statutoryWindowForService(service.statutory_key, client);
+    return statutoryWindowForService(service.statutory_key, client, service);
   }
   if (service.recurrence) {
     const dueDate = nextScheduledDate(service);
@@ -1400,7 +1448,7 @@ function statutoryDateForService(key, client) {
   return statutoryWindowForService(key, client).due_date;
 }
 
-function statutoryWindowForService(key, client) {
+function statutoryWindowForService(key, client, service = {}) {
   const text = client?.statutory_deadlines || "";
   const labels = {
     companies_house_accounts_due: "Accounts due",
@@ -1431,6 +1479,16 @@ function statutoryWindowForService(key, client) {
       note: periodEnd ? "CT600 starts from the accounts period end and is due 12 months after that period end." : "",
     };
   }
+  if (key === "hmrc_corporation_tax_payment_due") {
+    const accountsDue = extractDeadline(text, "Accounts due");
+    const periodEnd = accountsPeriodEndForDeadline(client, accountsDue);
+    return {
+      available_from: periodEnd || "",
+      due_date: periodEnd ? addDaysToIso(addMonthsToIso(periodEnd, 9), 1) : "",
+      source: periodEnd ? "HMRC rule" : "manual",
+      note: periodEnd ? "Corporation Tax payment is normally due 9 months and 1 day after the accounting period end." : "",
+    };
+  }
   if (key === "companies_house_confirmation_due") {
     const explicitDueDate = extractDeadline(text, "Confirmation statement due");
     const availableFrom = extractDeadline(text, "Confirmation next statement date") || (explicitDueDate ? addDaysToIso(explicitDueDate, -14) : fallbackConfirmationStatementDate(client));
@@ -1442,9 +1500,13 @@ function statutoryWindowForService(key, client) {
       note: dueDate ? "Uses Companies House confirmation statement due date. Start date is the next statement date." : "",
     };
   }
-  if (key === "hmrc_cis_return_due") return currentTaxMonthWindow("CIS", 19);
-  if (key === "hmrc_paye_monthly_due") return currentTaxMonthWindow("PAYE/NIC", 22);
+  if (key === "hmrc_vat_return_due" || key === "hmrc_vat_payment_due") return vatQuarterWindow(service.start_date);
+  if (key === "hmrc_cis_return_due") return currentTaxMonthWindow("CIS", 19, service.start_date);
+  if (key === "hmrc_paye_monthly_due") return currentTaxMonthWindow("PAYE/NIC", 22, service.start_date);
+  if (key === "hmrc_p11d_due") return currentP11dWindow();
   if (key === "hmrc_self_assessment_due") return currentSelfAssessmentWindow();
+  if (key === "hmrc_self_assessment_payment_due") return currentSelfAssessmentWindow("payment");
+  if (key === "hmrc_payment_on_account_due") return currentPaymentOnAccountWindow();
   if (labels[key]) {
     const dueDate = extractDeadline(text, labels[key]);
     return { available_from: "", due_date: dueDate, source: dueDate ? "Companies House" : "manual", note: "" };
@@ -1453,13 +1515,13 @@ function statutoryWindowForService(key, client) {
 }
 
 function deadlineDisplayRows(openTasks, client, services) {
+  const serviceSettings = normaliseServiceSettings(services, client?.service_settings, client?.services_required);
   const enabledKeys = new Set(services.filter((service) => isServiceEnabled(service, client)).map((service) => service.key));
   const rowsByService = new Map();
   openTasks.forEach((task) => {
     if (!enabledKeys.has(task.service)) return;
-    const service = services.find((item) => item.key === task.service);
-    const statutoryKey = task.statutory_key || service?.statutory_key;
-    const refreshedWindow = statutoryKey ? statutoryWindowForService(statutoryKey, client) : null;
+    const service = applyClientServiceSettings(services.find((item) => item.key === task.service), serviceSettings[task.service]);
+    const refreshedWindow = suggestedDeadlineWindowForService(service, client);
     rowsByService.set(task.service, {
       ...task,
       available_from: refreshedWindow?.available_from || task.available_from || "",
@@ -1469,12 +1531,12 @@ function deadlineDisplayRows(openTasks, client, services) {
     });
   });
 
-  ["accounts", "ct600_return", "confirmation_statement"].forEach((serviceKey) => {
+  services.filter((service) => service.deadline).forEach((rawService) => {
+    const serviceKey = rawService.key;
     if (rowsByService.has(serviceKey)) return;
     if (!enabledKeys.has(serviceKey)) return;
-    const service = services.find((item) => item.key === serviceKey);
-    if (!service?.statutory_key) return;
-    const windowDates = statutoryWindowForService(service.statutory_key, client);
+    const service = applyClientServiceSettings(rawService, serviceSettings[serviceKey]);
+    const windowDates = suggestedDeadlineWindowForService(service, client);
     if (!windowDates.due_date) return;
     rowsByService.set(serviceKey, {
       id: `calculated_${serviceKey}`,
@@ -1613,12 +1675,49 @@ function fallbackConfirmationStatementDate(client) {
   return "";
 }
 
-function currentTaxMonthWindow(label, dueDay) {
+function serviceSpecificDeadlineWindow(service, client) {
+  if (!service) return null;
+  if (service.key === "p11d") return currentP11dWindow();
+  if (service.key === "self_assessment") return currentSelfAssessmentWindow();
+  if (service.key === "self_assessment_payment") return currentSelfAssessmentWindow("payment");
+  if (service.key === "payment_on_account") return currentPaymentOnAccountWindow();
+  if (service.key === "payroll") return currentTaxMonthWindow("PAYE/NIC", 22, service.start_date);
+  if (service.key === "cis") return currentTaxMonthWindow("CIS", 19, service.start_date);
+  if (service.key === "vat_returns") return vatQuarterWindow(service.start_date);
+  if (service.key === "corporation_tax_payment") return statutoryWindowForService("hmrc_corporation_tax_payment_due", client, service);
+  return null;
+}
+
+function applyClientServiceSettings(service, settings = {}) {
+  if (!service) return {};
+  return {
+    ...service,
+    start_date: settings?.start_date || service.start_date || null,
+  };
+}
+
+function serviceNeedsClientStartDate(service) {
+  if (!service) return false;
+  if (["payroll", "cis", "vat_returns"].includes(service.key)) return true;
+  return service.deadline === "scheduled" && !["p11d", "self_assessment", "self_assessment_payment", "payment_on_account"].includes(service.key);
+}
+
+function currentTaxMonthWindow(label, dueDay, startDate = "") {
+  const configuredStart = parseLooseDate(startDate);
+  if (!configuredStart) {
+    return {
+      available_from: "",
+      due_date: "",
+      source: "manual",
+      note: `${label} needs a client start date before monthly deadlines can be calculated.`,
+    };
+  }
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  let periodStart = new Date(today.getFullYear(), today.getMonth(), 6);
-  if (today.getDate() < 6) periodStart = addMonthsClamped(periodStart, -1, 6);
-  let available = addMonthsClamped(periodStart, 1, 6);
+  configuredStart.setHours(0, 0, 0, 0);
+  let taxMonthStart = new Date(configuredStart.getFullYear(), configuredStart.getMonth(), 6);
+  if (configuredStart.getDate() < 6) taxMonthStart = addMonthsClamped(taxMonthStart, -1, 6);
+  let available = addMonthsClamped(taxMonthStart, 1, 6);
   let due = new Date(available.getFullYear(), available.getMonth(), dueDay);
   while (due < today) {
     available = addMonthsClamped(available, 1, 6);
@@ -1632,7 +1731,19 @@ function currentTaxMonthWindow(label, dueDay) {
   };
 }
 
-function currentSelfAssessmentWindow() {
+function currentP11dWindow() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const year = today.getFullYear();
+  return {
+    available_from: toIsoDate(new Date(year, 3, 6)),
+    due_date: toIsoDate(new Date(year, 6, 6)),
+    source: "HMRC rule",
+    note: "P11D/P11D(b) work starts after the tax year closes on 5 April and is due by 6 July. If already filed, complete the task to move it on.",
+  };
+}
+
+function currentSelfAssessmentWindow(kind = "return") {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   let start = new Date(today.getFullYear(), 3, 6);
@@ -1646,7 +1757,51 @@ function currentSelfAssessmentWindow() {
     available_from: toIsoDate(start),
     due_date: toIsoDate(due),
     source: "HMRC rule",
-    note: "Self Assessment window starts after the tax year ends on 5 April and the online return is due by 31 January.",
+    note: kind === "payment"
+      ? "Self Assessment balancing payment and first payment on account are normally due by 31 January after the tax year."
+      : "Self Assessment window starts after the tax year ends on 5 April and the online return is due by 31 January.",
+  };
+}
+
+function currentPaymentOnAccountWindow() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  let due = new Date(today.getFullYear(), 6, 31);
+  if (due < today) due = new Date(today.getFullYear() + 1, 6, 31);
+  return {
+    available_from: toIsoDate(new Date(due.getFullYear(), 3, 6)),
+    due_date: toIsoDate(due),
+    source: "HMRC rule",
+    note: "Second Self Assessment payment on account is normally due by 31 July.",
+  };
+}
+
+function vatQuarterWindow(startDate = "") {
+  const start = parseLooseDate(startDate);
+  if (!start) {
+    return {
+      available_from: "",
+      due_date: "",
+      source: "manual",
+      note: "VAT needs the client's first VAT period start date before quarterly deadlines can be calculated.",
+    };
+  }
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  start.setHours(0, 0, 0, 0);
+  let periodStart = start;
+  let periodEnd = addDaysClamped(addMonthsClamped(periodStart, 3, periodStart.getDate()), -1);
+  let due = addDaysClamped(addMonthsClamped(periodEnd, 1, periodEnd.getDate()), 7);
+  while (due < today) {
+    periodStart = addMonthsClamped(periodStart, 3, periodStart.getDate());
+    periodEnd = addDaysClamped(addMonthsClamped(periodStart, 3, periodStart.getDate()), -1);
+    due = addDaysClamped(addMonthsClamped(periodEnd, 1, periodEnd.getDate()), 7);
+  }
+  return {
+    available_from: toIsoDate(addDaysClamped(periodEnd, 1)),
+    due_date: toIsoDate(due),
+    source: "HMRC rule",
+    note: "Fallback VAT rule: quarterly VAT return/payment is normally due 1 month and 7 days after the VAT period end.",
   };
 }
 
@@ -1698,9 +1853,7 @@ function addMonthsToIso(value, months) {
 function addDaysToIso(value, days) {
   const date = parseLooseDate(value);
   if (!date) return "";
-  const next = new Date(date);
-  next.setDate(next.getDate() + days);
-  return toIsoDate(next);
+  return toIsoDate(addDaysClamped(date, days));
 }
 
 function nextDueFromTask(task) {
@@ -1753,6 +1906,12 @@ function addMonthsClamped(date, months, anchorDay) {
   next.setDate(1);
   next.setMonth(next.getMonth() + months);
   next.setDate(Math.min(anchorDay, daysInMonth(next.getFullYear(), next.getMonth())));
+  return next;
+}
+
+function addDaysClamped(date, days) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
   return next;
 }
 
