@@ -1410,23 +1410,25 @@ function statutoryWindowForService(key, client) {
   };
   if (key === "companies_house_accounts_due") {
     const explicitDueDate = extractDeadline(text, "Accounts due");
-    const availableFrom = extractDeadline(text, "Accounts next made up to") || (explicitDueDate ? addMonthsToIso(explicitDueDate, -9) : fallbackAccountsPeriodEnd(client));
-    const dueDate = explicitDueDate || (availableFrom ? addMonthsToIso(availableFrom, 9) : filingHistoryDeadlineForService(key, client, { allowOfficialDate: false }));
+    const periodEnd = accountsPeriodEndForDeadline(client, explicitDueDate);
+    const availableFrom = periodEnd ? addDaysToIso(periodEnd, 1) : "";
+    const dueDate = explicitDueDate || (periodEnd ? addMonthsToIso(periodEnd, 9) : filingHistoryDeadlineForService(key, client, { allowOfficialDate: false }));
     return {
       available_from: availableFrom,
       due_date: dueDate,
       source: dueDate ? "Companies House" : "manual",
-      note: dueDate ? "Uses Companies House accounts due date. Start date is the next accounts made up to/period end." : "",
+      note: dueDate ? "Uses Companies House accounts due date. Start date is the day after the next accounts made up to/period end." : "",
     };
   }
   if (key === "hmrc_ct600_filing_due") {
     const accountsDue = extractDeadline(text, "Accounts due");
-    const availableFrom = extractDeadline(text, "Accounts next made up to") || (accountsDue ? addMonthsToIso(accountsDue, -9) : fallbackAccountsPeriodEnd(client));
+    const periodEnd = accountsPeriodEndForDeadline(client, accountsDue);
+    const availableFrom = periodEnd ? addDaysToIso(periodEnd, 1) : "";
     return {
       available_from: availableFrom,
-      due_date: availableFrom ? addMonthsToIso(availableFrom, 12) : "",
-      source: availableFrom ? "HMRC rule" : "manual",
-      note: availableFrom ? "CT600 filing deadline is calculated as 12 months after the corporation tax accounting period end." : "",
+      due_date: periodEnd ? addMonthsToIso(periodEnd, 12) : "",
+      source: periodEnd ? "HMRC rule" : "manual",
+      note: periodEnd ? "CT600 starts after the accounts period end and is due 12 months after that period end." : "",
     };
   }
   if (key === "companies_house_confirmation_due") {
@@ -1451,9 +1453,13 @@ function statutoryWindowForService(key, client) {
 }
 
 function deadlineDisplayRows(openTasks, client, services) {
+  const enabledKeys = new Set(services.filter((service) => isServiceEnabled(service, client)).map((service) => service.key));
   const rowsByService = new Map();
   openTasks.forEach((task) => {
-    const refreshedWindow = task.statutory_key ? statutoryWindowForService(task.statutory_key, client) : null;
+    if (!enabledKeys.has(task.service)) return;
+    const service = services.find((item) => item.key === task.service);
+    const statutoryKey = task.statutory_key || service?.statutory_key;
+    const refreshedWindow = statutoryKey ? statutoryWindowForService(statutoryKey, client) : null;
     rowsByService.set(task.service, {
       ...task,
       available_from: refreshedWindow?.available_from || task.available_from || "",
@@ -1465,6 +1471,7 @@ function deadlineDisplayRows(openTasks, client, services) {
 
   ["accounts", "ct600_return", "confirmation_statement"].forEach((serviceKey) => {
     if (rowsByService.has(serviceKey)) return;
+    if (!enabledKeys.has(serviceKey)) return;
     const service = services.find((item) => item.key === serviceKey);
     if (!service?.statutory_key) return;
     const windowDates = statutoryWindowForService(service.statutory_key, client);
@@ -1580,11 +1587,23 @@ function filingHistoryDeadlineForService(key, client, options = {}) {
   return "";
 }
 
+function accountsPeriodEndForDeadline(client, accountsDue = "") {
+  const text = client?.statutory_deadlines || "";
+  return extractDeadline(text, "Accounts next made up to") || (accountsDue ? addMonthsToIso(accountsDue, -9) : fallbackAccountsPeriodEnd(client));
+}
+
 function fallbackAccountsPeriodEnd(client) {
   const text = client?.statutory_deadlines || "";
   const lastMadeUpTo = extractDeadline(text, "Accounts last made up to");
   if (lastMadeUpTo) return addMonthsToIso(lastMadeUpTo, 12);
   return "";
+}
+
+function isServiceEnabled(service, client) {
+  const settings = normaliseServiceSettings(DEFAULT_SERVICES, client?.service_settings, client?.services_required);
+  if (settings[service.key]?.enabled) return true;
+  const current = normaliseServiceSettings([service], client?.service_settings, client?.services_required);
+  return !!current[service.key]?.enabled;
 }
 
 function fallbackConfirmationStatementDate(client) {
