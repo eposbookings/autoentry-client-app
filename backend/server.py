@@ -502,6 +502,7 @@ DEFAULT_ACCOUNTANCY_SERVICES = [
     {"key": "accounts", "label": "Accounts", "deadline": "statutory", "recurrence": None, "start_date": None, "statutory_key": "companies_house_accounts_due", "enabled": True},
     {"key": "bookkeeping", "label": "Bookkeeping", "deadline": None, "recurrence": None, "start_date": None, "enabled": True},
     {"key": "ct600_return", "label": "CT600 Return", "deadline": "statutory", "recurrence": None, "start_date": None, "statutory_key": "hmrc_ct600_filing_due", "enabled": True},
+    {"key": "corporation_tax_payment", "label": "Corporation Tax Payment", "deadline": "statutory", "recurrence": None, "start_date": None, "statutory_key": "hmrc_corporation_tax_payment_due", "enabled": True},
     {"key": "payroll", "label": "Payroll", "deadline": "scheduled", "recurrence": "monthly", "start_date": None, "enabled": True},
     {"key": "auto_enrolment", "label": "Auto-Enrolment", "deadline": "scheduled", "recurrence": "annual", "start_date": None, "enabled": True},
     {"key": "vat_returns", "label": "VAT Returns", "deadline": "statutory", "recurrence": None, "start_date": None, "statutory_key": "hmrc_vat_return_due", "enabled": True},
@@ -516,6 +517,8 @@ DEFAULT_ACCOUNTANCY_SERVICES = [
     {"key": "software", "label": "Software", "deadline": None, "recurrence": None, "start_date": None, "enabled": True},
     {"key": "ct600e", "label": "CT600E", "deadline": "scheduled", "recurrence": "annual", "start_date": None, "enabled": True},
     {"key": "self_assessment", "label": "Self Assessment", "deadline": "scheduled", "recurrence": "annual", "start_date": None, "enabled": True},
+    {"key": "self_assessment_payment", "label": "Self Assessment Payment", "deadline": "scheduled", "recurrence": "annual", "start_date": None, "enabled": True},
+    {"key": "payment_on_account", "label": "Payment on Account", "deadline": "scheduled", "recurrence": "annual", "start_date": None, "enabled": True},
 ]
 
 
@@ -538,15 +541,15 @@ DEFAULT_ACCOUNTANCY_STATUTORY_DEADLINES = [
 
 
 DEFAULT_ACCOUNTANCY_CLIENT_TYPES = [
-    {"key": "limited_company", "label": "Limited company", "service_keys": ["accounts", "bookkeeping", "ct600_return", "confirmation_statement"]},
-    {"key": "sole_trader", "label": "Sole trader", "service_keys": ["bookkeeping", "self_assessment"]},
-    {"key": "partnership", "label": "Partnership", "service_keys": ["bookkeeping", "self_assessment"]},
+    {"key": "limited_company", "label": "Limited company", "service_keys": ["accounts", "bookkeeping", "ct600_return", "corporation_tax_payment", "confirmation_statement"]},
+    {"key": "sole_trader", "label": "Sole trader", "service_keys": ["bookkeeping", "self_assessment", "self_assessment_payment", "payment_on_account"]},
+    {"key": "partnership", "label": "Partnership", "service_keys": ["bookkeeping", "self_assessment", "self_assessment_payment", "payment_on_account"]},
     {"key": "llp", "label": "LLP", "service_keys": ["accounts", "bookkeeping", "confirmation_statement"]},
     {"key": "charity", "label": "Charity", "service_keys": ["accounts", "bookkeeping"]},
     {"key": "community_interest_company", "label": "CIC", "service_keys": ["accounts", "bookkeeping", "ct600_return", "confirmation_statement"]},
     {"key": "club_or_association", "label": "Club / association", "service_keys": ["accounts", "bookkeeping"]},
-    {"key": "landlord", "label": "Landlord", "service_keys": ["bookkeeping", "self_assessment"]},
-    {"key": "individual", "label": "Individual", "service_keys": ["self_assessment"]},
+    {"key": "landlord", "label": "Landlord", "service_keys": ["bookkeeping", "self_assessment", "self_assessment_payment", "payment_on_account"]},
+    {"key": "individual", "label": "Individual", "service_keys": ["self_assessment", "self_assessment_payment", "payment_on_account"]},
     {"key": "other", "label": "Other", "service_keys": []},
 ]
 
@@ -2709,6 +2712,13 @@ async def update_admin_feature_settings(
 
 def normalise_accountancy_services(raw: Any) -> list[dict]:
     source = raw if isinstance(raw, list) and raw else DEFAULT_ACCOUNTANCY_SERVICES
+    if source is not DEFAULT_ACCOUNTANCY_SERVICES:
+        source_keys = {
+            re.sub(r"[^a-z0-9_]+", "_", str(item.get("key") or item.get("label") or "").lower()).strip("_")
+            for item in source
+            if isinstance(item, dict)
+        }
+        source = list(source) + [item for item in DEFAULT_ACCOUNTANCY_SERVICES if item["key"] not in source_keys]
     statutory_keys = {item["key"] for item in DEFAULT_ACCOUNTANCY_STATUTORY_DEADLINES}
     services = []
     seen = set()
@@ -2728,9 +2738,7 @@ def normalise_accountancy_services(raw: Any) -> list[dict]:
             recurrence = None
         if deadline not in (None, "scheduled", "statutory"):
             deadline = "scheduled" if recurrence else None
-        start_date = str(item.get("start_date") or "").strip() or None
-        if start_date and not re.match(r"^\d{4}-\d{2}-\d{2}$", start_date):
-            start_date = None
+        start_date = None
         statutory_key = str(item.get("statutory_key") or "").strip() or None
         if statutory_key and statutory_key not in statutory_keys:
             statutory_key = None
