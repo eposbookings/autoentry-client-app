@@ -23,6 +23,7 @@ import uuid
 import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from email.message import EmailMessage
 from typing import Any, List, Optional
 from urllib.parse import urlencode
@@ -159,6 +160,9 @@ users = Table(
     Column("sales_autoentry_email", String(255)),
     Column("is_vat_client", Boolean, default=False),
     Column("ai_analysis_enabled", Boolean, default=False),
+    Column("accounting_destination", String(32), default="external"),
+    Column("native_accounting_enabled", Boolean, default=False),
+    Column("native_accounting_created_at", String(64)),
     Column("status", String(32), nullable=False, default="active"),
     Column("created_at", String(64)),
 )
@@ -272,6 +276,133 @@ integration_records = Table(
     Column("updated_at", String(64)),
 )
 
+accounting_accounts = Table(
+    "accounting_accounts",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("code", String(32), nullable=False, index=True),
+    Column("name", String(255), nullable=False, index=True),
+    Column("account_type", String(64), nullable=False, index=True),
+    Column("normal_balance", String(16), nullable=False),
+    Column("control_account", Boolean, default=False),
+    Column("active", Boolean, default=True),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_contacts = Table(
+    "accounting_contacts",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("contact_type", String(32), nullable=False, index=True),
+    Column("name", String(255), nullable=False, index=True),
+    Column("email", String(255)),
+    Column("account_code", String(64)),
+    Column("active", Boolean, default=True),
+    Column("raw_json", Text),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_journal_entries = Table(
+    "accounting_journal_entries",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("source_type", String(64), index=True),
+    Column("source_id", String(64), index=True),
+    Column("entry_date", String(32), index=True),
+    Column("reference", String(255)),
+    Column("description", Text),
+    Column("status", String(32), default="posted", index=True),
+    Column("total_debit", String(64)),
+    Column("total_credit", String(64)),
+    Column("created_at", String(64)),
+    Column("posted_at", String(64)),
+)
+
+accounting_journal_lines = Table(
+    "accounting_journal_lines",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("entry_id", String(36), nullable=False, index=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("account_id", String(36)),
+    Column("account_code", String(32), index=True),
+    Column("account_name", String(255)),
+    Column("contact_id", String(36)),
+    Column("debit", String(64), default="0.00"),
+    Column("credit", String(64), default="0.00"),
+    Column("vat_code", String(255)),
+    Column("description", Text),
+    Column("created_at", String(64)),
+)
+
+accounting_audit_log = Table(
+    "accounting_audit_log",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("actor_id", String(36)),
+    Column("action", String(64), nullable=False, index=True),
+    Column("entity_type", String(64), index=True),
+    Column("entity_id", String(64), index=True),
+    Column("details_json", Text),
+    Column("created_at", String(64)),
+)
+
+accounting_bank_transactions = Table(
+    "accounting_bank_transactions",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("bank_account_code", String(32), default="1200", index=True),
+    Column("transaction_date", String(32), index=True),
+    Column("description", Text),
+    Column("reference", String(255)),
+    Column("money_in", String(64), default="0.00"),
+    Column("money_out", String(64), default="0.00"),
+    Column("status", String(32), default="unreconciled", index=True),
+    Column("matched_contact_id", String(36)),
+    Column("matched_account_code", String(32)),
+    Column("journal_entry_id", String(36)),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_vat_returns = Table(
+    "accounting_vat_returns",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("period_start", String(32), index=True),
+    Column("period_end", String(32), index=True),
+    Column("status", String(32), default="draft", index=True),
+    Column("vat_due_sales", String(64), default="0.00"),
+    Column("vat_reclaimed_purchases", String(64), default="0.00"),
+    Column("net_vat_due", String(64), default="0.00"),
+    Column("sales_net", String(64), default="0.00"),
+    Column("purchase_net", String(64), default="0.00"),
+    Column("prepared_json", Text),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_periods = Table(
+    "accounting_periods",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("period_start", String(32), index=True),
+    Column("period_end", String(32), index=True),
+    Column("status", String(32), default="open", index=True),
+    Column("notes", Text),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("portal")
 
@@ -301,7 +432,22 @@ async def ensure_schema_columns(conn):
     migration framework yet.
     """
     dialect_name = conn.dialect.name
-    for table in (users, outstanding_items, submissions, settings, client_integrations, integration_records):
+    for table in (
+        users,
+        outstanding_items,
+        submissions,
+        settings,
+        client_integrations,
+        integration_records,
+        accounting_accounts,
+        accounting_contacts,
+        accounting_journal_entries,
+        accounting_journal_lines,
+        accounting_audit_log,
+        accounting_bank_transactions,
+        accounting_vat_returns,
+        accounting_periods,
+    ):
         existing_column_info = await conn.run_sync(
             lambda sync_conn, table_name=table.name: {
                 col["name"]: col for col in inspect(sync_conn).get_columns(table_name)
@@ -404,6 +550,8 @@ class ClientCreate(BaseModel):
     status: str = "active"
     is_vat_client: bool = False
     ai_analysis_enabled: bool = False
+    accounting_destination: str = "external"
+    native_accounting_enabled: bool = False
     client_type: Optional[str] = None
     industry: Optional[str] = None
     company_number: Optional[str] = None
@@ -444,6 +592,8 @@ class ClientUpdate(BaseModel):
     status: Optional[str] = None
     is_vat_client: Optional[bool] = None
     ai_analysis_enabled: Optional[bool] = None
+    accounting_destination: Optional[str] = None
+    native_accounting_enabled: Optional[bool] = None
     client_type: Optional[str] = None
     industry: Optional[str] = None
     company_number: Optional[str] = None
@@ -519,6 +669,33 @@ DEFAULT_ACCOUNTANCY_SERVICES = [
     {"key": "self_assessment", "label": "Self Assessment", "deadline": "scheduled", "recurrence": "annual", "start_date": None, "enabled": True},
     {"key": "self_assessment_payment", "label": "Self Assessment Payment", "deadline": "scheduled", "recurrence": "annual", "start_date": None, "enabled": True},
     {"key": "payment_on_account", "label": "Payment on Account", "deadline": "scheduled", "recurrence": "annual", "start_date": None, "enabled": True},
+]
+
+NATIVE_ACCOUNTING_MODULES = [
+    {"key": "payables", "label": "Accounts Payable", "description": "Supplier bills, credit notes, payments, and aged payables."},
+    {"key": "receivables", "label": "Accounts Receivable", "description": "Customer invoices, receipts, and aged receivables."},
+    {"key": "banking", "label": "Banking", "description": "Bank accounts, statement imports, matching, and payment runs."},
+    {"key": "vat", "label": "VAT", "description": "VAT control, return boxes, audit trail, and MTD-ready summaries."},
+    {"key": "general_ledger", "label": "General Ledger", "description": "Double-entry journals and account activity."},
+    {"key": "chart_of_accounts", "label": "Chart of Accounts", "description": "Nominal codes, control accounts, and reporting structure."},
+    {"key": "reports", "label": "Reports", "description": "Profit and loss, balance sheet, trial balance, and ledgers."},
+    {"key": "settings", "label": "Settings", "description": "Accounting periods, defaults, VAT basis, and locks."},
+    {"key": "fixed_assets", "label": "Fixed Assets", "description": "Coming next: asset register and depreciation journals."},
+    {"key": "payroll", "label": "Payroll", "description": "Placeholder for payroll summaries and posting journals."},
+]
+
+DEFAULT_NATIVE_ACCOUNTS = [
+    {"code": "1100", "name": "Trade debtors", "account_type": "Asset", "normal_balance": "debit", "control_account": True},
+    {"code": "1200", "name": "Bank", "account_type": "Asset", "normal_balance": "debit", "control_account": True},
+    {"code": "2000", "name": "Trade creditors", "account_type": "Liability", "normal_balance": "credit", "control_account": True},
+    {"code": "2200", "name": "VAT control", "account_type": "Liability", "normal_balance": "credit", "control_account": True},
+    {"code": "4000", "name": "Sales", "account_type": "Income", "normal_balance": "credit", "control_account": False},
+    {"code": "5000", "name": "Purchases", "account_type": "Expense", "normal_balance": "debit", "control_account": False},
+    {"code": "5100", "name": "Subcontractors", "account_type": "Expense", "normal_balance": "debit", "control_account": False},
+    {"code": "5200", "name": "Materials", "account_type": "Expense", "normal_balance": "debit", "control_account": False},
+    {"code": "5300", "name": "Motor and travel", "account_type": "Expense", "normal_balance": "debit", "control_account": False},
+    {"code": "5400", "name": "Office and software", "account_type": "Expense", "normal_balance": "debit", "control_account": False},
+    {"code": "9999", "name": "Suspense", "account_type": "Asset", "normal_balance": "debit", "control_account": False},
 ]
 
 
@@ -708,6 +885,202 @@ async def one(session: AsyncSession, stmt) -> Optional[dict]:
 async def many(session: AsyncSession, stmt) -> list[dict]:
     result = await session.execute(stmt)
     return [dict(row) for row in result.mappings().all()]
+
+
+def money(value: Any, default: str = "0.00") -> Decimal:
+    raw = str(value if value not in (None, "") else default).strip()
+    raw = raw.replace("£", "").replace(",", "")
+    if not raw:
+        raw = default
+    try:
+        return Decimal(raw).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ValueError):
+        return Decimal(default).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def money_str(value: Decimal) -> str:
+    return str(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def clean_accounting_destination(value: Optional[str], native_enabled: bool = False) -> str:
+    destination = (value or "").strip().lower()
+    if destination not in {"external", "native"}:
+        destination = "native" if native_enabled else "external"
+    return destination
+
+
+def is_native_accounting_client(client: Optional[dict]) -> bool:
+    if not client:
+        return False
+    return bool(client.get("native_accounting_enabled")) or (client.get("accounting_destination") or "").lower() == "native"
+
+
+def account_matches(account: dict, value: Optional[str]) -> bool:
+    candidate = (value or "").strip().lower()
+    if not candidate:
+        return False
+    return candidate in {
+        str(account.get("code") or "").strip().lower(),
+        str(account.get("name") or "").strip().lower(),
+        f"{account.get('code') or ''} - {account.get('name') or ''}".strip().lower(),
+    }
+
+
+async def ensure_native_accounting_client(session: AsyncSession, client_id: str) -> list[dict]:
+    now = utc_now_iso()
+    existing = await many(
+        session,
+        select(accounting_accounts)
+        .where(accounting_accounts.c.client_id == client_id)
+        .order_by(accounting_accounts.c.code.asc()),
+    )
+    if existing:
+        return existing
+    for account in DEFAULT_NATIVE_ACCOUNTS:
+        await session.execute(
+            insert(accounting_accounts).values(
+                id=new_id(),
+                client_id=client_id,
+                created_at=now,
+                updated_at=now,
+                active=True,
+                **account,
+            )
+        )
+    await session.execute(
+        update(users)
+        .where(users.c.id == client_id, users.c.role == "client")
+        .values(
+            accounting_destination="native",
+            native_accounting_enabled=True,
+            native_accounting_created_at=now,
+        )
+    )
+    await session.flush()
+    return await many(
+        session,
+        select(accounting_accounts)
+        .where(accounting_accounts.c.client_id == client_id)
+        .order_by(accounting_accounts.c.code.asc()),
+    )
+
+
+def find_native_account(accounts: list[dict], preferred: Optional[str], fallback_code: str) -> dict:
+    for account in accounts:
+        if account_matches(account, preferred):
+            return account
+    for account in accounts:
+        if str(account.get("code") or "") == fallback_code:
+            return account
+    raise HTTPException(status_code=400, detail=f"Native accounting account {fallback_code} is missing.")
+
+
+async def get_or_create_native_contact(session: AsyncSession, client_id: str, name: str, contact_type: str) -> Optional[dict]:
+    clean_name = (name or "").strip()
+    if not clean_name:
+        return None
+    existing = await one(
+        session,
+        select(accounting_contacts).where(
+            accounting_contacts.c.client_id == client_id,
+            accounting_contacts.c.contact_type == contact_type,
+            func.lower(accounting_contacts.c.name) == clean_name.lower(),
+        ),
+    )
+    if existing:
+        return existing
+    now = utc_now_iso()
+    contact = {
+        "id": new_id(),
+        "client_id": client_id,
+        "contact_type": contact_type,
+        "name": clean_name,
+        "active": True,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await session.execute(insert(accounting_contacts).values(**contact))
+    return contact
+
+
+def submission_entry_date(submission: dict, coding_fields: dict) -> str:
+    return quickbooks_date(coding_fields.get("date") or submission.get("date")) or datetime.now(timezone.utc).date().isoformat()
+
+
+async def post_native_journal(
+    session: AsyncSession,
+    client_id: str,
+    source_type: str,
+    source_id: str,
+    entry_date: str,
+    reference: str,
+    description: str,
+    lines: list[dict],
+    actor_id: Optional[str] = None,
+) -> dict:
+    total_debit = sum((money(line.get("debit")) for line in lines), Decimal("0.00"))
+    total_credit = sum((money(line.get("credit")) for line in lines), Decimal("0.00"))
+    if total_debit <= Decimal("0.00") or total_credit <= Decimal("0.00"):
+        raise HTTPException(status_code=400, detail="Native accounting journal needs debit and credit values.")
+    if total_debit != total_credit:
+        raise HTTPException(status_code=400, detail=f"Native accounting journal is not balanced: debit {money_str(total_debit)} / credit {money_str(total_credit)}.")
+    now = utc_now_iso()
+    entry_id = new_id()
+    await session.execute(
+        insert(accounting_journal_entries).values(
+            id=entry_id,
+            client_id=client_id,
+            source_type=source_type,
+            source_id=source_id,
+            entry_date=entry_date,
+            reference=reference[:255],
+            description=description,
+            status="posted",
+            total_debit=money_str(total_debit),
+            total_credit=money_str(total_credit),
+            created_at=now,
+            posted_at=now,
+        )
+    )
+    for line in lines:
+        account = line["account"]
+        await session.execute(
+            insert(accounting_journal_lines).values(
+                id=new_id(),
+                entry_id=entry_id,
+                client_id=client_id,
+                account_id=account.get("id"),
+                account_code=account.get("code"),
+                account_name=account.get("name"),
+                contact_id=(line.get("contact") or {}).get("id"),
+                debit=money_str(money(line.get("debit"))),
+                credit=money_str(money(line.get("credit"))),
+                vat_code=line.get("vat_code"),
+                description=line.get("description"),
+                created_at=now,
+            )
+        )
+    await session.execute(
+        insert(accounting_audit_log).values(
+            id=new_id(),
+            client_id=client_id,
+            actor_id=actor_id,
+            action="journal_posted",
+            entity_type="journal_entry",
+            entity_id=entry_id,
+            details_json=json.dumps({"source_type": source_type, "source_id": source_id, "debit": money_str(total_debit), "credit": money_str(total_credit)}),
+            created_at=now,
+        )
+    )
+    return {
+        "provider": "epos_native",
+        "entity": "JournalEntry",
+        "id": entry_id,
+        "reference": reference,
+        "total_debit": money_str(total_debit),
+        "total_credit": money_str(total_credit),
+        "posted_at": now,
+    }
 
 
 async def count_rows(session: AsyncSession, table: Table, *conditions) -> int:
@@ -902,6 +1275,9 @@ def serialize_user(u: dict) -> dict:
         "sales_autoentry_email": u.get("sales_autoentry_email"),
         "is_vat_client": bool(u.get("is_vat_client")),
         "ai_analysis_enabled": bool(u.get("ai_analysis_enabled")),
+        "accounting_destination": u.get("accounting_destination") or ("native" if u.get("native_accounting_enabled") else "external"),
+        "native_accounting_enabled": bool(u.get("native_accounting_enabled")),
+        "native_accounting_created_at": u.get("native_accounting_created_at"),
         "status": u.get("status", "active"),
     }
 
@@ -1154,12 +1530,17 @@ async def create_client(
         "sales_autoentry_email": payload.sales_autoentry_email.lower().strip() if payload.sales_autoentry_email else None,
         "is_vat_client": bool(payload.is_vat_client),
         "ai_analysis_enabled": bool(payload.ai_analysis_enabled),
+        "accounting_destination": clean_accounting_destination(payload.accounting_destination, payload.native_accounting_enabled),
+        "native_accounting_enabled": bool(payload.native_accounting_enabled or payload.accounting_destination == "native"),
+        "native_accounting_created_at": utc_now_iso() if payload.native_accounting_enabled or payload.accounting_destination == "native" else None,
         "status": payload.status or "active",
         "created_at": utc_now_iso(),
     }
     for field in CLIENT_PRACTICE_FIELDS:
         doc[field] = clean_optional_text(getattr(payload, field, None))
     await session.execute(insert(users).values(**doc))
+    if doc["native_accounting_enabled"]:
+        await ensure_native_accounting_client(session, doc["id"])
     await session.commit()
     return serialize_user(doc)
 
@@ -1200,6 +1581,14 @@ async def update_client(
         values["autoentry_email"] = values["autoentry_email"].lower().strip()
     if "sales_autoentry_email" in values:
         values["sales_autoentry_email"] = values["sales_autoentry_email"].lower().strip() if values["sales_autoentry_email"] else None
+    if "accounting_destination" in values or "native_accounting_enabled" in values:
+        native_enabled = bool(values.get("native_accounting_enabled", False))
+        values["accounting_destination"] = clean_accounting_destination(values.get("accounting_destination"), native_enabled)
+        values["native_accounting_enabled"] = native_enabled or values["accounting_destination"] == "native"
+        if values["native_accounting_enabled"] and "native_accounting_created_at" not in values:
+            current = await get_user_by_id(session, client_id)
+            if current and not current.get("native_accounting_created_at"):
+                values["native_accounting_created_at"] = utc_now_iso()
     for field in CLIENT_PRACTICE_FIELDS:
         if field in values:
             values[field] = clean_optional_text(values[field])
@@ -1210,6 +1599,8 @@ async def update_client(
         if result.rowcount == 0:
             await session.rollback()
             raise HTTPException(status_code=404, detail="Client not found")
+        if values.get("native_accounting_enabled"):
+            await ensure_native_accounting_client(session, client_id)
         await session.commit()
     d = await get_user_by_id(session, client_id)
     if not d:
@@ -1231,6 +1622,430 @@ async def delete_client(
     await session.execute(delete(submissions).where(submissions.c.client_id == client_id))
     await session.commit()
     return {"ok": True}
+
+
+# ---------- Admin: Native Accountancy Software ----------
+def serialize_native_account(row: dict) -> dict:
+    return dict(row)
+
+
+def serialize_native_contact(row: dict) -> dict:
+    row = dict(row)
+    row["raw_json"] = parse_json_object(row.get("raw_json")) or {}
+    return row
+
+
+async def native_accounting_summary(session: AsyncSession, client_id: str) -> dict:
+    journals = await many(session, select(accounting_journal_entries).where(accounting_journal_entries.c.client_id == client_id))
+    lines = await many(session, select(accounting_journal_lines).where(accounting_journal_lines.c.client_id == client_id))
+    bank_transactions = await many(session, select(accounting_bank_transactions).where(accounting_bank_transactions.c.client_id == client_id))
+    vat_returns = await many(session, select(accounting_vat_returns).where(accounting_vat_returns.c.client_id == client_id))
+    payables = Decimal("0.00")
+    receivables = Decimal("0.00")
+    vat = Decimal("0.00")
+    bank = Decimal("0.00")
+    for line in lines:
+        code = str(line.get("account_code") or "")
+        movement = money(line.get("debit")) - money(line.get("credit"))
+        if code == "2000":
+            payables += -movement
+        elif code == "1100":
+            receivables += movement
+        elif code == "2200":
+            vat += -movement
+        elif code == "1200":
+            bank += movement
+    return {
+        "journals": len(journals),
+        "payables": money_str(payables),
+        "receivables": money_str(receivables),
+        "vat": money_str(vat),
+        "vat_balance": money_str(vat),
+        "bank": money_str(bank),
+        "bank_balance": money_str(bank),
+        "bank_transactions": len(bank_transactions),
+        "unreconciled_bank_transactions": len([t for t in bank_transactions if t.get("status") != "reconciled"]),
+        "vat_returns": len(vat_returns),
+        "draft_vat_returns": len([r for r in vat_returns if r.get("status") == "draft"]),
+    }
+
+
+async def add_accounting_audit(
+    session: AsyncSession,
+    client_id: str,
+    actor_id: Optional[str],
+    action: str,
+    entity_type: str,
+    entity_id: str,
+    details: Optional[dict] = None,
+):
+    await session.execute(
+        insert(accounting_audit_log).values(
+            id=new_id(),
+            client_id=client_id,
+            actor_id=actor_id,
+            action=action,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            details_json=json.dumps(details or {}),
+            created_at=utc_now_iso(),
+        )
+    )
+
+
+def serialize_bank_transaction(row: dict) -> dict:
+    return dict(row)
+
+
+def serialize_vat_return(row: dict) -> dict:
+    row = dict(row)
+    row["prepared_json"] = parse_json_object(row.get("prepared_json")) or {}
+    return row
+
+
+def serialize_period(row: dict) -> dict:
+    return dict(row)
+
+
+def serialize_audit_event(row: dict) -> dict:
+    row = dict(row)
+    row["details_json"] = parse_json_object(row.get("details_json")) or {}
+    return row
+
+
+async def native_account_balances(session: AsyncSession, client_id: str) -> dict[str, Decimal]:
+    balances: dict[str, Decimal] = {}
+    lines = await many(session, select(accounting_journal_lines).where(accounting_journal_lines.c.client_id == client_id))
+    for line in lines:
+        code = str(line.get("account_code") or "")
+        if not code:
+            continue
+        balances[code] = balances.get(code, Decimal("0.00")) + money(line.get("debit")) - money(line.get("credit"))
+    return balances
+
+
+@api.get("/admin/accounting/clients")
+async def list_native_accounting_clients(
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    docs = await many(
+        session,
+        select(users)
+        .where(
+            users.c.role == "client",
+            or_(users.c.native_accounting_enabled == True, users.c.accounting_destination == "native"),  # noqa: E712
+        )
+        .order_by(users.c.business_name.asc()),
+    )
+    result = []
+    for doc in docs:
+        client = serialize_user(doc)
+        client["summary"] = await native_accounting_summary(session, str(doc["id"]))
+        result.append(client)
+    return {"clients": result, "modules": NATIVE_ACCOUNTING_MODULES}
+
+
+@api.get("/admin/accounting/clients/{client_id}")
+async def get_native_accounting_workspace(
+    client_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="EPOS native accounting is not enabled for this client.")
+    await ensure_native_accounting_client(session, client_id)
+    await session.commit()
+    accounts = await many(
+        session,
+        select(accounting_accounts).where(accounting_accounts.c.client_id == client_id).order_by(accounting_accounts.c.code.asc()),
+    )
+    contacts = await many(
+        session,
+        select(accounting_contacts).where(accounting_contacts.c.client_id == client_id).order_by(accounting_contacts.c.name.asc()),
+    )
+    journals = await many(
+        session,
+        select(accounting_journal_entries).where(accounting_journal_entries.c.client_id == client_id).order_by(accounting_journal_entries.c.entry_date.desc(), accounting_journal_entries.c.created_at.desc()),
+    )
+    bank_transactions = await many(
+        session,
+        select(accounting_bank_transactions).where(accounting_bank_transactions.c.client_id == client_id).order_by(accounting_bank_transactions.c.transaction_date.desc(), accounting_bank_transactions.c.created_at.desc()),
+    )
+    vat_returns = await many(
+        session,
+        select(accounting_vat_returns).where(accounting_vat_returns.c.client_id == client_id).order_by(accounting_vat_returns.c.period_end.desc(), accounting_vat_returns.c.created_at.desc()),
+    )
+    periods = await many(
+        session,
+        select(accounting_periods).where(accounting_periods.c.client_id == client_id).order_by(accounting_periods.c.period_end.desc(), accounting_periods.c.created_at.desc()),
+    )
+    audit_events = await many(
+        session,
+        select(accounting_audit_log).where(accounting_audit_log.c.client_id == client_id).order_by(accounting_audit_log.c.created_at.desc()).limit(50),
+    )
+    journal_ids = [str(j["id"]) for j in journals]
+    lines = []
+    if journal_ids:
+        lines = await many(
+            session,
+            select(accounting_journal_lines).where(accounting_journal_lines.c.entry_id.in_(journal_ids)).order_by(accounting_journal_lines.c.created_at.asc()),
+        )
+    lines_by_entry: dict[str, list[dict]] = {}
+    for line in lines:
+        lines_by_entry.setdefault(str(line["entry_id"]), []).append(line)
+    for journal in journals:
+        journal["lines"] = lines_by_entry.get(str(journal["id"]), [])
+    return {
+        "client": serialize_user(client),
+        "modules": NATIVE_ACCOUNTING_MODULES,
+        "summary": await native_accounting_summary(session, client_id),
+        "accounts": [serialize_native_account(a) for a in accounts],
+        "contacts": [serialize_native_contact(c) for c in contacts],
+        "journals": journals,
+        "bank_transactions": [serialize_bank_transaction(t) for t in bank_transactions],
+        "vat_returns": [serialize_vat_return(r) for r in vat_returns],
+        "periods": [serialize_period(p) for p in periods],
+        "audit_log": [serialize_audit_event(e) for e in audit_events],
+    }
+
+
+@api.post("/admin/accounting/clients/{client_id}/accounts")
+async def create_native_account(
+    client_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before adding accounts.")
+    code = str(payload.get("code") or "").strip()
+    name = str(payload.get("name") or "").strip()
+    if not code or not name:
+        raise HTTPException(status_code=400, detail="Account code and name are required.")
+    existing = await one(session, select(accounting_accounts).where(accounting_accounts.c.client_id == client_id, accounting_accounts.c.code == code))
+    if existing:
+        raise HTTPException(status_code=400, detail="An account with this code already exists.")
+    now = utc_now_iso()
+    row = {
+        "id": new_id(),
+        "client_id": client_id,
+        "code": code,
+        "name": name,
+        "account_type": str(payload.get("account_type") or payload.get("type") or "expense").strip(),
+        "normal_balance": str(payload.get("normal_balance") or "debit").strip().lower(),
+        "control_account": bool(payload.get("control_account")),
+        "active": bool(payload.get("active", True)),
+        "created_at": now,
+        "updated_at": now,
+    }
+    await session.execute(insert(accounting_accounts).values(**row))
+    await add_accounting_audit(session, client_id, user.get("id"), "account_created", "account", row["id"], {"code": code, "name": name})
+    await session.commit()
+    return serialize_native_account(row)
+
+
+@api.post("/admin/accounting/clients/{client_id}/bank-transactions")
+async def create_native_bank_transaction(
+    client_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before adding bank transactions.")
+    money_in = money(payload.get("money_in"))
+    money_out = money(payload.get("money_out"))
+    if money_in == Decimal("0.00") and money_out == Decimal("0.00"):
+        raise HTTPException(status_code=400, detail="Enter money in or money out.")
+    if money_in != Decimal("0.00") and money_out != Decimal("0.00"):
+        raise HTTPException(status_code=400, detail="A bank transaction cannot have both money in and money out.")
+    now = utc_now_iso()
+    row = {
+        "id": new_id(),
+        "client_id": client_id,
+        "bank_account_code": str(payload.get("bank_account_code") or "1200"),
+        "transaction_date": str(payload.get("transaction_date") or datetime.now(timezone.utc).date().isoformat()),
+        "description": str(payload.get("description") or "").strip(),
+        "reference": str(payload.get("reference") or "").strip(),
+        "money_in": money_str(money_in),
+        "money_out": money_str(money_out),
+        "status": "unreconciled",
+        "created_at": now,
+        "updated_at": now,
+    }
+    await session.execute(insert(accounting_bank_transactions).values(**row))
+    await add_accounting_audit(session, client_id, user.get("id"), "bank_transaction_created", "bank_transaction", row["id"], row)
+    await session.commit()
+    return serialize_bank_transaction(row)
+
+
+@api.post("/admin/accounting/clients/{client_id}/bank-transactions/{transaction_id}/reconcile")
+async def reconcile_native_bank_transaction(
+    client_id: str,
+    transaction_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before reconciling bank transactions.")
+    transaction = await one(
+        session,
+        select(accounting_bank_transactions).where(
+            accounting_bank_transactions.c.client_id == client_id,
+            accounting_bank_transactions.c.id == transaction_id,
+        ),
+    )
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Bank transaction not found")
+    if transaction.get("status") == "reconciled":
+        raise HTTPException(status_code=400, detail="Bank transaction is already reconciled")
+    accounts = await ensure_native_accounting_client(session, client_id)
+    bank_account = find_native_account(accounts, None, transaction.get("bank_account_code") or "1200")
+    matched_account = find_native_account(accounts, payload.get("account_name") or payload.get("account_code"), payload.get("account_code") or "5000")
+    contact_name = str(payload.get("contact_name") or transaction.get("description") or "Bank contact").strip()
+    contact_type = str(payload.get("contact_type") or ("customer" if money(transaction.get("money_in")) else "supplier"))
+    contact = await get_or_create_native_contact(session, client_id, contact_name, contact_type)
+    amount_in = money(transaction.get("money_in"))
+    amount_out = money(transaction.get("money_out"))
+    description = str(payload.get("description") or transaction.get("description") or "Bank reconciliation")
+    if amount_in:
+        lines = [
+            {"account": bank_account, "contact": contact, "debit": money_str(amount_in), "credit": "0.00", "description": description},
+            {"account": matched_account, "contact": contact, "debit": "0.00", "credit": money_str(amount_in), "description": description},
+        ]
+    else:
+        lines = [
+            {"account": matched_account, "contact": contact, "debit": money_str(amount_out), "credit": "0.00", "description": description},
+            {"account": bank_account, "contact": contact, "debit": "0.00", "credit": money_str(amount_out), "description": description},
+        ]
+    journal = await post_native_journal(
+        session,
+        client_id=client_id,
+        source_type="bank_transaction",
+        source_id=transaction_id,
+        entry_date=transaction.get("transaction_date"),
+        reference=str(payload.get("reference") or transaction.get("reference") or transaction_id),
+        description=description,
+        lines=lines,
+        actor_id=user.get("id"),
+    )
+    await session.execute(
+        update(accounting_bank_transactions)
+        .where(accounting_bank_transactions.c.id == transaction_id)
+        .values(
+            status="reconciled",
+            matched_contact_id=contact.get("id"),
+            matched_account_code=matched_account.get("code"),
+            journal_entry_id=journal.get("id"),
+            updated_at=utc_now_iso(),
+        )
+    )
+    await add_accounting_audit(session, client_id, user.get("id"), "bank_transaction_reconciled", "bank_transaction", transaction_id, {"journal_id": journal.get("id")})
+    await session.commit()
+    return {"ok": True, "journal": journal}
+
+
+@api.post("/admin/accounting/clients/{client_id}/vat-returns/prepare")
+async def prepare_native_vat_return(
+    client_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before preparing VAT returns.")
+    period_start = str(payload.get("period_start") or "").strip()
+    period_end = str(payload.get("period_end") or "").strip()
+    if not period_start or not period_end:
+        raise HTTPException(status_code=400, detail="Period start and end are required.")
+    journals = await many(
+        session,
+        select(accounting_journal_entries).where(
+            accounting_journal_entries.c.client_id == client_id,
+            accounting_journal_entries.c.entry_date >= period_start,
+            accounting_journal_entries.c.entry_date <= period_end,
+            accounting_journal_entries.c.status == "posted",
+        ),
+    )
+    journal_ids = [str(j["id"]) for j in journals]
+    lines = []
+    if journal_ids:
+        lines = await many(session, select(accounting_journal_lines).where(accounting_journal_lines.c.entry_id.in_(journal_ids)))
+    vat_due_sales = Decimal("0.00")
+    vat_reclaimed_purchases = Decimal("0.00")
+    sales_net = Decimal("0.00")
+    purchase_net = Decimal("0.00")
+    for line in lines:
+        code = str(line.get("account_code") or "")
+        debit = money(line.get("debit"))
+        credit = money(line.get("credit"))
+        if code == "2200":
+            if credit:
+                vat_due_sales += credit
+            if debit:
+                vat_reclaimed_purchases += debit
+        elif code.startswith("4"):
+            sales_net += credit - debit
+        elif code.startswith("5"):
+            purchase_net += debit - credit
+    now = utc_now_iso()
+    row = {
+        "id": new_id(),
+        "client_id": client_id,
+        "period_start": period_start,
+        "period_end": period_end,
+        "status": "draft",
+        "vat_due_sales": money_str(vat_due_sales),
+        "vat_reclaimed_purchases": money_str(vat_reclaimed_purchases),
+        "net_vat_due": money_str(vat_due_sales - vat_reclaimed_purchases),
+        "sales_net": money_str(sales_net),
+        "purchase_net": money_str(purchase_net),
+        "prepared_json": json.dumps({"journal_count": len(journals), "line_count": len(lines)}),
+        "created_at": now,
+        "updated_at": now,
+    }
+    await session.execute(insert(accounting_vat_returns).values(**row))
+    await add_accounting_audit(session, client_id, user.get("id"), "vat_return_prepared", "vat_return", row["id"], row)
+    await session.commit()
+    return serialize_vat_return(row)
+
+
+@api.post("/admin/accounting/clients/{client_id}/periods")
+async def create_native_accounting_period(
+    client_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before adding accounting periods.")
+    period_start = str(payload.get("period_start") or "").strip()
+    period_end = str(payload.get("period_end") or "").strip()
+    if not period_start or not period_end:
+        raise HTTPException(status_code=400, detail="Period start and end are required.")
+    now = utc_now_iso()
+    row = {
+        "id": new_id(),
+        "client_id": client_id,
+        "period_start": period_start,
+        "period_end": period_end,
+        "status": str(payload.get("status") or "open"),
+        "notes": str(payload.get("notes") or ""),
+        "created_at": now,
+        "updated_at": now,
+    }
+    await session.execute(insert(accounting_periods).values(**row))
+    await add_accounting_audit(session, client_id, user.get("id"), "period_created", "accounting_period", row["id"], row)
+    await session.commit()
+    return serialize_period(row)
 
 
 @api.get("/admin/companies-house/search")
@@ -2384,6 +3199,164 @@ async def publish_submission_to_quickbooks(session: AsyncSession, submission: di
         "attached_id": (attachable or {}).get("Id"),
         "synced_at": utc_now_iso(),
     }
+
+
+async def publish_submission_to_native_accounting(
+    session: AsyncSession,
+    submission: dict,
+    coding_fields: dict,
+    actor_id: Optional[str] = None,
+) -> dict:
+    client_id = str(submission["client_id"])
+    client = await get_user_by_id(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting on this client before publishing internally.")
+    existing = await one(
+        session,
+        select(accounting_journal_entries).where(
+            accounting_journal_entries.c.client_id == client_id,
+            accounting_journal_entries.c.source_type == "submission",
+            accounting_journal_entries.c.source_id == str(submission["id"]),
+            accounting_journal_entries.c.status == "posted",
+        ),
+    )
+    if existing:
+        return {
+            "provider": "epos_native",
+            "entity": "JournalEntry",
+            "id": existing["id"],
+            "reference": existing.get("reference"),
+            "total_debit": existing.get("total_debit"),
+            "total_credit": existing.get("total_credit"),
+            "posted_at": existing.get("posted_at"),
+            "already_posted": True,
+        }
+
+    accounts = await ensure_native_accounting_client(session, client_id)
+    doc_type = (submission.get("type") or "purchase").lower()
+    is_sales = doc_type == "sales"
+    contact_type = "customer" if is_sales else "supplier"
+    contact_name = coding_fields.get("customer_name") if is_sales else coding_fields.get("vendor_name")
+    contact_name = contact_name or coding_fields.get("vendor_name") or coding_fields.get("customer_name") or submission.get("client_business_name") or ""
+    contact = await get_or_create_native_contact(session, client_id, contact_name, contact_type)
+
+    control_account = find_native_account(accounts, None, "1100" if is_sales else "2000")
+    vat_account = find_native_account(accounts, None, "2200")
+    default_nominal = find_native_account(accounts, coding_fields.get("category"), "4000" if is_sales else "5000")
+
+    vat_amount = money(coding_fields.get("vat"))
+    total_amount = money(coding_fields.get("total") or coding_fields.get("gross") or submission.get("amount"))
+    net_amount = money(coding_fields.get("net"))
+    if net_amount == Decimal("0.00") and total_amount != Decimal("0.00"):
+        net_amount = total_amount - vat_amount
+    if total_amount == Decimal("0.00"):
+        total_amount = net_amount + vat_amount
+    if net_amount == Decimal("0.00") and vat_amount == Decimal("0.00"):
+        raise HTTPException(status_code=400, detail="Add a net/total value before publishing to EPOS Accounting.")
+
+    line_items = coding_fields.get("line_items") if isinstance(coding_fields.get("line_items"), list) else []
+    journal_lines: list[dict] = []
+    line_net_total = Decimal("0.00")
+    for line in line_items:
+        line_net = money(line.get("net") or line.get("total") or line.get("price"))
+        if line_net == Decimal("0.00"):
+            continue
+        line_account = find_native_account(accounts, line.get("category") or coding_fields.get("category"), default_nominal["code"])
+        line_net_total += line_net
+        journal_lines.append(
+            {
+                "account": line_account,
+                "contact": contact,
+                "debit": "0.00" if is_sales else money_str(line_net),
+                "credit": money_str(line_net) if is_sales else "0.00",
+                "vat_code": line.get("vat_code") or coding_fields.get("vat_code"),
+                "description": line.get("description") or coding_fields.get("description") or submission.get("description"),
+            }
+        )
+    if not journal_lines:
+        journal_lines.append(
+            {
+                "account": default_nominal,
+                "contact": contact,
+                "debit": "0.00" if is_sales else money_str(net_amount),
+                "credit": money_str(net_amount) if is_sales else "0.00",
+                "vat_code": coding_fields.get("vat_code"),
+                "description": coding_fields.get("description") or submission.get("description"),
+            }
+        )
+    elif line_net_total != net_amount and net_amount != Decimal("0.00"):
+        balancing_net = net_amount - line_net_total
+        if balancing_net != Decimal("0.00"):
+            debit_adjustment = Decimal("0.00")
+            credit_adjustment = Decimal("0.00")
+            if is_sales:
+                if balancing_net >= Decimal("0.00"):
+                    credit_adjustment = balancing_net
+                else:
+                    debit_adjustment = abs(balancing_net)
+            else:
+                if balancing_net >= Decimal("0.00"):
+                    debit_adjustment = balancing_net
+                else:
+                    credit_adjustment = abs(balancing_net)
+            journal_lines.append(
+                {
+                    "account": default_nominal,
+                    "contact": contact,
+                    "debit": money_str(debit_adjustment),
+                    "credit": money_str(credit_adjustment),
+                    "vat_code": coding_fields.get("vat_code"),
+                    "description": "Header/line balancing adjustment",
+                }
+            )
+
+    if vat_amount != Decimal("0.00"):
+        journal_lines.append(
+            {
+                "account": vat_account,
+                "contact": contact,
+                "debit": "0.00" if is_sales else money_str(vat_amount),
+                "credit": money_str(vat_amount) if is_sales else "0.00",
+                "vat_code": coding_fields.get("vat_code"),
+                "description": "VAT",
+            }
+        )
+
+    journal_lines.append(
+        {
+            "account": control_account,
+            "contact": contact,
+            "debit": money_str(total_amount) if is_sales else "0.00",
+            "credit": "0.00" if is_sales else money_str(total_amount),
+            "vat_code": coding_fields.get("vat_code"),
+            "description": coding_fields.get("description") or submission.get("description"),
+        }
+    )
+
+    reference = str(coding_fields.get("bill_number") or coding_fields.get("invoice_number") or coding_fields.get("reference") or submission.get("description") or submission["id"])
+    return await post_native_journal(
+        session,
+        client_id=client_id,
+        source_type="submission",
+        source_id=str(submission["id"]),
+        entry_date=submission_entry_date(submission, coding_fields),
+        reference=reference,
+        description=str(coding_fields.get("description") or submission.get("description") or "Published document"),
+        lines=journal_lines,
+        actor_id=actor_id,
+    )
+
+
+async def publish_submission_to_accounting_destination(
+    session: AsyncSession,
+    submission: dict,
+    coding_fields: dict,
+    actor_id: Optional[str] = None,
+) -> dict:
+    client = await get_user_by_id(session, str(submission["client_id"]))
+    if is_native_accounting_client(client):
+        return await publish_submission_to_native_accounting(session, submission, coding_fields, actor_id)
+    return await publish_submission_to_quickbooks(session, submission, coding_fields)
 
 
 @api.post("/admin/integrations/clients/{client_id}/records")
@@ -4423,13 +5396,17 @@ async def update_submission_review_status(
     values = {"review_status": status, "reviewed_at": utc_now_iso()}
     memory_updated = False
     supplier_name = ""
-    quickbooks_publish = None
+    accounting_publish = None
     if payload.coding_fields is not None:
         coding_fields = dict(payload.coding_fields)
         supplier_name = str(coding_fields.get("vendor_name") or "").strip()
         if status == "published":
-            quickbooks_publish = await publish_submission_to_quickbooks(session, existing_submission, coding_fields)
-            coding_fields["quickbooks_publish"] = quickbooks_publish
+            accounting_publish = await publish_submission_to_accounting_destination(session, existing_submission, coding_fields, str(user.get("id")))
+            coding_fields["accounting_publish"] = accounting_publish
+            if accounting_publish.get("provider") == "quickbooks":
+                coding_fields["quickbooks_publish"] = accounting_publish
+            if accounting_publish.get("provider") == "epos_native":
+                coding_fields["native_accounting_publish"] = accounting_publish
         values["coding_fields"] = json.dumps(coding_fields)
         memory_updated = status == "published"
     result = await session.execute(
@@ -4446,7 +5423,8 @@ async def update_submission_review_status(
         "review_status": status,
         "memory_updated": memory_updated,
         "supplier_name": supplier_name,
-        "quickbooks_publish": quickbooks_publish,
+        "accounting_publish": accounting_publish,
+        "quickbooks_publish": accounting_publish if accounting_publish and accounting_publish.get("provider") == "quickbooks" else None,
     }
 
 
