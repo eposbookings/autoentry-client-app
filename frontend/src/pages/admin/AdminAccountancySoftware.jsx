@@ -74,10 +74,10 @@ const MODULE_DETAILS = {
   },
   receivables: {
     title: "Accounts Receivable",
-    manage: ["Customers", "Sales Invoices", "Credit Notes", "Customer Payments"],
+    manage: ["Customers", "Sales Invoices", "Credit Notes", "Receipts", "Aged Debtors"],
     statLabel: "Outstanding invoices",
-    stat: (workspace) => Math.abs(Number(workspace?.summary?.receivables || 0)).toLocaleString("en-GB", { style: "currency", currency: "GBP" }),
-    tabs: ["Customers", "Sales Invoices", "Credit Notes", "Payments", "Statements", "Reports"],
+    stat: (workspace) => formatMoney(workspace?.accounts_receivable?.dashboard?.outstanding_total || workspace?.summary?.ar_outstanding || workspace?.summary?.receivables || 0),
+    tabs: ["Dashboard", "Customers", "Sales Invoices", "Credit Notes", "Receipts", "Customer Statements", "Aged Debtors", "Reports", "Settings"],
   },
   banking: {
     title: "Banking",
@@ -647,11 +647,7 @@ function ModuleWorkspace(props) {
     }
 
     if (module === "receivables") {
-      if (moduleTab === "Customers") {
-        return <ContactsWorkspace contacts={workspace.contacts} form={contactForm} setForm={setContactForm} createContact={createContact} busy={busy} typeFilter="customer" title="Customers" />;
-      }
-      if (moduleTab === "Sales Invoices") return <LedgerView title="Sales invoices" journals={workspace.journals} accountCodes={["1100"]} />;
-      return <PlaceholderModulePanel title={moduleTab} moduleTitle={detail.title} />;
+      return <AccountsReceivableWorkspace workspace={workspace} tab={moduleTab} reloadWorkspace={reloadWorkspace} busy={busy} />;
     }
 
     if (module === "banking") {
@@ -1462,6 +1458,463 @@ function BankReportLine({ label, value }) {
       <strong className="font-display text-stone-900">{value}</strong>
     </div>
   );
+}
+
+const EMPTY_AR_LINE = { description: "", nominal_account_code: "4000", quantity: "1", unit_price: "", discount_amount: "", net_amount: "", vat_amount: "", gross_amount: "", vat_code: "" };
+
+function AccountsReceivableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
+  const ar = workspace.accounts_receivable || {};
+  const customers = ar.customers || [];
+  const invoices = ar.invoices || [];
+  const creditNotes = ar.credit_notes || [];
+  const receipts = ar.receipts || [];
+  const accounts = workspace.accounts || [];
+  const bankAccounts = accounts.filter((account) => account.purpose === "Bank Account" || account.account_type === "Bank");
+  const incomeAccounts = accounts.filter((account) => account.category === "Income" || account.account_type === "Sales");
+  const [saving, setSaving] = useState(false);
+  const [customerQuery, setCustomerQuery] = useState("");
+  const [statementCustomerId, setStatementCustomerId] = useState("");
+  const emptyCustomerForm = { business_name: "", customer_code: "", trading_name: "", email: "", phone: "", website: "", vat_number: "", company_number: "", payment_terms_days: "30", default_currency: "GBP", default_sales_account: "4000", default_vat_code: "", credit_limit: "", notes: "" };
+  const [customerForm, setCustomerForm] = useState(emptyCustomerForm);
+  const [invoiceForm, setInvoiceForm] = useState({ customer_id: "", invoice_number: "", reference: "", invoice_date: "", due_date: "", currency: "GBP", lines: [{ ...EMPTY_AR_LINE }] });
+  const [creditForm, setCreditForm] = useState({ customer_id: "", credit_note_number: "", reference: "", credit_note_date: "", currency: "GBP", lines: [{ ...EMPTY_AR_LINE }] });
+  const [receiptForm, setReceiptForm] = useState({ customer_id: "", receipt_date: "", reference: "", payment_method: "Bank Transfer", bank_account_code: bankAccounts[0]?.code || "1200", amount: "", invoice_id: "" });
+  const [settingsForm, setSettingsForm] = useState(ar.settings || {});
+
+  useEffect(() => {
+    setSettingsForm(ar.settings || {});
+  }, [ar.settings]);
+
+  const visibleCustomers = customers.filter((customer) => {
+    const needle = customerQuery.trim().toLowerCase();
+    if (!needle) return true;
+    return `${customer.name || ""} ${customer.trading_name || ""} ${customer.customer_code || ""} ${customer.email || ""}`.toLowerCase().includes(needle);
+  });
+
+  async function run(action, success) {
+    setSaving(true);
+    try {
+      await action();
+      toast.success(success);
+      await reloadWorkspace();
+    } catch (e) {
+      toast.error(formatApiError(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const postJson = (url, payload) => api.post(`/admin/accounting/clients/${workspace.client.id}${url}`, payload);
+  const putJson = (url, payload) => api.put(`/admin/accounting/clients/${workspace.client.id}${url}`, payload);
+
+  async function createCustomer(e) {
+    e.preventDefault();
+    if (!customerForm.business_name.trim()) return toast.error("Customer business name is required");
+    await run(async () => postJson("/ar/customers", customerForm), "Customer created");
+    setCustomerForm(emptyCustomerForm);
+  }
+
+  async function createInvoice(e) {
+    e.preventDefault();
+    if (!invoiceForm.customer_id) return toast.error("Customer is required");
+    await run(async () => postJson("/ar/invoices", invoiceForm), "Sales invoice created");
+    setInvoiceForm({ customer_id: "", invoice_number: "", reference: "", invoice_date: "", due_date: "", currency: "GBP", lines: [{ ...EMPTY_AR_LINE }] });
+  }
+
+  async function approveInvoice(invoice) {
+    await run(async () => postJson(`/ar/invoices/${invoice.id}/approve`, {}), "Sales invoice approved");
+  }
+
+  async function postInvoice(invoice) {
+    await run(async () => postJson(`/ar/invoices/${invoice.id}/post`, {}), "Sales invoice posted to the ledger");
+  }
+
+  async function archiveInvoice(invoice) {
+    await run(async () => postJson(`/ar/invoices/${invoice.id}/archive`, {}), "Sales invoice archived");
+  }
+
+  async function createCreditNote(e) {
+    e.preventDefault();
+    if (!creditForm.customer_id || !creditForm.credit_note_number.trim()) return toast.error("Customer and credit note number are required");
+    await run(async () => postJson("/ar/credit-notes", creditForm), "Customer credit note created");
+    setCreditForm({ customer_id: "", credit_note_number: "", reference: "", credit_note_date: "", currency: "GBP", lines: [{ ...EMPTY_AR_LINE }] });
+  }
+
+  async function postCreditNote(creditNote) {
+    await run(async () => postJson(`/ar/credit-notes/${creditNote.id}/post`, {}), "Customer credit note posted");
+  }
+
+  async function createReceipt(e) {
+    e.preventDefault();
+    if (!receiptForm.customer_id || !receiptForm.amount) return toast.error("Customer and receipt amount are required");
+    const allocations = receiptForm.invoice_id ? [{ invoice_id: receiptForm.invoice_id, amount: receiptForm.amount }] : [];
+    await run(async () => postJson("/ar/receipts", { ...receiptForm, allocations }), "Customer receipt posted");
+    setReceiptForm({ customer_id: "", receipt_date: "", reference: "", payment_method: "Bank Transfer", bank_account_code: bankAccounts[0]?.code || "1200", amount: "", invoice_id: "" });
+  }
+
+  async function saveSettings(e) {
+    e.preventDefault();
+    await run(async () => putJson("/ar/settings", settingsForm), "Accounts Receivable settings saved");
+  }
+
+  if (tab === "Dashboard") {
+    const dashboard = ar.dashboard || {};
+    const salesSummary = ar.sales_summary || {};
+    return (
+      <div className="space-y-4">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+          <SummaryCard label="Outstanding invoices" value={dashboard.outstanding_invoices || 0} tone="amber" />
+          <SummaryCard label="Overdue invoices" value={dashboard.overdue_invoices || 0} tone="amber" />
+          <SummaryCard label="Customers with balances" value={dashboard.customers_with_balances || 0} tone="blue" />
+          <SummaryCard label="Receipts this month" value={formatMoney(dashboard.receipts_this_month)} tone="emerald" />
+          <SummaryCard label="Average collection days" value={dashboard.average_collection_days || 0} tone="stone" />
+          <SummaryCard label="Sales this month" value={formatMoney(dashboard.sales_this_month)} tone="emerald" />
+        </div>
+        <div className="grid gap-4 xl:grid-cols-2">
+          <Panel title="Overdue invoices">
+            {(ar.overdue_invoices || []).length === 0 ? <p className="py-8 text-center text-sm text-stone-500">No overdue invoices.</p> : (ar.overdue_invoices || []).slice(0, 8).map((invoice) => (
+              <div key={invoice.id} className="flex items-center justify-between border-b border-stone-100 py-2 last:border-0">
+                <div><strong>{invoice.customer_name}</strong><div className="text-xs text-stone-500">{invoice.invoice_number} - due {formatDate(invoice.due_date)}</div></div>
+                <div className="text-right"><div className="font-semibold">{formatMoney(invoice.outstanding_amount)}</div><div className="text-xs text-amber-700">{invoice.days_overdue} days overdue</div></div>
+              </div>
+            ))}
+          </Panel>
+          <Panel title="Customers requiring attention">
+            {(ar.customers_requiring_attention || []).length === 0 ? <p className="py-8 text-center text-sm text-stone-500">No customers need attention.</p> : (ar.customers_requiring_attention || []).slice(0, 8).map((customer) => (
+              <div key={customer.customer_id} className="flex items-center justify-between border-b border-stone-100 py-2 last:border-0">
+                <div><strong>{customer.customer_name}</strong><div className="text-xs text-stone-500">{(customer.reasons || []).join(", ")}</div></div>
+                <strong>{formatMoney(customer.balance)}</strong>
+              </div>
+            ))}
+          </Panel>
+          <Panel title="Recent activity">
+            {(ar.recent_activity || []).length === 0 ? <p className="py-8 text-center text-sm text-stone-500">No Accounts Receivable activity yet.</p> : (ar.recent_activity || []).slice(0, 10).map((item, index) => (
+              <div key={`${item.type}-${item.description}-${index}`} className="flex items-center justify-between border-b border-stone-100 py-2 last:border-0">
+                <div><strong>{item.type}</strong><div className="text-xs text-stone-500">{item.description || "-"} - {formatDateTime(item.date)}</div></div>
+                {item.amount && <span>{formatMoney(item.amount)}</span>}
+              </div>
+            ))}
+          </Panel>
+          <Panel title="Sales summary">
+            <div className="divide-y divide-stone-100">
+              <BankReportLine label="Today" value={formatMoney(salesSummary.today)} />
+              <BankReportLine label="This week" value={formatMoney(salesSummary.this_week)} />
+              <BankReportLine label="This month" value={formatMoney(salesSummary.this_month)} />
+              <BankReportLine label="Financial year" value={formatMoney(salesSummary.financial_year)} />
+            </div>
+          </Panel>
+        </div>
+      </div>
+    );
+  }
+
+  if (tab === "Customers") {
+    return (
+      <div className="grid gap-4 xl:grid-cols-[1fr_390px]">
+        <Panel title="Customer master file">
+          <Input className="mb-3 h-9" value={customerQuery} onChange={(e) => setCustomerQuery(e.target.value)} placeholder="Search customers by name, code or email" />
+          <div className="overflow-auto">
+            <table className="min-w-full text-left text-sm">
+              <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
+                <tr><th className="px-3 py-2">Code</th><th className="px-3 py-2">Customer</th><th className="px-3 py-2">VAT</th><th className="px-3 py-2">Terms</th><th className="px-3 py-2">Credit limit</th><th className="px-3 py-2 text-right">Balance</th><th className="px-3 py-2">Status</th></tr>
+              </thead>
+              <tbody>
+                {visibleCustomers.map((customer) => (
+                  <tr key={customer.id} className="border-t border-stone-100">
+                    <td className="px-3 py-2 text-stone-600">{customer.customer_code || "-"}</td>
+                    <td className="px-3 py-2"><strong>{customer.name}</strong><div className="text-xs text-stone-500">{customer.email || customer.trading_name || "-"}</div></td>
+                    <td className="px-3 py-2 text-stone-600">{customer.vat_number || "-"}</td>
+                    <td className="px-3 py-2 text-stone-600">{customer.payment_terms_days || 0} days</td>
+                    <td className="px-3 py-2 text-stone-600">{formatMoney(customer.credit_limit)}</td>
+                    <td className="px-3 py-2 text-right font-semibold">{formatMoney(customer.outstanding_balance)}</td>
+                    <td className="px-3 py-2"><Badge className={customer.status === "active" ? "bg-emerald-100 text-emerald-800" : "bg-stone-100 text-stone-700"}>{customer.status || "active"}</Badge></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+        <Panel title="Create customer">
+          <form onSubmit={createCustomer} className="space-y-3">
+            <Field label="Business name" value={customerForm.business_name} onChange={(value) => setCustomerForm((current) => ({ ...current, business_name: value }))} />
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="Customer code" value={customerForm.customer_code} onChange={(value) => setCustomerForm((current) => ({ ...current, customer_code: value }))} />
+              <Field label="Payment terms" value={customerForm.payment_terms_days} onChange={(value) => setCustomerForm((current) => ({ ...current, payment_terms_days: value }))} />
+            </div>
+            <Field label="Trading name" value={customerForm.trading_name} onChange={(value) => setCustomerForm((current) => ({ ...current, trading_name: value }))} />
+            <Field label="Email" type="email" value={customerForm.email} onChange={(value) => setCustomerForm((current) => ({ ...current, email: value }))} />
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="Phone" value={customerForm.phone} onChange={(value) => setCustomerForm((current) => ({ ...current, phone: value }))} />
+              <Field label="Website" value={customerForm.website} onChange={(value) => setCustomerForm((current) => ({ ...current, website: value }))} />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="Company number" value={customerForm.company_number} onChange={(value) => setCustomerForm((current) => ({ ...current, company_number: value }))} />
+              <Field label="VAT number" value={customerForm.vat_number} onChange={(value) => setCustomerForm((current) => ({ ...current, vat_number: value }))} />
+            </div>
+            <AccountCodeSelect label="Default sales account" accounts={incomeAccounts} value={customerForm.default_sales_account} onChange={(value) => setCustomerForm((current) => ({ ...current, default_sales_account: value }))} />
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="Default VAT code" value={customerForm.default_vat_code} onChange={(value) => setCustomerForm((current) => ({ ...current, default_vat_code: value }))} />
+              <Field label="Credit limit" value={customerForm.credit_limit} onChange={(value) => setCustomerForm((current) => ({ ...current, credit_limit: value }))} />
+            </div>
+            <Button disabled={busy || saving} className="w-full gap-2" style={{ background: "var(--brand)" }}><Plus className="h-4 w-4" /> Create customer</Button>
+          </form>
+        </Panel>
+      </div>
+    );
+  }
+
+  if (tab === "Sales Invoices") {
+    return (
+      <div className="grid gap-4 xl:grid-cols-[1fr_440px]">
+        <ArRegister
+          title="Sales invoices"
+          rows={invoices}
+          numberKey="invoice_number"
+          dateKey="invoice_date"
+          amountKey="gross_amount"
+          empty="No sales invoices yet."
+          actions={(invoice) => (
+            <div className="flex justify-end gap-2">
+              {invoice.status === "awaiting_approval" && <Button size="sm" variant="outline" disabled={saving} onClick={() => approveInvoice(invoice)}>Approve</Button>}
+              {!invoice.posted_journal_id && (invoice.status === "approved" || !ar.settings?.approval_required) && <Button size="sm" disabled={saving} onClick={() => postInvoice(invoice)} style={{ background: "var(--brand)" }}>Post</Button>}
+              {(invoice.status === "posted" || invoice.status === "paid" || invoice.status === "part_paid") && <Button size="sm" variant="outline" disabled={saving} onClick={() => archiveInvoice(invoice)}>Archive</Button>}
+            </div>
+          )}
+        />
+        <ArDocumentForm title="Create sales invoice" form={invoiceForm} setForm={setInvoiceForm} customers={customers} accounts={incomeAccounts} onSubmit={createInvoice} button="Create invoice" busy={busy || saving} numberKey="invoice_number" dateKey="invoice_date" />
+      </div>
+    );
+  }
+
+  if (tab === "Credit Notes") {
+    return (
+      <div className="grid gap-4 xl:grid-cols-[1fr_440px]">
+        <ArRegister
+          title="Customer credit notes"
+          rows={creditNotes}
+          numberKey="credit_note_number"
+          dateKey="credit_note_date"
+          amountKey="gross_amount"
+          empty="No customer credit notes yet."
+          actions={(creditNote) => !creditNote.posted_journal_id && <Button size="sm" disabled={saving} onClick={() => postCreditNote(creditNote)} style={{ background: "var(--brand)" }}>Post</Button>}
+        />
+        <ArDocumentForm title="Create customer credit note" form={creditForm} setForm={setCreditForm} customers={customers} accounts={incomeAccounts} onSubmit={createCreditNote} button="Create credit note" busy={busy || saving} numberKey="credit_note_number" dateKey="credit_note_date" />
+      </div>
+    );
+  }
+
+  if (tab === "Receipts") {
+    const customerInvoices = invoices.filter((invoice) => invoice.customer_id === receiptForm.customer_id && Number(invoice.outstanding_amount || 0) > 0);
+    return (
+      <div className="grid gap-4 xl:grid-cols-[1fr_390px]">
+        <ArRegister title="Customer receipts" rows={receipts} numberKey="reference" dateKey="receipt_date" amountKey="amount" empty="No customer receipts yet." />
+        <Panel title="Receive money">
+          <form onSubmit={createReceipt} className="space-y-3">
+            <CustomerSelect customers={customers} value={receiptForm.customer_id} onChange={(value) => setReceiptForm((current) => ({ ...current, customer_id: value, invoice_id: "" }))} />
+            <Field label="Receipt date" type="date" value={receiptForm.receipt_date} onChange={(value) => setReceiptForm((current) => ({ ...current, receipt_date: value }))} />
+            <Field label="Reference" value={receiptForm.reference} onChange={(value) => setReceiptForm((current) => ({ ...current, reference: value }))} />
+            <SelectField label="Payment method" value={receiptForm.payment_method} onChange={(value) => setReceiptForm((current) => ({ ...current, payment_method: value }))} options={["Bank Transfer", "Card", "Cash", "Cheque", "Direct Debit"]} />
+            <AccountCodeSelect label="Bank account" accounts={bankAccounts} value={receiptForm.bank_account_code} onChange={(value) => setReceiptForm((current) => ({ ...current, bank_account_code: value }))} />
+            <div>
+              <Label className="text-xs font-semibold text-stone-600">Allocate to invoice</Label>
+              <select value={receiptForm.invoice_id} onChange={(e) => {
+                const invoice = invoices.find((item) => item.id === e.target.value);
+                setReceiptForm((current) => ({ ...current, invoice_id: e.target.value, amount: invoice?.outstanding_amount || current.amount }));
+              }} className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm">
+                <option value="">Oldest invoices automatically</option>
+                {customerInvoices.map((invoice) => <option key={invoice.id} value={invoice.id}>{invoice.invoice_number} - {formatMoney(invoice.outstanding_amount)}</option>)}
+              </select>
+            </div>
+            <Field label="Amount" value={receiptForm.amount} onChange={(value) => setReceiptForm((current) => ({ ...current, amount: value }))} />
+            <Button disabled={busy || saving} className="w-full" style={{ background: "var(--brand)" }}>Post receipt</Button>
+          </form>
+        </Panel>
+      </div>
+    );
+  }
+
+  if (tab === "Customer Statements") {
+    const rows = statementCustomerId ? arStatementRows(statementCustomerId, invoices, creditNotes, receipts) : [];
+    return (
+      <Panel title="Customer statement">
+        <div className="mb-3 max-w-lg"><CustomerSelect customers={customers} value={statementCustomerId} onChange={setStatementCustomerId} /></div>
+        {rows.length === 0 ? <p className="py-8 text-center text-sm text-stone-500">Select a customer to view statement activity.</p> : (
+          <div className="overflow-auto">
+            <table className="min-w-full text-left text-sm">
+              <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500"><tr><th className="px-3 py-2">Date</th><th className="px-3 py-2">Type</th><th className="px-3 py-2">Reference</th><th className="px-3 py-2 text-right">Debit</th><th className="px-3 py-2 text-right">Credit</th><th className="px-3 py-2 text-right">Balance</th></tr></thead>
+              <tbody>{rows.map((row, index) => <tr key={`${row.type}-${row.id}-${index}`} className="border-t border-stone-100"><td className="px-3 py-2">{formatDate(row.date)}</td><td className="px-3 py-2">{row.type}</td><td className="px-3 py-2">{row.reference}</td><td className="px-3 py-2 text-right">{row.debit ? formatMoney(row.debit) : "-"}</td><td className="px-3 py-2 text-right">{row.credit ? formatMoney(row.credit) : "-"}</td><td className="px-3 py-2 text-right font-semibold">{formatMoney(row.balance)}</td></tr>)}</tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    );
+  }
+
+  if (tab === "Aged Debtors") {
+    return <AgedDebtorsTable rows={ar.aged_debtors || []} />;
+  }
+
+  if (tab === "Reports") {
+    return <ArReports ar={ar} />;
+  }
+
+  if (tab === "Settings") {
+    return (
+      <Panel title="Accounts Receivable settings">
+        <form onSubmit={saveSettings} className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <label className="flex items-center gap-2 rounded-md border border-stone-200 p-3 text-sm font-semibold text-stone-700"><input type="checkbox" checked={!!settingsForm.approval_required} onChange={(e) => setSettingsForm((current) => ({ ...current, approval_required: e.target.checked }))} /> Approval required</label>
+          <label className="flex items-center gap-2 rounded-md border border-stone-200 p-3 text-sm font-semibold text-stone-700"><input type="checkbox" checked={!!settingsForm.duplicate_invoice_warning} onChange={(e) => setSettingsForm((current) => ({ ...current, duplicate_invoice_warning: e.target.checked }))} /> Duplicate invoice warning</label>
+          <label className="flex items-center gap-2 rounded-md border border-stone-200 p-3 text-sm font-semibold text-stone-700"><input type="checkbox" checked={!!settingsForm.credit_limit_warnings} onChange={(e) => setSettingsForm((current) => ({ ...current, credit_limit_warnings: e.target.checked }))} /> Credit limit warnings</label>
+          <label className="flex items-center gap-2 rounded-md border border-stone-200 p-3 text-sm font-semibold text-stone-700"><input type="checkbox" checked={!!settingsForm.automatic_customer_numbering} onChange={(e) => setSettingsForm((current) => ({ ...current, automatic_customer_numbering: e.target.checked }))} /> Automatic customer numbering</label>
+          <Field label="Default terms days" value={settingsForm.default_payment_terms_days} onChange={(value) => setSettingsForm((current) => ({ ...current, default_payment_terms_days: value }))} />
+          <AccountCodeSelect label="Default sales nominal" accounts={incomeAccounts} value={settingsForm.default_sales_account} onChange={(value) => setSettingsForm((current) => ({ ...current, default_sales_account: value }))} />
+          <Field label="Default VAT code" value={settingsForm.default_vat_code} onChange={(value) => setSettingsForm((current) => ({ ...current, default_vat_code: value }))} />
+          <Field label="Invoice prefix" value={settingsForm.invoice_number_prefix} onChange={(value) => setSettingsForm((current) => ({ ...current, invoice_number_prefix: value }))} />
+          <Field label="Next invoice number" value={settingsForm.next_invoice_number} onChange={(value) => setSettingsForm((current) => ({ ...current, next_invoice_number: value }))} />
+          <div className="md:col-span-2 xl:col-span-4"><Button disabled={busy || saving} style={{ background: "var(--brand)" }}>Save AR settings</Button></div>
+        </form>
+      </Panel>
+    );
+  }
+
+  return null;
+}
+
+function ArDocumentForm({ title, form, setForm, customers, accounts, onSubmit, button, busy, numberKey, dateKey }) {
+  const updateLine = (index, key, value) => setForm((current) => ({ ...current, lines: current.lines.map((line, lineIndex) => lineIndex === index ? { ...line, [key]: value } : line) }));
+  const totals = apFormTotals(form.lines || []);
+  return (
+    <Panel title={title}>
+      <form onSubmit={onSubmit} className="space-y-3">
+        <CustomerSelect customers={customers} value={form.customer_id} onChange={(value) => setForm((current) => ({ ...current, customer_id: value }))} />
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Number" value={form[numberKey]} onChange={(value) => setForm((current) => ({ ...current, [numberKey]: value }))} />
+          <Field label="Reference" value={form.reference} onChange={(value) => setForm((current) => ({ ...current, reference: value }))} />
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Date" type="date" value={form[dateKey]} onChange={(value) => setForm((current) => ({ ...current, [dateKey]: value }))} />
+          {form.due_date !== undefined && <Field label="Due date" type="date" value={form.due_date} onChange={(value) => setForm((current) => ({ ...current, due_date: value }))} />}
+        </div>
+        <div className="rounded-md border border-stone-200">
+          <div className="border-b border-stone-100 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-stone-500">Lines</div>
+          {(form.lines || []).map((line, index) => (
+            <div key={index} className="grid gap-2 border-b border-stone-100 p-3 last:border-b-0">
+              <Field label="Description" value={line.description} onChange={(value) => updateLine(index, "description", value)} />
+              <AccountCodeSelect label="Sales nominal" accounts={accounts} value={line.nominal_account_code} onChange={(value) => updateLine(index, "nominal_account_code", value)} />
+              <div className="grid grid-cols-4 gap-2">
+                <Field label="Qty" value={line.quantity} onChange={(value) => updateLine(index, "quantity", value)} />
+                <Field label="Unit price" value={line.unit_price} onChange={(value) => updateLine(index, "unit_price", value)} />
+                <Field label="Discount" value={line.discount_amount} onChange={(value) => updateLine(index, "discount_amount", value)} />
+                <Field label="VAT code" value={line.vat_code} onChange={(value) => updateLine(index, "vat_code", value)} />
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <Field label="Net" value={line.net_amount} onChange={(value) => updateLine(index, "net_amount", value)} />
+                <Field label="VAT" value={line.vat_amount} onChange={(value) => updateLine(index, "vat_amount", value)} />
+                <Field label="Gross" value={line.gross_amount} onChange={(value) => updateLine(index, "gross_amount", value)} />
+              </div>
+              {(form.lines || []).length > 1 && <Button type="button" variant="outline" size="sm" onClick={() => setForm((current) => ({ ...current, lines: current.lines.filter((_, lineIndex) => lineIndex !== index) }))}>Remove line</Button>}
+            </div>
+          ))}
+        </div>
+        <div className="flex flex-wrap justify-between gap-2 rounded-md bg-stone-50 p-3 text-sm">
+          <span>Net: <strong>{formatMoney(totals.net)}</strong></span>
+          <span>VAT: <strong>{formatMoney(totals.vat)}</strong></span>
+          <span>Gross: <strong>{formatMoney(totals.gross)}</strong></span>
+        </div>
+        <div className="flex gap-2">
+          <Button type="button" variant="outline" onClick={() => setForm((current) => ({ ...current, lines: [...current.lines, { ...EMPTY_AR_LINE }] }))}>Add line</Button>
+          <Button disabled={busy} style={{ background: "var(--brand)" }} className="flex-1">{button}</Button>
+        </div>
+      </form>
+    </Panel>
+  );
+}
+
+function ArRegister({ title, rows = [], numberKey, dateKey, amountKey, empty, actions }) {
+  return (
+    <Panel title={title}>
+      {rows.length === 0 ? <p className="py-10 text-center text-sm text-stone-500">{empty}</p> : (
+        <div className="overflow-auto">
+          <table className="min-w-full text-left text-sm">
+            <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500"><tr><th className="px-3 py-2">Customer</th><th className="px-3 py-2">Reference</th><th className="px-3 py-2">Date</th><th className="px-3 py-2">Due</th><th className="px-3 py-2">Status</th><th className="px-3 py-2 text-right">Net</th><th className="px-3 py-2 text-right">VAT</th><th className="px-3 py-2 text-right">Gross</th><th className="px-3 py-2 text-right">Outstanding</th><th className="px-3 py-2"></th></tr></thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.id} className="border-t border-stone-100 align-top">
+                  <td className="px-3 py-2 font-semibold text-stone-900">{row.customer_name || "-"}</td>
+                  <td className="px-3 py-2">{row[numberKey] || row.reference || "-"}</td>
+                  <td className="px-3 py-2">{formatDate(row[dateKey])}</td>
+                  <td className="px-3 py-2">{formatDate(row.due_date)}</td>
+                  <td className="px-3 py-2"><Badge className={apStatusClass(row.status)}>{row.status}</Badge></td>
+                  <td className="px-3 py-2 text-right">{formatMoney(row.net_amount)}</td>
+                  <td className="px-3 py-2 text-right">{formatMoney(row.vat_amount)}</td>
+                  <td className="px-3 py-2 text-right">{formatMoney(row[amountKey])}</td>
+                  <td className="px-3 py-2 text-right">{row.outstanding_amount ? formatMoney(row.outstanding_amount) : row.unallocated_amount ? formatMoney(row.unallocated_amount) : "-"}</td>
+                  <td className="px-3 py-2">{actions?.(row)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function CustomerSelect({ customers, value, onChange }) {
+  return (
+    <div>
+      <Label className="text-xs font-semibold text-stone-600">Customer</Label>
+      <select value={value || ""} onChange={(e) => onChange(e.target.value)} className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm">
+        <option value="">Select customer</option>
+        {customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name}</option>)}
+      </select>
+    </div>
+  );
+}
+
+function AgedDebtorsTable({ rows = [] }) {
+  return (
+    <Panel title="Aged debtors">
+      {rows.length === 0 ? <p className="py-10 text-center text-sm text-stone-500">No outstanding customer balances.</p> : (
+        <div className="overflow-auto">
+          <table className="min-w-full text-left text-sm">
+            <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500"><tr><th className="px-3 py-2">Customer</th><th className="px-3 py-2 text-right">Current</th><th className="px-3 py-2 text-right">1-30</th><th className="px-3 py-2 text-right">31-60</th><th className="px-3 py-2 text-right">61-90</th><th className="px-3 py-2 text-right">90+</th><th className="px-3 py-2 text-right">Total</th></tr></thead>
+            <tbody>{rows.map((row) => <tr key={row.customer_id || row.customer_name} className="border-t border-stone-100"><td className="px-3 py-2 font-semibold">{row.customer_name}</td><td className="px-3 py-2 text-right">{formatMoney(row.current)}</td><td className="px-3 py-2 text-right">{formatMoney(row.days_1_30)}</td><td className="px-3 py-2 text-right">{formatMoney(row.days_31_60)}</td><td className="px-3 py-2 text-right">{formatMoney(row.days_61_90)}</td><td className="px-3 py-2 text-right">{formatMoney(row.days_90_plus)}</td><td className="px-3 py-2 text-right font-semibold">{formatMoney(row.total)}</td></tr>)}</tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function ArReports({ ar }) {
+  const invoices = ar.invoices || [];
+  const unpaid = invoices.filter((invoice) => Number(invoice.outstanding_amount || 0) > 0);
+  const receipts = ar.receipts || [];
+  const vat = invoices.reduce((sum, invoice) => sum + Number(invoice.vat_amount || 0), 0);
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 md:grid-cols-4">
+        <SummaryCard label="Sales day book" value={invoices.length} tone="blue" />
+        <SummaryCard label="Outstanding invoices" value={unpaid.length} tone="amber" />
+        <SummaryCard label="VAT on sales" value={formatMoney(vat)} tone="emerald" />
+        <SummaryCard label="Receipts" value={receipts.length} tone="stone" />
+      </div>
+      <ArRegister title="Outstanding invoices" rows={unpaid} numberKey="invoice_number" dateKey="invoice_date" amountKey="gross_amount" empty="No outstanding invoices." />
+    </div>
+  );
+}
+
+function arStatementRows(customerId, invoices, creditNotes, receipts) {
+  let balance = 0;
+  return [
+    ...invoices.filter((item) => item.customer_id === customerId).map((item) => ({ id: item.id, date: item.invoice_date, type: "Invoice", reference: item.invoice_number, debit: Number(item.gross_amount || 0), credit: 0 })),
+    ...creditNotes.filter((item) => item.customer_id === customerId).map((item) => ({ id: item.id, date: item.credit_note_date, type: "Credit note", reference: item.credit_note_number, debit: 0, credit: Number(item.gross_amount || 0) })),
+    ...receipts.filter((item) => item.customer_id === customerId).map((item) => ({ id: item.id, date: item.receipt_date, type: "Receipt", reference: item.reference, debit: 0, credit: Number(item.amount || 0) })),
+  ].sort((a, b) => String(a.date || "").localeCompare(String(b.date || ""))).map((row) => {
+    balance += row.debit - row.credit;
+    return { ...row, balance };
+  });
 }
 
 const EMPTY_AP_LINE = { description: "", nominal_account_code: "5000", quantity: "1", unit_price: "", net_amount: "", vat_amount: "", gross_amount: "", vat_code: "" };
