@@ -580,16 +580,136 @@ accounting_bank_transactions = Table(
     metadata,
     Column("id", String(36), primary_key=True),
     Column("client_id", String(36), nullable=False, index=True),
+    Column("bank_account_id", String(36), index=True),
     Column("bank_account_code", String(32), default="1200", index=True),
     Column("transaction_date", String(32), index=True),
     Column("description", Text),
     Column("reference", String(255)),
+    Column("transaction_type", String(64), default="statement_import", index=True),
+    Column("source_type", String(64), default="manual", index=True),
+    Column("import_id", String(36), index=True),
     Column("money_in", String(64), default="0.00"),
     Column("money_out", String(64), default="0.00"),
+    Column("balance", String(64), default="0.00"),
     Column("status", String(32), default="unreconciled", index=True),
+    Column("matched_to", String(255)),
+    Column("suggested_match", String(255)),
+    Column("confidence", Integer, default=0),
+    Column("ignored", Boolean, default=False),
     Column("matched_contact_id", String(36)),
     Column("matched_account_code", String(32)),
     Column("journal_entry_id", String(36)),
+    Column("raw_json", Text),
+    Column("reconciled_at", String(64)),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_bank_accounts = Table(
+    "accounting_bank_accounts",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("account_name", String(255), nullable=False, index=True),
+    Column("bank_name", String(255)),
+    Column("account_number", String(64)),
+    Column("sort_code", String(32)),
+    Column("currency", String(8), default="GBP"),
+    Column("nominal_account_code", String(32), nullable=False, index=True),
+    Column("opening_balance", String(64), default="0.00"),
+    Column("default_account", Boolean, default=False),
+    Column("allow_payments", Boolean, default=True),
+    Column("allow_receipts", Boolean, default=True),
+    Column("active", Boolean, default=True, index=True),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_bank_imports = Table(
+    "accounting_bank_imports",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("bank_account_id", String(36), index=True),
+    Column("provider", String(64), default="csv", index=True),
+    Column("source_type", String(64), default="csv", index=True),
+    Column("filename", String(255)),
+    Column("imported_by", String(36)),
+    Column("rows_imported", Integer, default=0),
+    Column("duplicates", Integer, default=0),
+    Column("errors", Integer, default=0),
+    Column("status", String(32), default="imported", index=True),
+    Column("raw_summary", Text),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_bank_rules = Table(
+    "accounting_bank_rules",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("name", String(255), nullable=False),
+    Column("active", Boolean, default=True, index=True),
+    Column("bank_account_id", String(36), index=True),
+    Column("field", String(64), default="description"),
+    Column("operator", String(32), default="contains"),
+    Column("value", String(255)),
+    Column("amount_operator", String(32)),
+    Column("amount_value", String(64)),
+    Column("target_action", String(64), default="post_to_account"),
+    Column("target_account_code", String(32)),
+    Column("transaction_type", String(64)),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_bank_matches = Table(
+    "accounting_bank_matches",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("bank_transaction_id", String(36), nullable=False, index=True),
+    Column("match_type", String(64), index=True),
+    Column("matched_record_type", String(64), index=True),
+    Column("matched_record_id", String(36), index=True),
+    Column("amount", String(64), default="0.00"),
+    Column("confidence", Integer, default=0),
+    Column("status", String(32), default="matched", index=True),
+    Column("journal_entry_id", String(36)),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_bank_transfers = Table(
+    "accounting_bank_transfers",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("from_bank_account_id", String(36), nullable=False),
+    Column("to_bank_account_id", String(36), nullable=False),
+    Column("transfer_date", String(32), index=True),
+    Column("reference", String(255)),
+    Column("amount", String(64), default="0.00"),
+    Column("status", String(32), default="posted", index=True),
+    Column("posted_journal_id", String(36)),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_bank_settings = Table(
+    "accounting_bank_settings",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, unique=True, index=True),
+    Column("default_bank_account_id", String(36)),
+    Column("default_transfer_account", String(32)),
+    Column("default_bank_charges_account", String(32)),
+    Column("default_interest_account", String(32)),
+    Column("default_suspense_account", String(32)),
+    Column("statement_number_prefix", String(32), default="STMT"),
+    Column("automatic_matching_threshold", Integer, default=85),
+    Column("duplicate_detection", Boolean, default=True),
     Column("created_at", String(64)),
     Column("updated_at", String(64)),
 )
@@ -695,6 +815,12 @@ async def ensure_schema_columns(conn):
         accounting_journal_lines,
         accounting_audit_log,
         accounting_bank_transactions,
+        accounting_bank_accounts,
+        accounting_bank_imports,
+        accounting_bank_rules,
+        accounting_bank_matches,
+        accounting_bank_transfers,
+        accounting_bank_settings,
         accounting_vat_returns,
         accounting_periods,
         accounting_financial_years,
@@ -2318,7 +2444,220 @@ async def add_accounting_audit(
 
 
 def serialize_bank_transaction(row: dict) -> dict:
+    row = dict(row)
+    row["raw_json"] = parse_json_object(row.get("raw_json")) or {}
+    row["money_in"] = money_str(money(row.get("money_in")))
+    row["money_out"] = money_str(money(row.get("money_out")))
+    return row
+
+
+def serialize_bank_account(row: dict, balance: Decimal = Decimal("0.00"), reconciled: Decimal = Decimal("0.00")) -> dict:
+    item = dict(row)
+    item["current_balance"] = money_str(balance)
+    item["reconciled_balance"] = money_str(reconciled)
+    return item
+
+
+def serialize_bank_import(row: dict) -> dict:
+    item = dict(row)
+    item["raw_summary"] = parse_json_object(item.get("raw_summary")) or {}
+    return item
+
+
+def serialize_bank_rule(row: dict) -> dict:
     return dict(row)
+
+
+def serialize_bank_transfer(row: dict) -> dict:
+    return dict(row)
+
+
+def bank_transaction_amount(row: dict) -> Decimal:
+    return money(row.get("money_in")) - money(row.get("money_out"))
+
+
+async def ensure_bank_settings(session: AsyncSession, client_id: str) -> dict:
+    existing = await one(session, select(accounting_bank_settings).where(accounting_bank_settings.c.client_id == client_id))
+    if existing:
+        return existing
+    settings_row = await ensure_accounting_settings(session, client_id)
+    now = utc_now_iso()
+    row = {
+        "id": new_id(),
+        "client_id": client_id,
+        "default_transfer_account": settings_row.get("default_bank_account") or "1200",
+        "default_bank_charges_account": "7000",
+        "default_interest_account": "4000",
+        "default_suspense_account": settings_row.get("default_suspense_account") or "9999",
+        "statement_number_prefix": "STMT",
+        "automatic_matching_threshold": 85,
+        "duplicate_detection": True,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await session.execute(insert(accounting_bank_settings).values(**row))
+    await session.flush()
+    return row
+
+
+async def ensure_default_bank_account(session: AsyncSession, client_id: str, accounts: Optional[list[dict]] = None) -> dict:
+    existing = await many(session, select(accounting_bank_accounts).where(accounting_bank_accounts.c.client_id == client_id).order_by(accounting_bank_accounts.c.default_account.desc(), accounting_bank_accounts.c.created_at.asc()))
+    if existing:
+        return existing[0]
+    accounts = accounts or await ensure_native_accounting_client(session, client_id)
+    settings_row = await ensure_accounting_settings(session, client_id)
+    bank_account = find_native_account(accounts, settings_row.get("default_bank_account"), "1200")
+    now = utc_now_iso()
+    row = {
+        "id": new_id(),
+        "client_id": client_id,
+        "account_name": bank_account.get("name") or "Current Account",
+        "bank_name": "",
+        "account_number": "",
+        "sort_code": "",
+        "currency": "GBP",
+        "nominal_account_code": bank_account.get("code") or "1200",
+        "opening_balance": "0.00",
+        "default_account": True,
+        "allow_payments": True,
+        "allow_receipts": True,
+        "active": True,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await session.execute(insert(accounting_bank_accounts).values(**row))
+    await session.flush()
+    return row
+
+
+def match_bank_rule(rule: dict, transaction: dict) -> bool:
+    field = str(rule.get("field") or "description")
+    value = str(rule.get("value") or "").lower().strip()
+    haystack = str(transaction.get(field) or transaction.get("description") or "").lower()
+    if value:
+        operator = str(rule.get("operator") or "contains")
+        if operator == "starts_with" and not haystack.startswith(value):
+            return False
+        if operator == "ends_with" and not haystack.endswith(value):
+            return False
+        if operator == "equals" and haystack != value:
+            return False
+        if operator == "contains" and value not in haystack:
+            return False
+    amount_value = money(rule.get("amount_value"))
+    if amount_value:
+        amount = abs(bank_transaction_amount(transaction))
+        op = str(rule.get("amount_operator") or "equals")
+        if op == "greater_than" and not amount > amount_value:
+            return False
+        if op == "less_than" and not amount < amount_value:
+            return False
+        if op == "equals" and amount != amount_value:
+            return False
+    return True
+
+
+def suggest_bank_matches(transaction: dict, ap_invoices: list[dict], suppliers: list[dict], rules: list[dict]) -> list[dict]:
+    suggestions = []
+    amount = abs(bank_transaction_amount(transaction))
+    description = f"{transaction.get('description') or ''} {transaction.get('reference') or ''}".lower()
+    if money(transaction.get("money_out")):
+        supplier_by_id = {str(s.get("id")): s for s in suppliers}
+        for invoice in ap_invoices:
+            outstanding = money(invoice.get("outstanding_amount"))
+            if outstanding <= 0:
+                continue
+            confidence = 0
+            reasons = []
+            if amount == outstanding:
+                confidence += 45
+                reasons.append("amount")
+            elif amount and abs(amount - outstanding) <= Decimal("1.00"):
+                confidence += 25
+                reasons.append("near amount")
+            supplier = supplier_by_id.get(str(invoice.get("supplier_id"))) or {}
+            supplier_name = str(supplier.get("name") or invoice.get("supplier_name") or "").lower()
+            if supplier_name and supplier_name in description:
+                confidence += 30
+                reasons.append("supplier")
+            invoice_number = str(invoice.get("invoice_number") or "").lower()
+            if invoice_number and invoice_number in description:
+                confidence += 20
+                reasons.append("invoice number")
+            if confidence:
+                suggestions.append({
+                    "type": "ap_invoice",
+                    "record_id": invoice.get("id"),
+                    "label": f"{supplier.get('name') or invoice.get('supplier_name') or 'Supplier'} - {invoice.get('invoice_number')}",
+                    "amount": money_str(outstanding),
+                    "confidence": min(99, confidence),
+                    "reasons": reasons,
+                })
+    for rule in rules:
+        if rule.get("active", True) and match_bank_rule(rule, transaction):
+            suggestions.append({
+                "type": "rule",
+                "record_id": rule.get("id"),
+                "label": f"Rule: {rule.get('name')} -> {rule.get('target_account_code')}",
+                "amount": money_str(amount),
+                "confidence": 80,
+                "reasons": ["bank rule"],
+            })
+    return sorted(suggestions, key=lambda item: item.get("confidence", 0), reverse=True)[:5]
+
+
+async def banking_workspace(session: AsyncSession, client_id: str, accounts: Optional[list[dict]] = None) -> dict:
+    accounts = accounts or await ensure_native_accounting_client(session, client_id)
+    await ensure_default_bank_account(session, client_id, accounts)
+    settings = await ensure_bank_settings(session, client_id)
+    bank_accounts = await many(session, select(accounting_bank_accounts).where(accounting_bank_accounts.c.client_id == client_id).order_by(accounting_bank_accounts.c.default_account.desc(), accounting_bank_accounts.c.account_name.asc()))
+    transactions = await many(session, select(accounting_bank_transactions).where(accounting_bank_transactions.c.client_id == client_id).order_by(accounting_bank_transactions.c.transaction_date.desc(), accounting_bank_transactions.c.created_at.desc()))
+    imports = await many(session, select(accounting_bank_imports).where(accounting_bank_imports.c.client_id == client_id).order_by(accounting_bank_imports.c.created_at.desc()))
+    rules = await many(session, select(accounting_bank_rules).where(accounting_bank_rules.c.client_id == client_id).order_by(accounting_bank_rules.c.active.desc(), accounting_bank_rules.c.name.asc()))
+    transfers = await many(session, select(accounting_bank_transfers).where(accounting_bank_transfers.c.client_id == client_id).order_by(accounting_bank_transfers.c.transfer_date.desc(), accounting_bank_transfers.c.created_at.desc()))
+    balances = await native_account_balances(session, client_id)
+    ap = await accounts_payable_workspace(session, client_id)
+    account_by_id = {str(account.get("id")): account for account in bank_accounts}
+    for transaction in transactions:
+        bank_account = account_by_id.get(str(transaction.get("bank_account_id") or ""))
+        if bank_account:
+            transaction["bank_account_name"] = bank_account.get("account_name")
+            transaction["bank_account_code"] = bank_account.get("nominal_account_code")
+        transaction["amount"] = money_str(bank_transaction_amount(transaction))
+        transaction["suggestions"] = suggest_bank_matches(transaction, ap.get("invoices", []), ap.get("suppliers", []), rules) if transaction.get("status") in {None, "unreconciled", "imported"} else []
+        if transaction["suggestions"]:
+            transaction["suggested_match"] = transaction["suggestions"][0]["label"]
+            transaction["confidence"] = transaction["suggestions"][0]["confidence"]
+    serialized_accounts = []
+    for account in bank_accounts:
+        code = str(account.get("nominal_account_code") or "")
+        reconciled = sum((bank_transaction_amount(t) for t in transactions if str(t.get("bank_account_id") or "") == str(account.get("id")) and t.get("status") == "reconciled"), Decimal("0.00"))
+        serialized_accounts.append(serialize_bank_account(account, balances.get(code, Decimal("0.00")), reconciled))
+    current_month = datetime.now(timezone.utc).date().strftime("%Y-%m")
+    dashboard = {
+        "current_bank_balance": money_str(sum((money(a.get("current_balance")) for a in serialized_accounts), Decimal("0.00"))),
+        "unreconciled_transactions": len([t for t in transactions if t.get("status") in {None, "unreconciled", "imported"}]),
+        "imported_transactions": len([t for t in transactions if str(t.get("source_type") or "") in {"csv", "open_banking", "ofx", "qif", "mt940"}]),
+        "awaiting_match": len([t for t in transactions if t.get("status") in {None, "unreconciled", "imported"} and t.get("suggestions")]),
+        "transfers_this_month": len([t for t in transfers if str(t.get("transfer_date") or "").startswith(current_month)]),
+        "last_bank_import": imports[0].get("created_at") if imports else None,
+    }
+    return {
+        "settings": dict(settings),
+        "dashboard": dashboard,
+        "bank_accounts": serialized_accounts,
+        "transactions": [serialize_bank_transaction(t) for t in transactions],
+        "imports": [serialize_bank_import(i) for i in imports],
+        "rules": [serialize_bank_rule(r) for r in rules],
+        "transfers": [serialize_bank_transfer(t) for t in transfers],
+        "cashbook": [serialize_bank_transaction(t) for t in sorted(transactions, key=lambda item: (str(item.get("transaction_date") or ""), str(item.get("created_at") or "")), reverse=True)],
+        "reports": {
+            "unreconciled_items": [serialize_bank_transaction(t) for t in transactions if t.get("status") in {None, "unreconciled", "imported"}],
+            "bank_charges": [serialize_bank_transaction(t) for t in transactions if t.get("transaction_type") == "bank_charge"],
+            "interest": [serialize_bank_transaction(t) for t in transactions if t.get("transaction_type") == "interest"],
+            "transfers": [serialize_bank_transfer(t) for t in transfers],
+        },
+    }
 
 
 def serialize_vat_return(row: dict) -> dict:
@@ -2583,10 +2922,6 @@ async def get_native_accounting_workspace(
         session,
         select(accounting_journal_entries).where(accounting_journal_entries.c.client_id == client_id).order_by(accounting_journal_entries.c.entry_date.desc(), accounting_journal_entries.c.created_at.desc()),
     )
-    bank_transactions = await many(
-        session,
-        select(accounting_bank_transactions).where(accounting_bank_transactions.c.client_id == client_id).order_by(accounting_bank_transactions.c.transaction_date.desc(), accounting_bank_transactions.c.created_at.desc()),
-    )
     vat_returns = await many(
         session,
         select(accounting_vat_returns).where(accounting_vat_returns.c.client_id == client_id).order_by(accounting_vat_returns.c.period_end.desc(), accounting_vat_returns.c.created_at.desc()),
@@ -2623,7 +2958,8 @@ async def get_native_accounting_workspace(
         "financial_years": [serialize_financial_year(y) for y in financial_years],
         "contacts": [serialize_native_contact(c) for c in contacts],
         "journals": journals,
-        "bank_transactions": [serialize_bank_transaction(t) for t in bank_transactions],
+        "banking": await banking_workspace(session, client_id, accounts),
+        "bank_transactions": [serialize_bank_transaction(t) for t in (await many(session, select(accounting_bank_transactions).where(accounting_bank_transactions.c.client_id == client_id).order_by(accounting_bank_transactions.c.transaction_date.desc(), accounting_bank_transactions.c.created_at.desc())))],
         "vat_returns": [serialize_vat_return(r) for r in vat_returns],
         "periods": [serialize_period(p) for p in periods],
         "audit_log": [serialize_audit_event(e) for e in audit_events],
@@ -3284,6 +3620,101 @@ async def update_ap_settings(
     return serialize_ap_settings(updated)
 
 
+@api.post("/admin/accounting/clients/{client_id}/bank/accounts")
+async def create_bank_account(
+    client_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before adding bank accounts.")
+    accounts = await ensure_native_accounting_client(session, client_id)
+    nominal_code = str(payload.get("nominal_account_code") or "").strip()
+    if not nominal_code:
+        next_code = 1200 + len([a for a in accounts if a.get("purpose") == "Bank Account" or str(a.get("account_type") or "").lower() == "bank"]) * 10
+        nominal_code = str(next_code)
+    nominal = next((a for a in accounts if str(a.get("code")) == nominal_code), None)
+    now = utc_now_iso()
+    if not nominal:
+        account_name = str(payload.get("account_name") or "Bank account").strip()
+        nominal = {
+            "id": new_id(),
+            "client_id": client_id,
+            "code": nominal_code,
+            "name": account_name,
+            "category": "Asset",
+            "account_type": "Bank",
+            "purpose": "Bank Account",
+            "normal_balance": "debit",
+            "control_account": False,
+            "is_control_account": False,
+            "active": True,
+            "created_at": now,
+            "updated_at": now,
+        }
+        await session.execute(insert(accounting_accounts).values(**nominal))
+    default_account = bool(payload.get("default_account"))
+    if default_account:
+        await session.execute(update(accounting_bank_accounts).where(accounting_bank_accounts.c.client_id == client_id).values(default_account=False, updated_at=now))
+    row = {
+        "id": new_id(),
+        "client_id": client_id,
+        "account_name": str(payload.get("account_name") or nominal.get("name") or "Bank account").strip(),
+        "bank_name": str(payload.get("bank_name") or "").strip(),
+        "account_number": str(payload.get("account_number") or "").strip(),
+        "sort_code": str(payload.get("sort_code") or "").strip(),
+        "currency": str(payload.get("currency") or "GBP").strip().upper()[:8],
+        "nominal_account_code": nominal_code,
+        "opening_balance": money_str(money(payload.get("opening_balance"))),
+        "default_account": default_account,
+        "allow_payments": bool(payload.get("allow_payments", True)),
+        "allow_receipts": bool(payload.get("allow_receipts", True)),
+        "active": bool(payload.get("active", True)),
+        "created_at": now,
+        "updated_at": now,
+    }
+    await session.execute(insert(accounting_bank_accounts).values(**row))
+    opening = money(row["opening_balance"])
+    if opening:
+        suspense = find_native_account(accounts + [nominal], None, (await ensure_accounting_settings(session, client_id)).get("default_suspense_account") or "9999")
+        if opening > 0:
+            lines = [{"account": nominal, "debit": money_str(opening), "credit": "0.00", "description": "Opening bank balance"}, {"account": suspense, "debit": "0.00", "credit": money_str(opening), "description": "Opening bank balance"}]
+        else:
+            lines = [{"account": suspense, "debit": money_str(-opening), "credit": "0.00", "description": "Opening bank balance"}, {"account": nominal, "debit": "0.00", "credit": money_str(-opening), "description": "Opening bank balance"}]
+        await post_native_journal(session, client_id, "bank_opening_balance", row["id"], datetime.now(timezone.utc).date().isoformat(), f"OPEN-{nominal_code}", "Opening bank balance", lines, user.get("id"))
+    await add_accounting_audit(session, client_id, user.get("id"), "bank_account_created", "banking", row["id"], row)
+    await session.commit()
+    return serialize_bank_account(row)
+
+
+@api.put("/admin/accounting/clients/{client_id}/bank/settings")
+async def update_bank_settings(
+    client_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await get_client_or_404(session, client_id)
+    existing = await ensure_bank_settings(session, client_id)
+    values = {
+        "default_bank_account_id": str(payload.get("default_bank_account_id") or existing.get("default_bank_account_id") or ""),
+        "default_transfer_account": str(payload.get("default_transfer_account") or existing.get("default_transfer_account") or "1200"),
+        "default_bank_charges_account": str(payload.get("default_bank_charges_account") or existing.get("default_bank_charges_account") or "7000"),
+        "default_interest_account": str(payload.get("default_interest_account") or existing.get("default_interest_account") or "4000"),
+        "default_suspense_account": str(payload.get("default_suspense_account") or existing.get("default_suspense_account") or "9999"),
+        "statement_number_prefix": str(payload.get("statement_number_prefix") or existing.get("statement_number_prefix") or "STMT")[:32],
+        "automatic_matching_threshold": int(payload.get("automatic_matching_threshold") or existing.get("automatic_matching_threshold") or 85),
+        "duplicate_detection": bool(payload.get("duplicate_detection", existing.get("duplicate_detection", True))),
+        "updated_at": utc_now_iso(),
+    }
+    await session.execute(update(accounting_bank_settings).where(accounting_bank_settings.c.client_id == client_id).values(**values))
+    await add_accounting_audit(session, client_id, user.get("id"), "bank_settings_updated", "banking", existing["id"], values)
+    await session.commit()
+    return {**existing, **values}
+
+
 @api.post("/admin/accounting/clients/{client_id}/bank-transactions")
 async def create_native_bank_transaction(
     client_id: str,
@@ -3300,17 +3731,29 @@ async def create_native_bank_transaction(
         raise HTTPException(status_code=400, detail="Enter money in or money out.")
     if money_in != Decimal("0.00") and money_out != Decimal("0.00"):
         raise HTTPException(status_code=400, detail="A bank transaction cannot have both money in and money out.")
+    accounts = await ensure_native_accounting_client(session, client_id)
+    bank_account = None
+    bank_account_id = str(payload.get("bank_account_id") or "").strip()
+    if bank_account_id:
+        bank_account = await one(session, select(accounting_bank_accounts).where(accounting_bank_accounts.c.client_id == client_id, accounting_bank_accounts.c.id == bank_account_id))
+    if not bank_account:
+        bank_account = await ensure_default_bank_account(session, client_id, accounts)
     now = utc_now_iso()
     row = {
         "id": new_id(),
         "client_id": client_id,
-        "bank_account_code": str(payload.get("bank_account_code") or "1200"),
+        "bank_account_id": bank_account.get("id"),
+        "bank_account_code": str(payload.get("bank_account_code") or bank_account.get("nominal_account_code") or "1200"),
         "transaction_date": str(payload.get("transaction_date") or datetime.now(timezone.utc).date().isoformat()),
         "description": str(payload.get("description") or "").strip(),
         "reference": str(payload.get("reference") or "").strip(),
+        "transaction_type": str(payload.get("transaction_type") or "manual_entry"),
+        "source_type": "manual",
         "money_in": money_str(money_in),
         "money_out": money_str(money_out),
+        "balance": money_str(money(payload.get("balance"))),
         "status": "unreconciled",
+        "raw_json": json.dumps(payload),
         "created_at": now,
         "updated_at": now,
     }
@@ -3324,6 +3767,7 @@ async def create_native_bank_transaction(
 async def import_native_bank_transactions(
     client_id: str,
     bank_account_code: str = Form("1200"),
+    bank_account_id: str = Form(""),
     file: UploadFile = File(...),
     user: dict = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
@@ -3342,7 +3786,15 @@ async def import_native_bank_transactions(
     if not reader.fieldnames:
         raise HTTPException(status_code=400, detail="CSV headers were not found.")
 
+    accounts = await ensure_native_accounting_client(session, client_id)
+    bank_account = None
+    if bank_account_id:
+        bank_account = await one(session, select(accounting_bank_accounts).where(accounting_bank_accounts.c.client_id == client_id, accounting_bank_accounts.c.id == bank_account_id))
+    if not bank_account:
+        bank_account = await ensure_default_bank_account(session, client_id, accounts)
+    import_id = new_id()
     imported = 0
+    duplicates = 0
     errors = []
     now = utc_now_iso()
     for index, row in enumerate(reader, start=2):
@@ -3365,21 +3817,59 @@ async def import_native_bank_transactions(
         if money_in == Decimal("0.00") and money_out == Decimal("0.00"):
             errors.append(f"Row {index}: no money in/out amount found")
             continue
+        duplicate = await one(
+            session,
+            select(accounting_bank_transactions).where(
+                accounting_bank_transactions.c.client_id == client_id,
+                accounting_bank_transactions.c.bank_account_id == bank_account.get("id"),
+                accounting_bank_transactions.c.transaction_date == transaction_date,
+                accounting_bank_transactions.c.description == description,
+                accounting_bank_transactions.c.money_in == money_str(money_in),
+                accounting_bank_transactions.c.money_out == money_str(money_out),
+            ),
+        )
+        if duplicate:
+            duplicates += 1
+            continue
         row_values = {
             "id": new_id(),
             "client_id": client_id,
-            "bank_account_code": str(bank_account_code or "1200"),
+            "bank_account_id": bank_account.get("id"),
+            "bank_account_code": str(bank_account_code or bank_account.get("nominal_account_code") or "1200"),
             "transaction_date": transaction_date,
             "description": description,
             "reference": reference,
+            "transaction_type": "statement_import",
+            "source_type": "csv",
+            "import_id": import_id,
             "money_in": money_str(money_in),
             "money_out": money_str(money_out),
+            "balance": money_str(parse_bank_csv_amount(pick_csv_value(row, ["balance", "running balance"]))),
             "status": "unreconciled",
+            "raw_json": json.dumps(row),
             "created_at": now,
             "updated_at": now,
         }
         await session.execute(insert(accounting_bank_transactions).values(**row_values))
         imported += 1
+    await session.execute(
+        insert(accounting_bank_imports).values(
+            id=import_id,
+            client_id=client_id,
+            bank_account_id=bank_account.get("id"),
+            provider="csv",
+            source_type="csv",
+            filename=file.filename,
+            imported_by=user.get("id"),
+            rows_imported=imported,
+            duplicates=duplicates,
+            errors=len(errors),
+            status="imported" if not errors else "imported_with_errors",
+            raw_summary=json.dumps({"errors": errors[:50], "headers": reader.fieldnames}),
+            created_at=now,
+            updated_at=now,
+        )
+    )
     await add_accounting_audit(
         session,
         client_id,
@@ -3387,10 +3877,10 @@ async def import_native_bank_transactions(
         "bank_transactions_imported",
         "bank_transaction",
         client_id,
-        {"file": file.filename, "imported": imported, "errors": errors[:20]},
+        {"file": file.filename, "imported": imported, "duplicates": duplicates, "errors": errors[:20]},
     )
     await session.commit()
-    return {"imported": imported, "errors": errors[:50]}
+    return {"imported": imported, "duplicates": duplicates, "errors": errors[:50], "import_id": import_id}
 
 
 @api.post("/admin/accounting/clients/{client_id}/bank-transactions/{transaction_id}/reconcile")
@@ -3459,6 +3949,188 @@ async def reconcile_native_bank_transaction(
     await add_accounting_audit(session, client_id, user.get("id"), "bank_transaction_reconciled", "bank_transaction", transaction_id, {"journal_id": journal.get("id")})
     await session.commit()
     return {"ok": True, "journal": journal}
+
+
+@api.post("/admin/accounting/clients/{client_id}/bank-transactions/{transaction_id}/match")
+async def match_native_bank_transaction(
+    client_id: str,
+    transaction_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    transaction = await one(session, select(accounting_bank_transactions).where(accounting_bank_transactions.c.client_id == client_id, accounting_bank_transactions.c.id == transaction_id))
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Bank transaction not found")
+    if transaction.get("status") == "reconciled":
+        raise HTTPException(status_code=400, detail="Bank transaction is already reconciled")
+    match_type = str(payload.get("match_type") or "").strip()
+    amount = abs(bank_transaction_amount(transaction))
+    accounts = await ensure_native_accounting_client(session, client_id)
+    settings_row = await ensure_accounting_settings(session, client_id)
+    bank = find_native_account(accounts, transaction.get("bank_account_code") or settings_row.get("default_bank_account"), "1200")
+    now = utc_now_iso()
+    journal = None
+    matched_to = ""
+    if match_type == "ap_invoice":
+        invoice = await one(session, select(accounting_ap_invoices).where(accounting_ap_invoices.c.client_id == client_id, accounting_ap_invoices.c.id == str(payload.get("record_id") or "")))
+        if not invoice:
+            raise HTTPException(status_code=404, detail="Supplier invoice not found")
+        supplier = await get_ap_supplier_or_404(session, client_id, str(invoice.get("supplier_id")))
+        contact = await one(session, select(accounting_contacts).where(accounting_contacts.c.id == supplier.get("contact_id")))
+        creditors = find_native_account(accounts, settings_row.get("default_creditors_control_account"), "2000")
+        journal = await post_native_journal(
+            session,
+            client_id,
+            "bank_supplier_payment",
+            transaction_id,
+            transaction.get("transaction_date") or datetime.now(timezone.utc).date().isoformat(),
+            transaction.get("reference") or invoice.get("invoice_number") or transaction_id,
+            f"Bank payment allocated to {invoice.get('invoice_number')}",
+            [
+                {"account": creditors, "contact": contact, "debit": money_str(amount), "credit": "0.00", "description": transaction.get("description")},
+                {"account": bank, "contact": contact, "debit": "0.00", "credit": money_str(amount), "description": transaction.get("description")},
+            ],
+            user.get("id"),
+        )
+        payment_id = new_id()
+        await session.execute(insert(accounting_ap_payments).values(id=payment_id, client_id=client_id, supplier_id=supplier["id"], contact_id=supplier.get("contact_id"), payment_date=transaction.get("transaction_date"), bank_account_code=bank.get("code"), reference=transaction.get("reference") or invoice.get("invoice_number"), amount=money_str(amount), currency="GBP", status="posted", posted_journal_id=journal.get("id"), created_at=now, updated_at=now))
+        allocation = min(amount, money(invoice.get("outstanding_amount")))
+        if allocation:
+            await session.execute(insert(accounting_ap_payment_allocations).values(id=new_id(), client_id=client_id, payment_id=payment_id, invoice_id=invoice["id"], amount=money_str(allocation), created_at=now))
+            new_outstanding = money(invoice.get("outstanding_amount")) - allocation
+            await session.execute(update(accounting_ap_invoices).where(accounting_ap_invoices.c.id == invoice["id"]).values(outstanding_amount=money_str(new_outstanding), status="paid" if new_outstanding == 0 else "part_paid", updated_at=now))
+        matched_to = f"Supplier payment: {invoice.get('invoice_number')}"
+    elif match_type == "rule":
+        rule = await one(session, select(accounting_bank_rules).where(accounting_bank_rules.c.client_id == client_id, accounting_bank_rules.c.id == str(payload.get("record_id") or "")))
+        if not rule:
+            raise HTTPException(status_code=404, detail="Bank rule not found")
+        target = find_native_account(accounts, rule.get("target_account_code"), settings_row.get("default_suspense_account") or "9999")
+        if money(transaction.get("money_in")):
+            lines = [{"account": bank, "debit": money_str(amount), "credit": "0.00", "description": transaction.get("description")}, {"account": target, "debit": "0.00", "credit": money_str(amount), "description": transaction.get("description")}]
+        else:
+            lines = [{"account": target, "debit": money_str(amount), "credit": "0.00", "description": transaction.get("description")}, {"account": bank, "debit": "0.00", "credit": money_str(amount), "description": transaction.get("description")}]
+        journal = await post_native_journal(session, client_id, "bank_rule", transaction_id, transaction.get("transaction_date"), transaction.get("reference") or transaction_id, transaction.get("description") or "Bank rule", lines, user.get("id"))
+        matched_to = f"Rule: {rule.get('name')}"
+    else:
+        raise HTTPException(status_code=400, detail="Choose a supported match type.")
+    await session.execute(insert(accounting_bank_matches).values(id=new_id(), client_id=client_id, bank_transaction_id=transaction_id, match_type=match_type, matched_record_type=match_type, matched_record_id=str(payload.get("record_id") or ""), amount=money_str(amount), confidence=int(payload.get("confidence") or 0), status="matched", journal_entry_id=journal.get("id") if journal else None, created_at=now, updated_at=now))
+    await session.execute(update(accounting_bank_transactions).where(accounting_bank_transactions.c.id == transaction_id).values(status="reconciled", matched_to=matched_to, journal_entry_id=journal.get("id") if journal else None, reconciled_at=now, updated_at=now))
+    await add_accounting_audit(session, client_id, user.get("id"), "bank_transaction_matched", "banking", transaction_id, {"match_type": match_type, "matched_to": matched_to})
+    await session.commit()
+    return {"ok": True, "matched_to": matched_to, "journal": journal}
+
+
+@api.post("/admin/accounting/clients/{client_id}/bank-transactions/{transaction_id}/ignore")
+async def ignore_native_bank_transaction(
+    client_id: str,
+    transaction_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    transaction = await one(session, select(accounting_bank_transactions).where(accounting_bank_transactions.c.client_id == client_id, accounting_bank_transactions.c.id == transaction_id))
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Bank transaction not found")
+    await session.execute(update(accounting_bank_transactions).where(accounting_bank_transactions.c.id == transaction_id).values(status="ignored", ignored=True, updated_at=utc_now_iso()))
+    await add_accounting_audit(session, client_id, user.get("id"), "bank_transaction_ignored", "banking", transaction_id, {})
+    await session.commit()
+    return {"ok": True}
+
+
+@api.post("/admin/accounting/clients/{client_id}/bank-transactions/{transaction_id}/undo")
+async def undo_native_bank_match(
+    client_id: str,
+    transaction_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    transaction = await one(session, select(accounting_bank_transactions).where(accounting_bank_transactions.c.client_id == client_id, accounting_bank_transactions.c.id == transaction_id))
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Bank transaction not found")
+    journal_id = transaction.get("journal_entry_id")
+    now = utc_now_iso()
+    if journal_id:
+        await session.execute(update(accounting_journal_entries).where(accounting_journal_entries.c.client_id == client_id, accounting_journal_entries.c.id == journal_id).values(status="void"))
+    await session.execute(update(accounting_bank_matches).where(accounting_bank_matches.c.bank_transaction_id == transaction_id).values(status="undone", updated_at=now))
+    await session.execute(update(accounting_bank_transactions).where(accounting_bank_transactions.c.id == transaction_id).values(status="unreconciled", matched_to="", journal_entry_id=None, reconciled_at=None, ignored=False, updated_at=now))
+    await add_accounting_audit(session, client_id, user.get("id"), "bank_match_undone", "banking", transaction_id, {"journal_id": journal_id})
+    await session.commit()
+    return {"ok": True}
+
+
+@api.post("/admin/accounting/clients/{client_id}/bank/rules")
+async def create_bank_rule(
+    client_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await get_client_or_404(session, client_id)
+    if not str(payload.get("name") or "").strip():
+        raise HTTPException(status_code=400, detail="Rule name is required.")
+    now = utc_now_iso()
+    row = {
+        "id": new_id(),
+        "client_id": client_id,
+        "name": str(payload.get("name") or "").strip(),
+        "active": bool(payload.get("active", True)),
+        "bank_account_id": str(payload.get("bank_account_id") or ""),
+        "field": str(payload.get("field") or "description"),
+        "operator": str(payload.get("operator") or "contains"),
+        "value": str(payload.get("value") or "").strip(),
+        "amount_operator": str(payload.get("amount_operator") or ""),
+        "amount_value": money_str(money(payload.get("amount_value"))),
+        "target_action": str(payload.get("target_action") or "post_to_account"),
+        "target_account_code": str(payload.get("target_account_code") or "").strip(),
+        "transaction_type": str(payload.get("transaction_type") or ""),
+        "created_at": now,
+        "updated_at": now,
+    }
+    await session.execute(insert(accounting_bank_rules).values(**row))
+    await add_accounting_audit(session, client_id, user.get("id"), "bank_rule_created", "banking", row["id"], row)
+    await session.commit()
+    return serialize_bank_rule(row)
+
+
+@api.post("/admin/accounting/clients/{client_id}/bank/transfers")
+async def create_bank_transfer(
+    client_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    accounts = await ensure_native_accounting_client(session, client_id)
+    from_account = await one(session, select(accounting_bank_accounts).where(accounting_bank_accounts.c.client_id == client_id, accounting_bank_accounts.c.id == str(payload.get("from_bank_account_id") or "")))
+    to_account = await one(session, select(accounting_bank_accounts).where(accounting_bank_accounts.c.client_id == client_id, accounting_bank_accounts.c.id == str(payload.get("to_bank_account_id") or "")))
+    if not from_account or not to_account or from_account["id"] == to_account["id"]:
+        raise HTTPException(status_code=400, detail="Choose two different bank accounts.")
+    amount = money(payload.get("amount"))
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Transfer amount must be greater than zero.")
+    transfer_date = parse_date_or_today(payload.get("transfer_date")).isoformat()
+    from_nominal = find_native_account(accounts, from_account.get("nominal_account_code"), "1200")
+    to_nominal = find_native_account(accounts, to_account.get("nominal_account_code"), "1200")
+    transfer_id = new_id()
+    journal = await post_native_journal(
+        session,
+        client_id,
+        "bank_transfer",
+        transfer_id,
+        transfer_date,
+        str(payload.get("reference") or f"Transfer {transfer_date}"),
+        f"Transfer from {from_account.get('account_name')} to {to_account.get('account_name')}",
+        [
+            {"account": to_nominal, "debit": money_str(amount), "credit": "0.00", "description": "Bank transfer"},
+            {"account": from_nominal, "debit": "0.00", "credit": money_str(amount), "description": "Bank transfer"},
+        ],
+        user.get("id"),
+    )
+    now = utc_now_iso()
+    row = {"id": transfer_id, "client_id": client_id, "from_bank_account_id": from_account["id"], "to_bank_account_id": to_account["id"], "transfer_date": transfer_date, "reference": str(payload.get("reference") or ""), "amount": money_str(amount), "status": "posted", "posted_journal_id": journal.get("id"), "created_at": now, "updated_at": now}
+    await session.execute(insert(accounting_bank_transfers).values(**row))
+    await add_accounting_audit(session, client_id, user.get("id"), "bank_transfer_posted", "banking", transfer_id, row)
+    await session.commit()
+    return serialize_bank_transfer(row)
 
 
 @api.post("/admin/accounting/clients/{client_id}/vat-returns/prepare")
