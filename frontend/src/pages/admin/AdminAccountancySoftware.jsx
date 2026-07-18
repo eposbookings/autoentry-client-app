@@ -16,6 +16,8 @@ import {
   RefreshCw,
   Settings,
   ShieldCheck,
+  Printer,
+  Download,
   Upload,
   UsersRound,
   WalletCards,
@@ -29,20 +31,37 @@ const MODULES = [
   { key: "vat", label: "VAT", icon: ShieldCheck },
   { key: "gl", label: "General ledger", icon: Landmark },
   { key: "coa", label: "Chart of accounts", icon: BookOpen },
+  { key: "audit", label: "Audit trail", icon: ShieldCheck },
   { key: "reports", label: "Reports", icon: FileBarChart },
   { key: "settings", label: "Settings", icon: Settings },
 ];
 
 const ACCOUNT_TYPES = [
-  "asset",
-  "liability",
-  "equity",
-  "income",
-  "expense",
-  "bank",
-  "receivable",
-  "payable",
-  "vat",
+  "Bank",
+  "Receivable",
+  "Payable",
+  "VAT",
+  "Tax",
+  "Payroll",
+  "Equity",
+  "Sales",
+  "Purchases",
+  "Cost of Sales",
+  "Overheads",
+  "Suspense",
+];
+
+const ACCOUNT_CATEGORIES = ["Asset", "Liability", "Equity", "Income", "Expense"];
+const ACCOUNT_PURPOSES = [
+  "Sales Ledger",
+  "Purchase Ledger",
+  "Bank Account",
+  "VAT Control",
+  "Suspense",
+  "Retained Earnings",
+  "Corporation Tax",
+  "Payroll Control",
+  "Standard Nominal",
 ];
 
 const MODULE_DETAILS = {
@@ -76,31 +95,38 @@ const MODULE_DETAILS = {
   },
   gl: {
     title: "General Ledger",
-    manage: ["Journals", "Nominal Activity", "Audit Trail"],
+    manage: ["Transactions", "Journals", "Account Activity", "Trial Balance"],
     statLabel: "Posted journals",
     stat: (workspace) => workspace?.summary?.journals || 0,
-    tabs: ["Journals", "Audit Trail", "Reports"],
+    tabs: ["Transactions", "Journals", "Account Activity", "Trial Balance"],
   },
   coa: {
     title: "Chart of Accounts",
-    manage: ["Nominal Codes", "Control Accounts", "Account Types"],
+    manage: ["One account list", "Purpose filters", "Control account flags"],
     statLabel: "Accounts",
     stat: (workspace) => workspace?.reports?.account_count || workspace?.accounts?.length || 0,
-    tabs: ["Accounts", "Control Accounts", "Defaults"],
+    tabs: ["Chart of Accounts"],
+  },
+  audit: {
+    title: "Audit Trail",
+    manage: ["User actions", "Record changes", "Posting history"],
+    statLabel: "Audit events",
+    stat: (workspace) => workspace?.audit_log?.length || 0,
+    tabs: ["Audit Trail"],
   },
   reports: {
     title: "Reports",
-    manage: ["Profit and Loss", "Balance Sheet", "Trial Balance", "Aged Balances"],
+    manage: ["Trial Balance", "Profit and Loss", "Balance Sheet", "Aged Balances"],
     statLabel: "Net assets",
     stat: (workspace) => formatMoney(workspace?.reports?.balance_sheet?.net_assets),
-    tabs: ["Overview", "Profit and Loss", "Balance Sheet", "Aged Balances", "Trial Balance"],
+    tabs: ["Report Centre", "Trial Balance", "Profit and Loss", "Balance Sheet", "Cash Flow", "Aged Debtors", "Aged Creditors", "VAT Summary", "Nominal Activity"],
   },
   settings: {
     title: "Settings",
-    manage: ["Accounting Periods", "Audit Trail", "Ledger Settings"],
+    manage: ["Accounting Defaults", "Financial Years", "Period Locks"],
     statLabel: "Accounting periods",
     stat: (workspace) => workspace?.periods?.length || 0,
-    tabs: ["Periods", "Audit Trail", "Settings"],
+    tabs: ["Accounting Settings", "Financial Years", "Periods"],
   },
 };
 
@@ -112,12 +138,14 @@ export default function AdminAccountancySoftware() {
   const [moduleTab, setModuleTab] = useState("");
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
-  const [accountForm, setAccountForm] = useState({ code: "", name: "", type: "expense", description: "" });
+  const [accountForm, setAccountForm] = useState({ code: "", name: "", category: "Expense", account_type: "Overheads", purpose: "Standard Nominal", normal_balance: "debit", is_control_account: false, description: "" });
   const [contactForm, setContactForm] = useState({ name: "", contact_type: "supplier", email: "" });
   const [bankForm, setBankForm] = useState({ transaction_date: "", description: "", reference: "", money_in: "", money_out: "", bank_account_code: "1200" });
   const [bankImportFile, setBankImportFile] = useState(null);
   const [vatForm, setVatForm] = useState({ period_start: "", period_end: "" });
   const [periodForm, setPeriodForm] = useState({ period_start: "", period_end: "", notes: "" });
+  const [financialYearForm, setFinancialYearForm] = useState({ name: "", start_date: "", end_date: "" });
+  const [settingsForm, setSettingsForm] = useState({});
 
   const loadClients = useCallback(async () => {
     try {
@@ -138,6 +166,7 @@ export default function AdminAccountancySoftware() {
     try {
       const { data } = await api.get(`/admin/accounting/clients/${clientId}`);
       setWorkspace(data);
+      setSettingsForm(data?.accounting_settings || {});
     } catch (e) {
       toast.error(formatApiError(e));
       setWorkspace(null);
@@ -193,7 +222,7 @@ export default function AdminAccountancySoftware() {
     try {
       await api.post(`/admin/accounting/clients/${workspace.client.id}/accounts`, accountForm);
       toast.success("Account created");
-      setAccountForm({ code: "", name: "", type: "expense", description: "" });
+      setAccountForm({ code: "", name: "", category: "Expense", account_type: "Overheads", purpose: "Standard Nominal", normal_balance: "debit", is_control_account: false, description: "" });
       await loadWorkspace(workspace.client.id);
     } catch (e) {
       toast.error(formatApiError(e));
@@ -327,6 +356,52 @@ export default function AdminAccountancySoftware() {
     }
   }
 
+  async function createFinancialYear(e) {
+    e.preventDefault();
+    if (!workspace?.client?.id) return;
+    setBusy(true);
+    try {
+      const { data } = await api.post(`/admin/accounting/clients/${workspace.client.id}/financial-years`, financialYearForm);
+      toast.success(`Financial year created with ${data?.periods_created || 0} periods`);
+      setFinancialYearForm({ name: "", start_date: "", end_date: "" });
+      await loadWorkspace(workspace.client.id);
+    } catch (e) {
+      toast.error(formatApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updatePeriodStatus(periodId, status) {
+    if (!workspace?.client?.id) return;
+    setBusy(true);
+    try {
+      await api.patch(`/admin/accounting/clients/${workspace.client.id}/periods/${periodId}`, { status });
+      toast.success(`Period ${status}`);
+      await loadWorkspace(workspace.client.id);
+    } catch (e) {
+      toast.error(formatApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveAccountingSettings(e) {
+    e.preventDefault();
+    if (!workspace?.client?.id) return;
+    setBusy(true);
+    try {
+      const { data } = await api.put(`/admin/accounting/clients/${workspace.client.id}/settings`, settingsForm);
+      setSettingsForm(data || {});
+      toast.success("Accounting settings saved");
+      await loadWorkspace(workspace.client.id);
+    } catch (e) {
+      toast.error(formatApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="space-y-4">
       {!selectedId && (
@@ -378,6 +453,13 @@ export default function AdminAccountancySoftware() {
           periodForm={periodForm}
           setPeriodForm={setPeriodForm}
           createPeriod={createPeriod}
+          financialYearForm={financialYearForm}
+          setFinancialYearForm={setFinancialYearForm}
+          createFinancialYear={createFinancialYear}
+          updatePeriodStatus={updatePeriodStatus}
+          settingsForm={settingsForm}
+          setSettingsForm={setSettingsForm}
+          saveAccountingSettings={saveAccountingSettings}
           busy={busy}
         />
       )}
@@ -545,8 +627,16 @@ function ModuleWorkspace(props) {
     periodForm,
     setPeriodForm,
     createPeriod,
+    financialYearForm,
+    setFinancialYearForm,
+    createFinancialYear,
+    updatePeriodStatus,
+    settingsForm,
+    setSettingsForm,
+    saveAccountingSettings,
     busy,
   } = props;
+  const [filters, setFilters] = useState({ date_from: "", date_to: "", financial_year_id: "", period_id: "", search: "" });
   const detail = MODULE_DETAILS[module];
 
   function renderTab() {
@@ -594,23 +684,33 @@ function ModuleWorkspace(props) {
     }
 
     if (module === "gl") {
+      if (moduleTab === "Transactions") return <TransactionsWorkspace workspace={workspace} filters={filters} />;
       if (moduleTab === "Journals") return <JournalTable journals={workspace.journals} />;
-      if (moduleTab === "Reports") return <ReportsWorkspace workspace={workspace} />;
+      if (moduleTab === "Account Activity") return <AccountActivityWorkspace workspace={workspace} filters={filters} />;
+      if (moduleTab === "Trial Balance") return <TrialBalanceReport workspace={workspace} />;
       return <PlaceholderModulePanel title={moduleTab} moduleTitle={detail.title} />;
     }
 
     if (module === "coa") {
-      if (moduleTab === "Accounts") {
+      if (moduleTab === "Chart of Accounts") {
         return <ChartOfAccounts accounts={workspace.accounts} form={accountForm} setForm={setAccountForm} createAccount={createAccount} busy={busy} />;
       }
       return <PlaceholderModulePanel title={moduleTab} moduleTitle={detail.title} />;
     }
 
-    if (module === "reports") return <ReportsWorkspace workspace={workspace} />;
+    if (module === "audit") return <AuditTrailWorkspace auditLog={workspace.audit_log} />;
+
+    if (module === "reports") return <ReportsWorkspace workspace={workspace} activeReport={moduleTab} filters={filters} />;
 
     if (module === "settings") {
-      if (moduleTab === "Periods" || moduleTab === "Audit Trail" || moduleTab === "Settings") {
-        return <SettingsWorkspace workspace={workspace} form={periodForm} setForm={setPeriodForm} createPeriod={createPeriod} busy={busy} />;
+      if (moduleTab === "Accounting Settings") {
+        return <AccountingSettingsWorkspace accounts={workspace.accounts} form={settingsForm} setForm={setSettingsForm} saveSettings={saveAccountingSettings} busy={busy} />;
+      }
+      if (moduleTab === "Financial Years") {
+        return <FinancialYearsWorkspace workspace={workspace} form={financialYearForm} setForm={setFinancialYearForm} createFinancialYear={createFinancialYear} busy={busy} />;
+      }
+      if (moduleTab === "Periods") {
+        return <PeriodsWorkspace workspace={workspace} form={periodForm} setForm={setPeriodForm} createPeriod={createPeriod} updatePeriodStatus={updatePeriodStatus} busy={busy} />;
       }
     }
 
@@ -643,6 +743,7 @@ function ModuleWorkspace(props) {
           </div>
         </div>
       </header>
+      <AccountingFilterBar workspace={workspace} filters={filters} setFilters={setFilters} />
       {renderTab()}
     </div>
   );
@@ -726,9 +827,144 @@ function LedgerView({ title, journals, accountCodes }) {
   );
 }
 
+function AccountingFilterBar({ workspace, filters, setFilters }) {
+  const years = workspace.financial_years || [];
+  const periods = workspace.periods || [];
+  const filteredPeriods = filters.financial_year_id ? periods.filter((period) => period.financial_year_id === filters.financial_year_id) : periods;
+  return (
+    <section className="rounded-md border border-stone-200 bg-white p-3">
+      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-[150px_150px_190px_190px_1fr_auto_auto_auto]">
+        <Input type="date" value={filters.date_from} onChange={(e) => setFilters((current) => ({ ...current, date_from: e.target.value }))} className="h-9" />
+        <Input type="date" value={filters.date_to} onChange={(e) => setFilters((current) => ({ ...current, date_to: e.target.value }))} className="h-9" />
+        <select
+          value={filters.financial_year_id}
+          onChange={(e) => setFilters((current) => ({ ...current, financial_year_id: e.target.value, period_id: "" }))}
+          className="h-9 rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm"
+        >
+          <option value="">All financial years</option>
+          {years.map((year) => <option key={year.id} value={year.id}>{year.name}</option>)}
+        </select>
+        <select
+          value={filters.period_id}
+          onChange={(e) => setFilters((current) => ({ ...current, period_id: e.target.value }))}
+          className="h-9 rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm"
+        >
+          <option value="">All periods</option>
+          {filteredPeriods.map((period) => (
+            <option key={period.id} value={period.id}>{period.period_name || "Period"} - {formatDate(period.period_start)}</option>
+          ))}
+        </select>
+        <Input
+          value={filters.search}
+          onChange={(e) => setFilters((current) => ({ ...current, search: e.target.value }))}
+          placeholder="Search reference, account, contact..."
+          className="h-9"
+        />
+        <Button type="button" variant="outline" className="h-9 gap-2"><RefreshCw className="h-4 w-4" /> Refresh</Button>
+        <Button type="button" variant="outline" className="h-9 gap-2"><Download className="h-4 w-4" /> Export</Button>
+        <Button type="button" variant="outline" className="h-9 gap-2"><Printer className="h-4 w-4" /> Print</Button>
+      </div>
+    </section>
+  );
+}
+
+function journalLines(workspace, filters = {}) {
+  const search = String(filters.search || "").toLowerCase();
+  const selectedPeriod = (workspace.periods || []).find((period) => period.id === filters.period_id);
+  const selectedYear = (workspace.financial_years || []).find((year) => year.id === filters.financial_year_id);
+  const start = filters.date_from || selectedPeriod?.period_start || selectedYear?.start_date || "";
+  const end = filters.date_to || selectedPeriod?.period_end || selectedYear?.end_date || "";
+  const rows = [];
+  (workspace.journals || []).forEach((journal) => {
+    if (start && journal.entry_date < start) return;
+    if (end && journal.entry_date > end) return;
+    (journal.lines || []).forEach((line) => {
+      const haystack = `${journal.reference || ""} ${journal.description || ""} ${line.account_code || ""} ${line.account_name || ""} ${line.description || ""}`.toLowerCase();
+      if (search && !haystack.includes(search)) return;
+      rows.push({ journal, line });
+    });
+  });
+  return rows;
+}
+
+function TransactionsWorkspace({ workspace, filters }) {
+  const rows = journalLines(workspace, filters);
+  return (
+    <Panel title="Transactions">
+      {rows.length === 0 ? (
+        <p className="py-10 text-center text-sm text-stone-500">No transactions match the selected filters.</p>
+      ) : (
+        <AccountingRows rows={rows} />
+      )}
+    </Panel>
+  );
+}
+
+function AccountActivityWorkspace({ workspace, filters }) {
+  const rows = journalLines(workspace, filters);
+  const grouped = rows.reduce((acc, row) => {
+    const key = row.line.account_code || "unknown";
+    if (!acc[key]) acc[key] = { account: `${row.line.account_code} - ${row.line.account_name}`, debit: 0, credit: 0, rows: [] };
+    acc[key].debit += Number(row.line.debit || 0);
+    acc[key].credit += Number(row.line.credit || 0);
+    acc[key].rows.push(row);
+    return acc;
+  }, {});
+  return (
+    <Panel title="Account activity">
+      {Object.keys(grouped).length === 0 ? (
+        <p className="py-10 text-center text-sm text-stone-500">No account activity for this filter.</p>
+      ) : (
+        <div className="space-y-3">
+          {Object.values(grouped).map((group) => (
+            <div key={group.account} className="rounded-md border border-stone-200">
+              <div className="flex flex-col gap-2 border-b border-stone-100 bg-stone-50 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+                <strong className="text-sm text-stone-900">{group.account}</strong>
+                <span className="text-xs text-stone-500">Debit {formatMoney(group.debit)} / Credit {formatMoney(group.credit)}</span>
+              </div>
+              <AccountingRows rows={group.rows} compact />
+            </div>
+          ))}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function AccountingRows({ rows, compact = false }) {
+  return (
+    <div className="overflow-auto">
+      <table className="min-w-full text-left text-sm">
+        <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
+          <tr>
+            <th className="px-3 py-2">Date</th>
+            <th className="px-3 py-2">Reference</th>
+            <th className="px-3 py-2">Account</th>
+            {!compact && <th className="px-3 py-2">Description</th>}
+            <th className="px-3 py-2 text-right">Debit</th>
+            <th className="px-3 py-2 text-right">Credit</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(({ journal, line }) => (
+            <tr key={`${journal.id}-${line.id}`} className="border-t border-stone-100">
+              <td className="px-3 py-2">{formatDate(journal.entry_date)}</td>
+              <td className="px-3 py-2 font-medium text-stone-900">{journal.reference || "-"}</td>
+              <td className="px-3 py-2 text-stone-700">{line.account_code} - {line.account_name}</td>
+              {!compact && <td className="px-3 py-2 text-stone-500">{line.description || journal.description || "-"}</td>}
+              <td className="px-3 py-2 text-right">{formatMoney(line.debit)}</td>
+              <td className="px-3 py-2 text-right">{formatMoney(line.credit)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function BankingWorkspace({ workspace, form, setForm, importFile, setImportFile, createBankTransaction, importBankTransactions, reconcileBankTransaction, busy }) {
-  const bankAccounts = (workspace.accounts || []).filter((account) => account.account_type === "bank" || account.code === "1200");
-  const postingAccounts = (workspace.accounts || []).filter((account) => account.active && account.account_type !== "bank");
+  const bankAccounts = (workspace.accounts || []).filter((account) => String(account.account_type || "").toLowerCase() === "bank" || account.purpose === "Bank Account" || account.code === "1200");
+  const postingAccounts = (workspace.accounts || []).filter((account) => account.active && String(account.account_type || "").toLowerCase() !== "bank" && account.purpose !== "Bank Account");
   return (
     <div className="grid gap-4 xl:grid-cols-[1fr_360px]">
       <Panel title="Bank feed">
@@ -981,6 +1217,186 @@ function JournalTable({ journals, compact = false }) {
   );
 }
 
+function AuditTrailWorkspace({ auditLog = [] }) {
+  return (
+    <Panel title="Audit trail">
+      {auditLog.length === 0 ? (
+        <p className="py-10 text-center text-sm text-stone-500">No audit events yet.</p>
+      ) : (
+        <div className="overflow-auto">
+          <table className="min-w-full text-left text-sm">
+            <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
+              <tr>
+                <th className="px-3 py-2">Date & time</th>
+                <th className="px-3 py-2">User</th>
+                <th className="px-3 py-2">Module</th>
+                <th className="px-3 py-2">Record</th>
+                <th className="px-3 py-2">Action</th>
+                <th className="px-3 py-2">Previous</th>
+                <th className="px-3 py-2">New</th>
+                <th className="px-3 py-2">IP</th>
+              </tr>
+            </thead>
+            <tbody>
+              {auditLog.map((event) => (
+                <tr key={event.id} className="border-t border-stone-100 align-top">
+                  <td className="px-3 py-2 whitespace-nowrap">{formatDateTime(event.created_at)}</td>
+                  <td className="px-3 py-2 text-stone-600">{event.actor_id || "-"}</td>
+                  <td className="px-3 py-2 text-stone-600">{event.module || event.entity_type || "-"}</td>
+                  <td className="px-3 py-2 text-stone-600">{event.record_type || event.entity_type || "-"}<br /><span className="text-xs text-stone-400">{event.record_id || event.entity_id || "-"}</span></td>
+                  <td className="px-3 py-2 font-semibold text-stone-900">{event.action}</td>
+                  <td className="max-w-64 px-3 py-2 text-xs text-stone-500">{displayAuditValue(event.previous_value)}</td>
+                  <td className="max-w-64 px-3 py-2 text-xs text-stone-500">{displayAuditValue(event.new_value || event.details_json)}</td>
+                  <td className="px-3 py-2 text-stone-500">{event.ip_address || "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function AccountSelect({ accounts = [], value, onChange, purpose = "", label }) {
+  const options = purpose ? accounts.filter((account) => account.purpose === purpose || !value) : accounts;
+  return (
+    <div>
+      <Label className="text-xs font-semibold text-stone-600">{label}</Label>
+      <select
+        value={value || ""}
+        onChange={(e) => onChange(e.target.value)}
+        className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm"
+      >
+        <option value="">Select account</option>
+        {options.map((account) => (
+          <option key={account.id || account.code} value={account.code}>
+            {account.code} - {account.name}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+function AccountingSettingsWorkspace({ accounts, form, setForm, saveSettings, busy }) {
+  const updateField = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  return (
+    <Panel title="Accounting settings">
+      <form onSubmit={saveSettings} className="space-y-4">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <AccountSelect label="Default Sales Account" accounts={accounts} purpose="Standard Nominal" value={form.default_sales_account} onChange={(value) => updateField("default_sales_account", value)} />
+          <AccountSelect label="Default Purchase Account" accounts={accounts} purpose="Standard Nominal" value={form.default_purchase_account} onChange={(value) => updateField("default_purchase_account", value)} />
+          <AccountSelect label="Default VAT Control Account" accounts={accounts} purpose="VAT Control" value={form.default_vat_control_account} onChange={(value) => updateField("default_vat_control_account", value)} />
+          <AccountSelect label="Default Bank Account" accounts={accounts} purpose="Bank Account" value={form.default_bank_account} onChange={(value) => updateField("default_bank_account", value)} />
+          <AccountSelect label="Default Suspense Account" accounts={accounts} purpose="Suspense" value={form.default_suspense_account} onChange={(value) => updateField("default_suspense_account", value)} />
+          <AccountSelect label="Default Debtors Control Account" accounts={accounts} purpose="Sales Ledger" value={form.default_debtors_control_account} onChange={(value) => updateField("default_debtors_control_account", value)} />
+          <AccountSelect label="Default Creditors Control Account" accounts={accounts} purpose="Purchase Ledger" value={form.default_creditors_control_account} onChange={(value) => updateField("default_creditors_control_account", value)} />
+          <AccountSelect label="Default Retained Earnings Account" accounts={accounts} purpose="Retained Earnings" value={form.default_retained_earnings_account} onChange={(value) => updateField("default_retained_earnings_account", value)} />
+        </div>
+        <div className="flex justify-end">
+          <Button disabled={busy} className="gap-2" style={{ background: "var(--brand)" }}>Save accounting settings</Button>
+        </div>
+      </form>
+    </Panel>
+  );
+}
+
+function FinancialYearsWorkspace({ workspace, form, setForm, createFinancialYear, busy }) {
+  return (
+    <div className="grid gap-4 xl:grid-cols-[1fr_360px]">
+      <Panel title="Financial years">
+        {(workspace.financial_years || []).length === 0 ? (
+          <p className="py-10 text-center text-sm text-stone-500">No financial years created yet. Create a year and EPOS will generate the periods automatically.</p>
+        ) : (
+          <div className="overflow-auto">
+            <table className="min-w-full text-left text-sm">
+              <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
+                <tr>
+                  <th className="px-3 py-2">Name</th>
+                  <th className="px-3 py-2">Start</th>
+                  <th className="px-3 py-2">End</th>
+                  <th className="px-3 py-2">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(workspace.financial_years || []).map((year) => (
+                  <tr key={year.id} className="border-t border-stone-100">
+                    <td className="px-3 py-2 font-semibold text-stone-900">{year.name}</td>
+                    <td className="px-3 py-2">{formatDate(year.start_date)}</td>
+                    <td className="px-3 py-2">{formatDate(year.end_date)}</td>
+                    <td className="px-3 py-2"><Badge variant="outline" className="capitalize">{year.status}</Badge></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+      <Panel title="Create financial year">
+        <form onSubmit={createFinancialYear} className="space-y-3">
+          <Field label="Financial year name" value={form.name} onChange={(value) => setForm((current) => ({ ...current, name: value }))} />
+          <Field label="Start date" type="date" value={form.start_date} onChange={(value) => setForm((current) => ({ ...current, start_date: value }))} />
+          <Field label="End date" type="date" value={form.end_date} onChange={(value) => setForm((current) => ({ ...current, end_date: value }))} />
+          <Button disabled={busy} className="w-full" style={{ background: "var(--brand)" }}>Create year and periods</Button>
+        </form>
+      </Panel>
+    </div>
+  );
+}
+
+function PeriodsWorkspace({ workspace, updatePeriodStatus, busy }) {
+  return (
+    <div>
+      <Panel title="Accounting periods">
+        {(workspace.periods || []).length === 0 ? (
+          <p className="py-10 text-center text-sm text-stone-500">No periods created yet. Create a financial year to generate periods automatically.</p>
+        ) : (
+          <div className="overflow-auto">
+            <table className="min-w-full text-left text-sm">
+              <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
+                <tr>
+                  <th className="px-3 py-2">Period</th>
+                  <th className="px-3 py-2">Start Date</th>
+                  <th className="px-3 py-2">End Date</th>
+                  <th className="px-3 py-2">Status</th>
+                  <th className="px-3 py-2 text-right">Transactions Posted</th>
+                  <th className="px-3 py-2">Last Updated</th>
+                  <th className="px-3 py-2">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(workspace.periods || []).map((period) => (
+                  <tr key={period.id} className="border-t border-stone-100">
+                    <td className="px-3 py-2 font-semibold text-stone-900">{period.period_name || period.notes || "Period"}</td>
+                    <td className="px-3 py-2">{formatDate(period.period_start)}</td>
+                    <td className="px-3 py-2">{formatDate(period.period_end)}</td>
+                    <td className="px-3 py-2"><Badge variant="outline" className="capitalize">{period.status}</Badge></td>
+                    <td className="px-3 py-2 text-right">{period.transactions_posted || 0}</td>
+                    <td className="px-3 py-2">{formatDateTime(period.updated_at)}</td>
+                    <td className="px-3 py-2">
+                      <select
+                        value={period.status || "open"}
+                        disabled={busy}
+                        onChange={(e) => updatePeriodStatus(period.id, e.target.value)}
+                        className="h-8 rounded-md border border-stone-200 bg-white px-2 text-xs shadow-sm"
+                      >
+                        <option value="open">Open</option>
+                        <option value="locked">Locked</option>
+                        <option value="closed">Closed</option>
+                      </select>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
 function SettingsWorkspace({ workspace, form, setForm, createPeriod, busy }) {
   return (
     <div className="grid gap-4 xl:grid-cols-[1fr_360px]">
@@ -1002,23 +1418,6 @@ function SettingsWorkspace({ workspace, form, setForm, createPeriod, busy }) {
             </div>
           )}
         </Panel>
-        <Panel title="Audit trail">
-          {(workspace.audit_log || []).length === 0 ? (
-            <p className="py-8 text-center text-sm text-stone-500">No audit events yet.</p>
-          ) : (
-            <div className="space-y-2">
-              {(workspace.audit_log || []).map((event) => (
-                <div key={event.id} className="rounded-md border border-stone-200 p-3 text-sm">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="font-semibold text-stone-900">{event.action}</span>
-                    <span className="text-xs text-stone-500">{formatDate(event.created_at)}</span>
-                  </div>
-                  <p className="mt-1 text-xs text-stone-500">{event.entity_type} - {event.entity_id}</p>
-                </div>
-              ))}
-            </div>
-          )}
-        </Panel>
       </div>
       <Panel title="Add period">
         <form onSubmit={createPeriod} className="space-y-3">
@@ -1033,26 +1432,65 @@ function SettingsWorkspace({ workspace, form, setForm, createPeriod, busy }) {
 }
 
 function ChartOfAccounts({ accounts, form, setForm, createAccount, busy }) {
+  const [filters, setFilters] = useState({ category: "", account_type: "", purpose: "", active: "active", search: "" });
+  const visibleAccounts = (accounts || []).filter((account) => {
+    if (filters.category && account.category !== filters.category) return false;
+    if (filters.account_type && account.account_type !== filters.account_type) return false;
+    if (filters.purpose && account.purpose !== filters.purpose) return false;
+    if (filters.active === "active" && !account.active) return false;
+    if (filters.active === "inactive" && account.active) return false;
+    const needle = filters.search.trim().toLowerCase();
+    if (needle && !`${account.code || ""} ${account.name || ""}`.toLowerCase().includes(needle)) return false;
+    return true;
+  });
   return (
-    <div className="grid gap-4 xl:grid-cols-[1fr_360px]">
+    <div className="grid gap-4 xl:grid-cols-[1fr_380px]">
       <Panel title="Chart of accounts">
+        <div className="mb-3 grid gap-2 md:grid-cols-3 xl:grid-cols-5">
+          <Input value={filters.search} onChange={(e) => setFilters((current) => ({ ...current, search: e.target.value }))} placeholder="Search code or name" className="h-9" />
+          <select value={filters.category} onChange={(e) => setFilters((current) => ({ ...current, category: e.target.value }))} className="h-9 rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm">
+            <option value="">All categories</option>
+            {ACCOUNT_CATEGORIES.map((category) => <option key={category} value={category}>{category}</option>)}
+          </select>
+          <select value={filters.account_type} onChange={(e) => setFilters((current) => ({ ...current, account_type: e.target.value }))} className="h-9 rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm">
+            <option value="">All account types</option>
+            {ACCOUNT_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
+          </select>
+          <select value={filters.purpose} onChange={(e) => setFilters((current) => ({ ...current, purpose: e.target.value }))} className="h-9 rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm">
+            <option value="">All purposes</option>
+            {ACCOUNT_PURPOSES.map((purpose) => <option key={purpose} value={purpose}>{purpose}</option>)}
+          </select>
+          <select value={filters.active} onChange={(e) => setFilters((current) => ({ ...current, active: e.target.value }))} className="h-9 rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm">
+            <option value="active">Active</option>
+            <option value="inactive">Inactive</option>
+            <option value="">All statuses</option>
+          </select>
+        </div>
         <div className="overflow-auto">
           <table className="min-w-full text-left text-sm">
             <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
               <tr>
-                <th className="px-3 py-2">Code</th>
-                <th className="px-3 py-2">Name</th>
-                <th className="px-3 py-2">Type</th>
-                <th className="px-3 py-2">System</th>
+                <th className="px-3 py-2">Account Code</th>
+                <th className="px-3 py-2">Account Name</th>
+                <th className="px-3 py-2">Category</th>
+                <th className="px-3 py-2">Account Type</th>
+                <th className="px-3 py-2">Purpose</th>
+                <th className="px-3 py-2">Control</th>
+                <th className="px-3 py-2">Active</th>
+                <th className="px-3 py-2 text-right">Current Balance</th>
               </tr>
             </thead>
             <tbody>
-              {(accounts || []).map((account) => (
+              {visibleAccounts.map((account) => (
                 <tr key={account.id} className="border-t border-stone-100">
                   <td className="px-3 py-2 font-semibold text-stone-900">{account.code}</td>
                   <td className="px-3 py-2">{account.name}</td>
+                  <td className="px-3 py-2 text-stone-600">{account.category}</td>
                   <td className="px-3 py-2 text-stone-600">{account.account_type || account.type}</td>
-                  <td className="px-3 py-2">{account.is_system ? <Badge variant="outline">System</Badge> : "-"}</td>
+                  <td className="px-3 py-2 text-stone-600">{account.purpose || "Standard Nominal"}</td>
+                  <td className="px-3 py-2">{account.is_control_account || account.control_account ? <Badge variant="outline">Control</Badge> : "-"}</td>
+                  <td className="px-3 py-2">{account.active ? "Active" : "Inactive"}</td>
+                  <td className="px-3 py-2 text-right font-semibold">{formatMoney(account.current_balance)}</td>
                 </tr>
               ))}
             </tbody>
@@ -1064,15 +1502,54 @@ function ChartOfAccounts({ accounts, form, setForm, createAccount, busy }) {
           <Field label="Code" value={form.code} onChange={(value) => setForm((current) => ({ ...current, code: value }))} />
           <Field label="Name" value={form.name} onChange={(value) => setForm((current) => ({ ...current, name: value }))} />
           <div>
-            <Label className="text-xs font-semibold text-stone-600">Type</Label>
+            <Label className="text-xs font-semibold text-stone-600">Category</Label>
             <select
-              value={form.type}
-              onChange={(e) => setForm((current) => ({ ...current, type: e.target.value }))}
+              value={form.category}
+              onChange={(e) => setForm((current) => ({ ...current, category: e.target.value }))}
+              className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm"
+            >
+              {ACCOUNT_CATEGORIES.map((category) => <option key={category} value={category}>{category}</option>)}
+            </select>
+          </div>
+          <div>
+            <Label className="text-xs font-semibold text-stone-600">Account Type</Label>
+            <select
+              value={form.account_type}
+              onChange={(e) => setForm((current) => ({ ...current, account_type: e.target.value }))}
               className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm"
             >
               {ACCOUNT_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
             </select>
           </div>
+          <div>
+            <Label className="text-xs font-semibold text-stone-600">Purpose</Label>
+            <select
+              value={form.purpose}
+              onChange={(e) => setForm((current) => ({ ...current, purpose: e.target.value }))}
+              className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm"
+            >
+              {ACCOUNT_PURPOSES.map((purpose) => <option key={purpose} value={purpose}>{purpose}</option>)}
+            </select>
+          </div>
+          <div>
+            <Label className="text-xs font-semibold text-stone-600">Normal Balance</Label>
+            <select
+              value={form.normal_balance}
+              onChange={(e) => setForm((current) => ({ ...current, normal_balance: e.target.value }))}
+              className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm"
+            >
+              <option value="debit">Debit</option>
+              <option value="credit">Credit</option>
+            </select>
+          </div>
+          <label className="flex items-center gap-2 rounded-md border border-stone-200 p-3 text-sm font-semibold text-stone-700">
+            <input
+              type="checkbox"
+              checked={!!form.is_control_account}
+              onChange={(e) => setForm((current) => ({ ...current, is_control_account: e.target.checked }))}
+            />
+            Is Control Account
+          </label>
           <Field label="Description" value={form.description} onChange={(value) => setForm((current) => ({ ...current, description: value }))} />
           <Button disabled={busy} className="w-full gap-2" style={{ background: "var(--brand)" }}>
             <Plus className="h-4 w-4" /> Create account
@@ -1083,13 +1560,30 @@ function ChartOfAccounts({ accounts, form, setForm, createAccount, busy }) {
   );
 }
 
-function ReportsWorkspace({ workspace }) {
+function ReportsWorkspace({ workspace, activeReport }) {
   const reports = workspace.reports || {};
   const pnl = reports.profit_and_loss || {};
   const balanceSheet = reports.balance_sheet || {};
   const trialBalance = reports.trial_balance || [];
   const agedReceivables = reports.aged_receivables || [];
   const agedPayables = reports.aged_payables || [];
+  if (activeReport === "Trial Balance") return <TrialBalanceReport workspace={workspace} />;
+  if (activeReport === "Profit and Loss") {
+    return (
+      <Panel title="Profit and Loss">
+        <ReportRows rows={[["Income", pnl.income], ["Expenses", pnl.expenses], ["Profit / loss", pnl.profit]]} />
+      </Panel>
+    );
+  }
+  if (activeReport === "Balance Sheet") {
+    return (
+      <Panel title="Balance Sheet">
+        <ReportRows rows={[["Assets", balanceSheet.assets], ["Liabilities", balanceSheet.liabilities], ["Equity", balanceSheet.equity], ["Net assets", balanceSheet.net_assets]]} />
+      </Panel>
+    );
+  }
+  if (activeReport === "Aged Debtors") return <AgedBalanceTable title="Aged debtors" rows={agedReceivables} empty="No customer balances yet." />;
+  if (activeReport === "Aged Creditors") return <AgedBalanceTable title="Aged creditors" rows={agedPayables} empty="No supplier balances yet." />;
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -1150,6 +1644,42 @@ function ReportsWorkspace({ workspace }) {
         )}
       </Panel>
     </div>
+  );
+}
+
+function TrialBalanceReport({ workspace }) {
+  const trialBalance = workspace?.reports?.trial_balance || [];
+  return (
+    <Panel title="Trial balance">
+      {trialBalance.length === 0 ? (
+        <p className="py-8 text-center text-sm text-stone-500">No posted balances yet.</p>
+      ) : (
+        <div className="overflow-auto">
+          <table className="min-w-full text-left text-sm">
+            <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
+              <tr>
+                <th className="px-3 py-2">Code</th>
+                <th className="px-3 py-2">Account</th>
+                <th className="px-3 py-2">Type</th>
+                <th className="px-3 py-2 text-right">Debit</th>
+                <th className="px-3 py-2 text-right">Credit</th>
+              </tr>
+            </thead>
+            <tbody>
+              {trialBalance.map((row) => (
+                <tr key={row.code} className="border-t border-stone-100">
+                  <td className="px-3 py-2 font-semibold text-stone-900">{row.code}</td>
+                  <td className="px-3 py-2">{row.name}</td>
+                  <td className="px-3 py-2 text-stone-600">{row.type || row.account_type}</td>
+                  <td className="px-3 py-2 text-right">{formatMoney(row.debit)}</td>
+                  <td className="px-3 py-2 text-right">{formatMoney(row.credit)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
   );
 }
 
@@ -1270,4 +1800,22 @@ function formatDate(value) {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return value;
   return d.toLocaleDateString("en-GB");
+}
+
+function formatDateTime(value) {
+  if (!value) return "-";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleString("en-GB");
+}
+
+function displayAuditValue(value) {
+  if (!value) return "-";
+  if (typeof value === "string") return value.length > 160 ? `${value.slice(0, 160)}...` : value;
+  try {
+    const text = JSON.stringify(value);
+    return text.length > 160 ? `${text.slice(0, 160)}...` : text;
+  } catch {
+    return "-";
+  }
 }
