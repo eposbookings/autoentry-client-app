@@ -10,6 +10,7 @@ import AdminClientDetail from "@/pages/admin/AdminClientDetail";
 import AdminSubmissions from "@/pages/admin/AdminSubmissions";
 import AdminIntegrations from "@/pages/admin/AdminIntegrations";
 import AdminIntegrationHub from "@/pages/admin/AdminIntegrationHub";
+import AdminPlatform from "@/pages/admin/AdminPlatform";
 import AdminAccountancySettings from "@/pages/admin/AdminAccountancySettings";
 import AdminAccountancySoftware from "@/pages/admin/AdminAccountancySoftware";
 import AdminAutomation from "@/pages/admin/AdminAutomation";
@@ -79,6 +80,7 @@ export default function App() {
             <Route path="accountancy" element={<AdminAccountancySettings />} />
             <Route path="automation" element={<AdminAutomation />} />
             <Route path="settings" element={<AdminSettings />} />
+            <Route path="platform" element={<AdminPlatform />} />
           </Route>
 
           <Route path="/portal" element={<Protected role="client"><ClientLayout /></Protected>}>

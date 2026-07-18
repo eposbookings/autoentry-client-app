@@ -1414,6 +1414,108 @@ integration_hub_settings = Table(
     Column("updated_at", String(64)),
 )
 
+platform_roles = Table(
+    "platform_roles",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("name", String(128), nullable=False, index=True),
+    Column("description", Text),
+    Column("permissions_json", Text),
+    Column("system_role", Boolean, default=False, index=True),
+    Column("active", Boolean, default=True, index=True),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+platform_user_roles = Table(
+    "platform_user_roles",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("user_id", String(36), nullable=False, index=True),
+    Column("role_id", String(36), nullable=False, index=True),
+    Column("created_at", String(64)),
+)
+
+platform_background_jobs = Table(
+    "platform_background_jobs",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("job_type", String(128), nullable=False, index=True),
+    Column("module", String(128), index=True),
+    Column("status", String(64), default="queued", index=True),
+    Column("progress", Integer, default=0),
+    Column("description", Text),
+    Column("payload_json", Text),
+    Column("result_json", Text),
+    Column("error_details", Text),
+    Column("correlation_id", String(64), index=True),
+    Column("created_by", String(36), index=True),
+    Column("started_at", String(64)),
+    Column("finished_at", String(64)),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+platform_notifications = Table(
+    "platform_notifications",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("user_id", String(36), index=True),
+    Column("client_id", String(36), index=True),
+    Column("channel", String(64), default="in_app", index=True),
+    Column("severity", String(32), default="info", index=True),
+    Column("title", String(255)),
+    Column("message", Text),
+    Column("module", String(128), index=True),
+    Column("record_type", String(128)),
+    Column("record_id", String(64)),
+    Column("status", String(64), default="unread", index=True),
+    Column("created_at", String(64)),
+    Column("read_at", String(64)),
+)
+
+platform_activity_feed = Table(
+    "platform_activity_feed",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), index=True),
+    Column("actor_id", String(36), index=True),
+    Column("module", String(128), index=True),
+    Column("record_type", String(128), index=True),
+    Column("record_id", String(64), index=True),
+    Column("action", String(128), nullable=False, index=True),
+    Column("summary", Text),
+    Column("details_json", Text),
+    Column("correlation_id", String(64), index=True),
+    Column("created_at", String(64)),
+)
+
+platform_health_checks = Table(
+    "platform_health_checks",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("component", String(128), nullable=False, index=True),
+    Column("status", String(64), default="unknown", index=True),
+    Column("metric", String(128)),
+    Column("value", String(255)),
+    Column("details_json", Text),
+    Column("checked_at", String(64)),
+)
+
+platform_error_logs = Table(
+    "platform_error_logs",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("correlation_id", String(64), nullable=False, index=True),
+    Column("path", String(255), index=True),
+    Column("method", String(16)),
+    Column("status_code", Integer, index=True),
+    Column("message", Text),
+    Column("details", Text),
+    Column("user_id", String(36), index=True),
+    Column("created_at", String(64)),
+)
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("portal")
 
@@ -1510,6 +1612,13 @@ async def ensure_schema_columns(conn):
         integration_hub_webhooks,
         integration_hub_logs,
         integration_hub_settings,
+        platform_roles,
+        platform_user_roles,
+        platform_background_jobs,
+        platform_notifications,
+        platform_activity_feed,
+        platform_health_checks,
+        platform_error_logs,
     ):
         existing_column_info = await conn.run_sync(
             lambda sync_conn, table_name=table.name: {
@@ -1595,6 +1704,47 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 api = APIRouter(prefix="/api")
+
+
+@app.middleware("http")
+async def correlation_id_middleware(request: Request, call_next):
+    correlation_id = request.headers.get("X-Correlation-ID") or uuid.uuid4().hex[:12]
+    request.state.correlation_id = correlation_id
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        logger.exception("Unhandled request error correlation_id=%s path=%s", correlation_id, request.url.path)
+        async with SessionLocal() as session:
+            await session.execute(
+                insert(platform_error_logs).values(
+                    id=new_id(),
+                    correlation_id=correlation_id,
+                    path=request.url.path,
+                    method=request.method,
+                    status_code=500,
+                    message=str(exc)[:1000],
+                    details=repr(exc)[:4000],
+                    created_at=utc_now_iso(),
+                )
+            )
+            await session.commit()
+        raise
+    response.headers["X-Correlation-ID"] = correlation_id
+    if response.status_code >= 500:
+        async with SessionLocal() as session:
+            await session.execute(
+                insert(platform_error_logs).values(
+                    id=new_id(),
+                    correlation_id=correlation_id,
+                    path=request.url.path,
+                    method=request.method,
+                    status_code=response.status_code,
+                    message=f"HTTP {response.status_code}",
+                    created_at=utc_now_iso(),
+                )
+            )
+            await session.commit()
+    return response
 
 
 class LoginIn(BaseModel):
@@ -3444,6 +3594,7 @@ async def add_accounting_audit(
     entity_id: str,
     details: Optional[dict] = None,
 ):
+    summary = f"{action.replace('_', ' ').title()} in {entity_type.replace('_', ' ')}"
     await session.execute(
         insert(accounting_audit_log).values(
             id=new_id(),
@@ -3462,6 +3613,327 @@ async def add_accounting_audit(
             created_at=utc_now_iso(),
         )
     )
+    await session.execute(
+        insert(platform_activity_feed).values(
+            id=new_id(),
+            client_id=client_id,
+            actor_id=actor_id,
+            module=entity_type,
+            record_type=entity_type,
+            record_id=entity_id,
+            action=action,
+            summary=summary,
+            details_json=json.dumps(details or {}),
+            correlation_id=None,
+            created_at=utc_now_iso(),
+        )
+    )
+
+
+PLATFORM_PERMISSION_MODULES = [
+    "clients",
+    "submitted_items",
+    "native_accounting",
+    "accounts_payable",
+    "accounts_receivable",
+    "banking",
+    "vat",
+    "general_ledger",
+    "reports",
+    "fixed_assets",
+    "year_end",
+    "automation",
+    "integration_hub",
+    "accountancy_settings",
+    "settings",
+]
+
+PLATFORM_PERMISSION_ACTIONS = [
+    "view",
+    "create",
+    "edit",
+    "delete",
+    "approve",
+    "post",
+    "lock_periods",
+    "close_year",
+    "export",
+    "manage_settings",
+]
+
+
+def default_platform_permissions(role_name: str) -> dict:
+    if role_name == "Administrator":
+        return {module: list(PLATFORM_PERMISSION_ACTIONS) for module in PLATFORM_PERMISSION_MODULES}
+    return {module: ["view"] for module in PLATFORM_PERMISSION_MODULES}
+
+
+async def ensure_platform_defaults(session: AsyncSession):
+    now = utc_now_iso()
+    for name, description in (
+        ("Administrator", "Full platform access across all modules."),
+        ("Reviewer", "Read-only access for review and oversight."),
+    ):
+        existing = await one(session, select(platform_roles).where(platform_roles.c.name == name))
+        if existing:
+            continue
+        await session.execute(
+            insert(platform_roles).values(
+                id=new_id(),
+                name=name,
+                description=description,
+                permissions_json=json.dumps(default_platform_permissions(name)),
+                system_role=True,
+                active=True,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    await session.commit()
+
+
+def serialize_platform_role(row: dict) -> dict:
+    return {
+        "id": row.get("id"),
+        "name": row.get("name"),
+        "description": row.get("description"),
+        "permissions": parse_json_object(row.get("permissions_json")),
+        "system_role": bool(row.get("system_role")),
+        "active": bool(row.get("active")),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def serialize_platform_job(row: dict) -> dict:
+    return {
+        "id": row.get("id"),
+        "job_type": row.get("job_type"),
+        "module": row.get("module"),
+        "status": row.get("status"),
+        "progress": int(row.get("progress") or 0),
+        "description": row.get("description"),
+        "payload": parse_json_object(row.get("payload_json")),
+        "result": parse_json_object(row.get("result_json")),
+        "error_details": row.get("error_details"),
+        "correlation_id": row.get("correlation_id"),
+        "started_at": row.get("started_at"),
+        "finished_at": row.get("finished_at"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def serialize_platform_notification(row: dict) -> dict:
+    return {
+        "id": row.get("id"),
+        "user_id": row.get("user_id"),
+        "client_id": row.get("client_id"),
+        "channel": row.get("channel"),
+        "severity": row.get("severity"),
+        "title": row.get("title"),
+        "message": row.get("message"),
+        "module": row.get("module"),
+        "record_type": row.get("record_type"),
+        "record_id": row.get("record_id"),
+        "status": row.get("status"),
+        "created_at": row.get("created_at"),
+        "read_at": row.get("read_at"),
+    }
+
+
+def serialize_platform_activity(row: dict) -> dict:
+    return {
+        "id": row.get("id"),
+        "client_id": row.get("client_id"),
+        "actor_id": row.get("actor_id"),
+        "module": row.get("module"),
+        "record_type": row.get("record_type"),
+        "record_id": row.get("record_id"),
+        "action": row.get("action"),
+        "summary": row.get("summary"),
+        "details": parse_json_object(row.get("details_json")),
+        "correlation_id": row.get("correlation_id"),
+        "created_at": row.get("created_at"),
+    }
+
+
+def serialize_platform_error(row: dict) -> dict:
+    return {
+        "id": row.get("id"),
+        "correlation_id": row.get("correlation_id"),
+        "path": row.get("path"),
+        "method": row.get("method"),
+        "status_code": row.get("status_code"),
+        "message": row.get("message"),
+        "details": row.get("details"),
+        "user_id": row.get("user_id"),
+        "created_at": row.get("created_at"),
+    }
+
+
+async def create_platform_job(
+    session: AsyncSession,
+    job_type: str,
+    module: str,
+    description: str,
+    payload: Optional[dict] = None,
+    actor_id: Optional[str] = None,
+):
+    now = utc_now_iso()
+    job_id = new_id()
+    await session.execute(
+        insert(platform_background_jobs).values(
+            id=job_id,
+            job_type=job_type,
+            module=module,
+            status="queued",
+            progress=0,
+            description=description,
+            payload_json=json.dumps(payload or {}),
+            result_json=json.dumps({}),
+            correlation_id=uuid.uuid4().hex[:12],
+            created_by=actor_id,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    return job_id
+
+
+async def add_platform_notification(
+    session: AsyncSession,
+    title: str,
+    message: str,
+    module: str,
+    severity: str = "info",
+    user_id: Optional[str] = None,
+    client_id: Optional[str] = None,
+    record_type: Optional[str] = None,
+    record_id: Optional[str] = None,
+):
+    notification_id = new_id()
+    await session.execute(
+        insert(platform_notifications).values(
+            id=notification_id,
+            user_id=user_id,
+            client_id=client_id,
+            channel="in_app",
+            severity=severity,
+            title=title,
+            message=message,
+            module=module,
+            record_type=record_type,
+            record_id=record_id,
+            status="unread",
+            created_at=utc_now_iso(),
+        )
+    )
+    return notification_id
+
+
+def search_match(query: str, *values: Any) -> bool:
+    needle = query.lower().strip()
+    if not needle:
+        return True
+    return needle in " ".join(str(value or "") for value in values).lower()
+
+
+async def platform_global_search(session: AsyncSession, query: str, limit: int = 8) -> list[dict]:
+    q = query.strip()
+    if len(q) < 2:
+        return []
+    results: list[dict] = []
+
+    clients = await many(session, select(users).where(users.c.role == "client").limit(300))
+    for row in clients:
+        if search_match(q, row.get("business_name"), row.get("email"), row.get("company_number")):
+            results.append({"type": "Client", "title": row.get("business_name"), "subtitle": row.get("email"), "record_id": row.get("id"), "module": "clients"})
+            if len(results) >= limit:
+                return results
+
+    for table, label, module, fields in (
+        (accounting_ap_invoices, "Purchase Invoice", "accounts_payable", ("invoice_number", "supplier_name", "reference")),
+        (accounting_ar_invoices, "Sales Invoice", "accounts_receivable", ("invoice_number", "customer_name", "reference")),
+        (accounting_journal_entries, "Journal", "general_ledger", ("reference", "description", "source_type")),
+        (accounting_bank_transactions, "Bank Transaction", "banking", ("description", "reference", "matched_to")),
+        (submissions, "Attached Document", "submitted_items", ("filename", "description", "comment")),
+    ):
+        rows = await many(session, select(table).limit(500))
+        for row in rows:
+            if search_match(q, *(row.get(field) for field in fields)):
+                title = row.get(fields[0]) or row.get("description") or label
+                results.append({"type": label, "title": title, "subtitle": row.get("client_id"), "record_id": row.get("id"), "module": module})
+                if len(results) >= limit:
+                    return results
+
+    audit_rows = await many(session, select(accounting_audit_log).order_by(accounting_audit_log.c.created_at.desc()).limit(300))
+    for row in audit_rows:
+        if search_match(q, row.get("action"), row.get("record_id"), row.get("new_value"), row.get("details_json")):
+            results.append({"type": "Audit Event", "title": row.get("action"), "subtitle": row.get("created_at"), "record_id": row.get("id"), "module": "audit"})
+            if len(results) >= limit:
+                return results
+    return results
+
+
+async def platform_health_workspace(session: AsyncSession) -> dict:
+    now = utc_now_iso()
+    db_status = "healthy"
+    try:
+        await session.execute(text("SELECT 1"))
+    except Exception:
+        db_status = "failed"
+    queued_jobs = await many(session, select(platform_background_jobs).where(platform_background_jobs.c.status.in_(["queued", "running"])))
+    failed_jobs = await many(session, select(platform_background_jobs).where(platform_background_jobs.c.status == "failed"))
+    failed_syncs = await many(session, select(integration_hub_sync_runs).where(integration_hub_sync_runs.c.status == "failed"))
+    upload_bytes = sum((path.stat().st_size for path in UPLOAD_DIR.glob("**/*") if path.is_file()), 0)
+    return {
+        "database": {"status": db_status, "checked_at": now},
+        "queue": {"status": "attention" if failed_jobs else "healthy", "backlog": len(queued_jobs), "failed_jobs": len(failed_jobs)},
+        "integrations": {"status": "attention" if failed_syncs else "healthy", "failed_syncs": len(failed_syncs)},
+        "storage": {"status": "healthy", "upload_bytes": upload_bytes, "upload_mb": round(upload_bytes / 1024 / 1024, 2)},
+        "ai": {"status": "healthy" if len(queued_jobs) < 25 else "attention", "processing_backlog": len([j for j in queued_jobs if str(j.get("job_type") or "").startswith("ai_")])},
+    }
+
+
+async def platform_workspace(session: AsyncSession, query: str = "") -> dict:
+    await ensure_platform_defaults(session)
+    roles = [serialize_platform_role(row) for row in await many(session, select(platform_roles).order_by(platform_roles.c.name.asc()))]
+    jobs = [serialize_platform_job(row) for row in await many(session, select(platform_background_jobs).order_by(platform_background_jobs.c.created_at.desc()).limit(100))]
+    notifications = [serialize_platform_notification(row) for row in await many(session, select(platform_notifications).order_by(platform_notifications.c.created_at.desc()).limit(100))]
+    activity = [serialize_platform_activity(row) for row in await many(session, select(platform_activity_feed).order_by(platform_activity_feed.c.created_at.desc()).limit(120))]
+    errors = [serialize_platform_error(row) for row in await many(session, select(platform_error_logs).order_by(platform_error_logs.c.created_at.desc()).limit(100))]
+    search_results = await platform_global_search(session, query) if query else []
+    running = len([job for job in jobs if job["status"] == "running"])
+    queued = len([job for job in jobs if job["status"] == "queued"])
+    failed = len([job for job in jobs if job["status"] == "failed"])
+    unread = len([item for item in notifications if item["status"] == "unread"])
+    return {
+        "permissions": {"modules": PLATFORM_PERMISSION_MODULES, "actions": PLATFORM_PERMISSION_ACTIONS, "roles": roles},
+        "jobs": jobs,
+        "notifications": notifications,
+        "activity": activity,
+        "errors": errors,
+        "health": await platform_health_workspace(session),
+        "search": {"query": query, "results": search_results},
+        "api": {"current_prefix": "/api", "recommended_prefix": "/api/v1", "openapi_url": "/openapi.json", "docs_url": "/docs"},
+        "testing": {
+            "critical_flows": [
+                "Upload invoice -> AI extraction -> AP invoice -> approval -> posting -> payment -> reconciliation -> VAT return",
+                "Sales invoice -> receipt -> bank reconciliation -> reporting",
+                "Year-end close -> opening balances -> retained earnings",
+            ],
+            "coverage_target": "Unit, integration, and end-to-end tests around posting, VAT, integrations, and close workflows.",
+        },
+        "dashboard": {
+            "roles": len(roles),
+            "queued_jobs": queued,
+            "running_jobs": running,
+            "failed_jobs": failed,
+            "unread_notifications": unread,
+            "recent_activity": len(activity),
+            "open_errors": len(errors),
+        },
+    }
 
 
 AUTOMATION_TRIGGER_CATALOG = [
@@ -6086,6 +6558,165 @@ async def update_automation_settings(
     await add_accounting_audit(session, "platform", str(user.get("id") or ""), "automation_settings_updated", "automation", str(settings_row.get("id")), values)
     await session.commit()
     return await automation_workspace(session)
+
+
+@api.get("/admin/platform")
+async def get_platform_workspace(
+    q: str = "",
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    return await platform_workspace(session, q)
+
+
+@api.get("/v1/admin/platform")
+async def get_platform_workspace_v1(
+    q: str = "",
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    return await platform_workspace(session, q)
+
+
+@api.post("/admin/platform/roles")
+async def create_platform_role(
+    payload: dict = {},
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Role name is required.")
+    permissions = payload.get("permissions") if isinstance(payload.get("permissions"), dict) else default_platform_permissions("Reviewer")
+    role_id = new_id()
+    now = utc_now_iso()
+    await session.execute(
+        insert(platform_roles).values(
+            id=role_id,
+            name=name,
+            description=str(payload.get("description") or ""),
+            permissions_json=json.dumps(permissions),
+            system_role=False,
+            active=bool(payload.get("active", True)),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    await add_accounting_audit(session, "platform", str(user.get("id") or ""), "platform_role_created", "platform", role_id, {"name": name})
+    await session.commit()
+    return await platform_workspace(session)
+
+
+@api.put("/admin/platform/roles/{role_id}")
+async def update_platform_role(
+    role_id: str,
+    payload: dict = {},
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    existing = await one(session, select(platform_roles).where(platform_roles.c.id == role_id))
+    if not existing:
+        raise HTTPException(status_code=404, detail="Role not found.")
+    values = {
+        "name": str(payload.get("name") or existing.get("name") or "").strip(),
+        "description": str(payload.get("description") if payload.get("description") is not None else existing.get("description") or ""),
+        "permissions_json": json.dumps(payload.get("permissions") if isinstance(payload.get("permissions"), dict) else parse_json_object(existing.get("permissions_json")) or {}),
+        "active": bool(payload.get("active")) if "active" in payload else bool(existing.get("active")),
+        "updated_at": utc_now_iso(),
+    }
+    if existing.get("system_role") and values["name"] != existing.get("name"):
+        raise HTTPException(status_code=400, detail="System role names cannot be changed.")
+    await session.execute(update(platform_roles).where(platform_roles.c.id == role_id).values(**values))
+    await add_accounting_audit(session, "platform", str(user.get("id") or ""), "platform_role_updated", "platform", role_id, values)
+    await session.commit()
+    return await platform_workspace(session)
+
+
+@api.post("/admin/platform/jobs")
+async def queue_platform_job(
+    payload: dict = {},
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    job_id = await create_platform_job(
+        session,
+        str(payload.get("job_type") or "manual_task"),
+        str(payload.get("module") or "platform"),
+        str(payload.get("description") or "Manual background job"),
+        payload.get("payload") if isinstance(payload.get("payload"), dict) else {},
+        str(user.get("id") or ""),
+    )
+    await add_accounting_audit(session, "platform", str(user.get("id") or ""), "background_job_queued", "platform_job", job_id, payload)
+    await session.commit()
+    return await platform_workspace(session)
+
+
+@api.post("/admin/platform/jobs/{job_id}/{action}")
+async def action_platform_job(
+    job_id: str,
+    action: str,
+    payload: dict = {},
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    job = await one(session, select(platform_background_jobs).where(platform_background_jobs.c.id == job_id))
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    now = utc_now_iso()
+    if action == "start":
+        values = {"status": "running", "progress": max(1, int(job.get("progress") or 0)), "started_at": job.get("started_at") or now, "updated_at": now}
+    elif action == "complete":
+        values = {"status": "completed", "progress": 100, "result_json": json.dumps(payload.get("result") or {"completed": True}), "finished_at": now, "updated_at": now}
+    elif action == "fail":
+        values = {"status": "failed", "error_details": str(payload.get("error_details") or "Marked as failed."), "finished_at": now, "updated_at": now}
+    elif action == "retry":
+        values = {"status": "queued", "progress": 0, "error_details": "", "started_at": None, "finished_at": None, "updated_at": now}
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported job action.")
+    await session.execute(update(platform_background_jobs).where(platform_background_jobs.c.id == job_id).values(**values))
+    await add_accounting_audit(session, "platform", str(user.get("id") or ""), f"background_job_{action}", "platform_job", job_id, values)
+    await session.commit()
+    return await platform_workspace(session)
+
+
+@api.post("/admin/platform/notifications")
+async def create_platform_notification(
+    payload: dict = {},
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    notification_id = await add_platform_notification(
+        session,
+        str(payload.get("title") or "Notification"),
+        str(payload.get("message") or ""),
+        str(payload.get("module") or "platform"),
+        str(payload.get("severity") or "info"),
+        str(payload.get("user_id") or user.get("id") or ""),
+        str(payload.get("client_id") or "") or None,
+        str(payload.get("record_type") or "") or None,
+        str(payload.get("record_id") or "") or None,
+    )
+    await add_accounting_audit(session, "platform", str(user.get("id") or ""), "notification_created", "notification", notification_id, payload)
+    await session.commit()
+    return await platform_workspace(session)
+
+
+@api.post("/admin/platform/notifications/{notification_id}/read")
+async def mark_platform_notification_read(
+    notification_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    existing = await one(session, select(platform_notifications).where(platform_notifications.c.id == notification_id))
+    if not existing:
+        raise HTTPException(status_code=404, detail="Notification not found.")
+    await session.execute(
+        update(platform_notifications)
+        .where(platform_notifications.c.id == notification_id)
+        .values(status="read", read_at=utc_now_iso())
+    )
+    await session.commit()
+    return await platform_workspace(session)
 
 
 @api.get("/admin/integration-hub")
