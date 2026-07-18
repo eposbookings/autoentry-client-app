@@ -1673,12 +1673,16 @@ async def maybe_seed_demo_account():
         logger.warning("Demo seed script is missing: %s", seed_script)
         return
 
-    logger.info("EPOS demo account is missing; creating it now.")
+    seed_scale = os.environ.get("EPOS_DEMO_SEED_SCALE", "quick").lower().strip()
+    if seed_scale not in {"quick", "full"}:
+        seed_scale = "quick"
+
+    logger.info("EPOS demo account is missing; creating it in %s mode.", seed_scale)
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         str(seed_script),
         "--scale",
-        "full",
+        seed_scale,
         "--if-missing",
         cwd=str(ROOT_DIR),
         stdout=asyncio.subprocess.PIPE,
@@ -1733,7 +1737,7 @@ async def lifespan(app: FastAPI):
             await session.commit()
             logger.info("Admin password updated.")
 
-    await maybe_seed_demo_account()
+    app.state.demo_seed_task = asyncio.create_task(maybe_seed_demo_account())
     yield
     await engine.dispose()
 
