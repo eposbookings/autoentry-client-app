@@ -6,16 +6,23 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   ArrowRight,
+  Activity,
+  AlertTriangle,
   Banknote,
   BookOpen,
   Building2,
+  CheckCircle2,
+  ClipboardCheck,
   FileBarChart,
+  Gauge,
   Landmark,
+  MessageSquare,
   Plus,
   ReceiptText,
   RefreshCw,
   Settings,
   ShieldCheck,
+  Sparkles,
   Printer,
   Download,
   Upload,
@@ -25,6 +32,7 @@ import {
 import { toast } from "sonner";
 
 const MODULES = [
+  { key: "ai_workspace", label: "AI Workspace", icon: Sparkles },
   { key: "payables", label: "Payables", icon: ReceiptText },
   { key: "receivables", label: "Receivables", icon: WalletCards },
   { key: "banking", label: "Banking", icon: Banknote },
@@ -65,6 +73,13 @@ const ACCOUNT_PURPOSES = [
 ];
 
 const MODULE_DETAILS = {
+  ai_workspace: {
+    title: "AI Accounting Workspace",
+    manage: ["My Work Queue", "Insights", "Exceptions", "Approvals", "Health Check"],
+    statLabel: "Health score",
+    stat: (workspace) => `${workspace?.ai_workspace?.health_check?.score ?? 0}/100`,
+    tabs: ["Overview", "Tasks", "Insights", "Exceptions", "Approvals", "Deadlines", "Health Check", "AI Assistant", "Settings"],
+  },
   payables: {
     title: "Accounts Payable",
     manage: ["Suppliers", "Purchase Invoices", "Credit Notes", "Supplier Payments"],
@@ -642,6 +657,10 @@ function ModuleWorkspace(props) {
   const detail = MODULE_DETAILS[module];
 
   function renderTab() {
+    if (module === "ai_workspace") {
+      return <AIAccountingWorkspace workspace={workspace} activeTab={moduleTab} />;
+    }
+
     if (module === "payables") {
       return <AccountsPayableWorkspace workspace={workspace} tab={moduleTab} reloadWorkspace={reloadWorkspace} busy={busy} />;
     }
@@ -3407,6 +3426,332 @@ function ChartOfAccounts({ accounts, form, setForm, createAccount, busy }) {
       </Panel>
     </div>
   );
+}
+
+function AIAccountingWorkspace({ workspace, activeTab }) {
+  const ai = workspace?.ai_workspace || {};
+  const tab = activeTab || "Overview";
+  if (tab === "Tasks") return <AIWorkQueue ai={ai} />;
+  if (tab === "Insights") return <AIInsights ai={ai} />;
+  if (tab === "Exceptions") return <AIExceptions ai={ai} />;
+  if (tab === "Approvals") return <AIApprovals ai={ai} />;
+  if (tab === "Deadlines") return <AIDeadlines ai={ai} />;
+  if (tab === "Health Check") return <AIHealthCheck ai={ai} />;
+  if (tab === "AI Assistant") return <AIAssistant ai={ai} />;
+  if (tab === "Settings") return <AIWorkspaceSettings ai={ai} />;
+  return <AIOverview ai={ai} workspace={workspace} />;
+}
+
+function AIOverview({ ai }) {
+  return (
+    <div className="space-y-4">
+      <AIKpiGrid kpis={ai.kpis || []} />
+      <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
+        <AIWorkQueue ai={ai} compact />
+        <AIHealthCheck ai={ai} compact />
+      </div>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <AIInsights ai={ai} compact />
+        <AINotifications ai={ai} />
+      </div>
+      <AIGlobalSearch ai={ai} />
+    </div>
+  );
+}
+
+function AIKpiGrid({ kpis }) {
+  return (
+    <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-5">
+      {kpis.map((item) => (
+        <button key={item.label} type="button" className="rounded-md border border-stone-200 bg-white p-4 text-left shadow-sm transition hover:border-emerald-200 hover:bg-emerald-50/40">
+          <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-stone-500">
+            <Sparkles className="h-3.5 w-3.5 text-emerald-700" /> {item.module}
+          </span>
+          <span className="mt-3 block text-2xl font-bold text-stone-900">{formatMaybeMoney(item.value)}</span>
+          <span className="mt-1 block text-sm text-stone-600">{item.label}</span>
+        </button>
+      ))}
+      {!kpis.length && <EmptyAIState title="No AI workspace data yet" detail="Open a native accounting client with activity to populate the command centre." />}
+    </div>
+  );
+}
+
+function AIWorkQueue({ ai, compact = false }) {
+  const groups = [
+    ["high", "High", "border-red-200 bg-red-50 text-red-800"],
+    ["medium", "Medium", "border-amber-200 bg-amber-50 text-amber-800"],
+    ["low", "Low", "border-stone-200 bg-stone-50 text-stone-700"],
+  ];
+  return (
+    <Panel title={compact ? "My Work Queue" : "My Work Queue"}>
+      <div className="grid gap-3">
+        {groups.map(([key, label, tone]) => {
+          const rows = ai.work_queue?.[key] || [];
+          return (
+            <section key={key} className="rounded-md border border-stone-200 bg-white">
+              <div className="flex items-center justify-between border-b border-stone-100 px-4 py-3">
+                <span className={`rounded-full border px-3 py-1 text-xs font-bold ${tone}`}>{label}</span>
+                <span className="text-xs font-semibold text-stone-500">{rows.length} tasks</span>
+              </div>
+              <div className="divide-y divide-stone-100">
+                {rows.slice(0, compact ? 3 : 50).map((item) => (
+                  <div key={item.id || item.title} className="flex flex-col gap-2 p-4 md:flex-row md:items-center md:justify-between">
+                    <div>
+                      <p className="font-semibold text-stone-900">{item.title}</p>
+                      <p className="mt-1 text-sm text-stone-500">{item.detail}</p>
+                      <p className="mt-1 text-xs font-semibold uppercase tracking-wide text-emerald-800">{item.module}</p>
+                    </div>
+                    <Button variant="outline" size="sm" className="shrink-0">{item.action}</Button>
+                  </div>
+                ))}
+                {!rows.length && <div className="p-4 text-sm text-stone-500">No {label.toLowerCase()} priority tasks.</div>}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+    </Panel>
+  );
+}
+
+function AIInsights({ ai, compact = false }) {
+  const rows = ai.insights || [];
+  return (
+    <Panel title="Insights">
+      <div className="grid gap-3">
+        {rows.slice(0, compact ? 4 : 50).map((item) => (
+          <div key={`${item.module}-${item.title}`} className={`rounded-md border p-4 ${item.tone === "warning" ? "border-amber-200 bg-amber-50" : item.tone === "success" ? "border-emerald-200 bg-emerald-50" : "border-stone-200 bg-white"}`}>
+            <div className="flex items-start gap-3">
+              {item.tone === "warning" ? <AlertTriangle className="mt-0.5 h-5 w-5 text-amber-700" /> : <Activity className="mt-0.5 h-5 w-5 text-emerald-700" />}
+              <div>
+                <p className="font-semibold text-stone-900">{item.title}</p>
+                <p className="mt-1 text-sm text-stone-600">{item.detail}</p>
+                <p className="mt-2 text-xs font-semibold uppercase tracking-wide text-stone-500">{item.module}</p>
+              </div>
+            </div>
+          </div>
+        ))}
+        {!rows.length && <EmptyAIState title="No insights" detail="Rule-based insights will appear as accounting data changes." />}
+      </div>
+    </Panel>
+  );
+}
+
+function AIExceptions({ ai }) {
+  return (
+    <Panel title="Exceptions">
+      <ReportTable
+        rows={ai.exceptions || []}
+        empty="No exceptions detected."
+        columns={[
+          { key: "severity", label: "Severity" },
+          { key: "module", label: "Module" },
+          { key: "type", label: "Type" },
+          { key: "reference", label: "Reference" },
+          { key: "detail", label: "Detail" },
+        ]}
+      />
+    </Panel>
+  );
+}
+
+function AIApprovals({ ai }) {
+  return (
+    <Panel title="Approvals">
+      <ReportTable
+        rows={ai.approvals || []}
+        empty="No approvals waiting."
+        columns={[
+          { key: "date", label: "Date", type: "date" },
+          { key: "module", label: "Module" },
+          { key: "record_type", label: "Record" },
+          { key: "reference", label: "Reference" },
+          { key: "contact", label: "Contact" },
+          { key: "amount", label: "Amount", type: "money" },
+          { key: "status", label: "Status" },
+        ]}
+      />
+    </Panel>
+  );
+}
+
+function AIDeadlines({ ai }) {
+  return (
+    <Panel title="Deadlines">
+      <ReportTable
+        rows={ai.deadlines || []}
+        empty="No upcoming accounting deadlines."
+        columns={[
+          { key: "module", label: "Module" },
+          { key: "title", label: "Deadline" },
+          { key: "start_date", label: "Start", type: "date" },
+          { key: "due_date", label: "Due", type: "date" },
+          { key: "days", label: "Days" },
+          { key: "status", label: "Status" },
+        ]}
+      />
+    </Panel>
+  );
+}
+
+function AIHealthCheck({ ai, compact = false }) {
+  const health = ai.health_check || {};
+  const score = Number(health.score || 0);
+  return (
+    <Panel title="Health Check">
+      <div className="grid gap-4 md:grid-cols-[220px_1fr]">
+        <div className="rounded-md border border-stone-200 bg-white p-5 text-center">
+          <Gauge className="mx-auto h-8 w-8 text-emerald-700" />
+          <p className="mt-3 text-4xl font-bold text-stone-900">{score}</p>
+          <p className="text-sm text-stone-500">Accounting health score</p>
+          <div className="mt-4 h-2 rounded-full bg-stone-100">
+            <div className="h-2 rounded-full bg-emerald-600" style={{ width: `${Math.min(100, Math.max(0, score))}%` }} />
+          </div>
+        </div>
+        <div className="grid gap-3">
+          {(health.categories || []).slice(0, compact ? 4 : 50).map((item) => (
+            <div key={item.area} className="rounded-md border border-stone-200 bg-white p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="font-semibold text-stone-900">{item.area}</p>
+                  <p className="text-sm text-stone-500">{item.status}</p>
+                </div>
+                <span className="rounded-full bg-emerald-50 px-3 py-1 text-sm font-bold text-emerald-800">{item.score}/100</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function AIAssistant({ ai }) {
+  const questions = ai.assistant?.suggested_questions || [];
+  const answers = ai.assistant?.answers || {};
+  const [question, setQuestion] = useState(questions[0] || "");
+  const answer = answers[question] || "This assistant is rule-based at the moment. Choose a suggested question to inspect the current accounting workspace.";
+  return (
+    <Panel title="AI Assistant">
+      <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
+        <div className="rounded-md border border-stone-200 bg-stone-50 p-4">
+          <p className="text-sm font-semibold text-stone-700">Suggested questions</p>
+          <div className="mt-3 grid gap-2">
+            {questions.map((item) => (
+              <button key={item} type="button" onClick={() => setQuestion(item)} className={`rounded-md px-3 py-2 text-left text-sm font-semibold ${question === item ? "bg-[var(--brand)] text-white" : "bg-white text-stone-700 hover:bg-stone-100"}`}>
+                {item}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="rounded-md border border-emerald-100 bg-emerald-50 p-5">
+          <div className="flex items-center gap-2 text-sm font-bold uppercase tracking-wide text-emerald-800">
+            <MessageSquare className="h-4 w-4" /> Rule-based answer
+          </div>
+          <h3 className="mt-4 font-display text-xl font-bold text-stone-900">{question || "Ask a question"}</h3>
+          <p className="mt-3 text-stone-700">{answer}</p>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function AIGlobalSearch({ ai }) {
+  const [query, setQuery] = useState("");
+  const rows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const index = ai.global_search?.index || [];
+    if (!q) return index.slice(0, 12);
+    return index.filter((item) => Object.values(item).join(" ").toLowerCase().includes(q)).slice(0, 25);
+  }, [ai.global_search, query]);
+  return (
+    <Panel title="Global Search">
+      <div className="mb-3 flex gap-2">
+        <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search customers, suppliers, invoices, journals, bank transactions or VAT returns" />
+        <Button variant="outline"><RefreshCw className="mr-2 h-4 w-4" /> Refresh</Button>
+      </div>
+      <ReportTable
+        rows={rows}
+        empty="No matching accounting records."
+        columns={[
+          { key: "type", label: "Type" },
+          { key: "module", label: "Module" },
+          { key: "label", label: "Record" },
+          { key: "reference", label: "Reference" },
+          { key: "amount", label: "Amount", type: "money" },
+        ]}
+        compact
+      />
+    </Panel>
+  );
+}
+
+function AINotifications({ ai }) {
+  const rows = ai.notifications || [];
+  return (
+    <Panel title="Notifications">
+      <div className="grid gap-3">
+        {rows.map((item, index) => (
+          <div key={`${item.title || item.type}-${index}`} className="flex items-start gap-3 rounded-md border border-stone-200 bg-white p-4">
+            <ClipboardCheck className="mt-0.5 h-5 w-5 text-emerald-700" />
+            <div>
+              <p className="font-semibold text-stone-900">{item.title || item.type}</p>
+              <p className="mt-1 text-sm text-stone-500">{item.detail}</p>
+              <p className="mt-1 text-xs font-semibold uppercase tracking-wide text-stone-500">{item.module}</p>
+            </div>
+          </div>
+        ))}
+        {!rows.length && <EmptyAIState title="No notifications" detail="Urgent tasks and exceptions will appear here." />}
+      </div>
+    </Panel>
+  );
+}
+
+function AIWorkspaceSettings({ ai }) {
+  const settings = ai.settings || {};
+  return (
+    <Panel title="AI Workspace Settings">
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="rounded-md border border-stone-200 bg-white p-4">
+          <Label>Default landing tab</Label>
+          <Input value={settings.default_landing_tab || "Overview"} readOnly className="mt-2" />
+        </div>
+        <div className="rounded-md border border-stone-200 bg-white p-4">
+          <Label>Assistant mode</Label>
+          <Input value={settings.assistant_mode || "Rule-based"} readOnly className="mt-2" />
+        </div>
+        <div className="rounded-md border border-stone-200 bg-white p-4 md:col-span-2">
+          <Label>Visible KPI cards</Label>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {(settings.kpi_visibility || []).map((item) => <Badge key={item} variant="secondary">{item}</Badge>)}
+          </div>
+        </div>
+        <div className="rounded-md border border-stone-200 bg-white p-4 md:col-span-2">
+          <Label>Work queue priorities</Label>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {(settings.work_queue_priorities || []).map((item) => <Badge key={item}>{item}</Badge>)}
+          </div>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function EmptyAIState({ title, detail }) {
+  return (
+    <div className="rounded-md border border-dashed border-stone-200 bg-stone-50 p-6 text-center text-sm text-stone-500">
+      <CheckCircle2 className="mx-auto mb-2 h-5 w-5 text-emerald-700" />
+      <p className="font-semibold text-stone-800">{title}</p>
+      <p className="mt-1">{detail}</p>
+    </div>
+  );
+}
+
+function formatMaybeMoney(value) {
+  if (typeof value === "number") return value;
+  const text = String(value ?? "");
+  if (/^-?\d+(\.\d+)?$/.test(text)) return formatMoney(text);
+  return text || "-";
 }
 
 function ReportsWorkspace({ workspace, activeReport }) {
