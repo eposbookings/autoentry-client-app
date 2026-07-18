@@ -88,10 +88,10 @@ const MODULE_DETAILS = {
   },
   vat: {
     title: "VAT",
-    manage: ["VAT Returns", "VAT Codes", "VAT Periods"],
-    statLabel: "Draft VAT returns",
-    stat: (workspace) => workspace?.summary?.draft_vat_returns || 0,
-    tabs: ["Returns", "Codes", "Periods", "History", "Reports"],
+    manage: ["VAT Returns", "VAT Transactions", "VAT Codes", "VAT Periods", "Adjustments"],
+    statLabel: "Net VAT due",
+    stat: (workspace) => formatMoney(workspace?.vat_engine?.dashboard?.net_vat_due || 0),
+    tabs: ["Dashboard", "VAT Returns", "VAT Transactions", "VAT Codes", "VAT Periods", "Adjustments", "Reports", "Settings"],
   },
   gl: {
     title: "General Ledger",
@@ -655,11 +655,7 @@ function ModuleWorkspace(props) {
     }
 
     if (module === "vat") {
-      if (moduleTab === "Returns") {
-        return <VatWorkspace workspace={workspace} form={vatForm} setForm={setVatForm} prepareVatReturn={prepareVatReturn} busy={busy} />;
-      }
-      if (moduleTab === "Reports") return <LedgerView title="VAT ledger" journals={workspace.journals} accountCodes={["2200"]} />;
-      return <PlaceholderModulePanel title={moduleTab} moduleTitle={detail.title} />;
+      return <VatEngineWorkspace workspace={workspace} tab={moduleTab} reloadWorkspace={reloadWorkspace} busy={busy} />;
     }
 
     if (module === "gl") {
@@ -2495,40 +2491,539 @@ function BankTransactionRow({ transaction, accounts, onReconcile, busy }) {
   );
 }
 
-function VatWorkspace({ workspace, form, setForm, prepareVatReturn, busy }) {
-  return (
-    <div className="grid gap-4 xl:grid-cols-[1fr_360px]">
+function VatEngineWorkspace({ workspace, tab, reloadWorkspace, busy }) {
+  const vat = useMemo(() => workspace?.vat_engine || {}, [workspace?.vat_engine]);
+  const clientId = workspace?.client?.id;
+  const settings = useMemo(() => vat.settings || {}, [vat.settings]);
+  const codes = vat.codes || [];
+  const activeCodes = codes.filter((code) => code.active !== false);
+  const periods = vat.periods || [];
+  const transactions = vat.transactions || [];
+  const returns = vat.returns || [];
+  const adjustments = vat.adjustments || [];
+  const dashboard = vat.dashboard || {};
+  const currentBoxes = vat.current_boxes || {};
+  const currentPeriod = periods.find((period) => period.id === dashboard.current_period_id) || periods.find((period) => period.status === "open") || periods[0];
+  const [search, setSearch] = useState("");
+  const [vatCodeFilter, setVatCodeFilter] = useState("");
+  const [settingsForm, setSettingsForm] = useState(settings);
+  const [codeForm, setCodeForm] = useState({ code: "", description: "", percentage: "20", purchase_behavior: "input", sales_behavior: "output", return_box_net: "7", return_box_vat: "4", active: true });
+  const [adjustmentForm, setAdjustmentForm] = useState({ adjustment_date: "", vat_period_id: "", vat_code: "", reason: "", notes: "", net_amount: "", vat_amount: "", gross_amount: "" });
+  const [openBox, setOpenBox] = useState(null);
+
+  useEffect(() => {
+    setSettingsForm(settings || {});
+  }, [settings]);
+
+  useEffect(() => {
+    if (!adjustmentForm.vat_period_id && currentPeriod?.id) {
+      setAdjustmentForm((current) => ({ ...current, vat_period_id: currentPeriod.id }));
+    }
+  }, [currentPeriod?.id, adjustmentForm.vat_period_id]);
+
+  const filteredTransactions = transactions.filter((transaction) => {
+    const query = search.trim().toLowerCase();
+    const matchesQuery = !query || [
+      transaction.document_number,
+      transaction.account_name,
+      transaction.source_module,
+      transaction.document_type,
+      transaction.vat_code,
+      transaction.status,
+    ].some((value) => String(value || "").toLowerCase().includes(query));
+    const matchesCode = !vatCodeFilter || transaction.vat_code === vatCodeFilter;
+    return matchesQuery && matchesCode;
+  });
+
+  async function runVatAction(action, successMessage) {
+    try {
+      await action();
+      toast.success(successMessage);
+      await reloadWorkspace();
+    } catch (e) {
+      toast.error(formatApiError(e));
+    }
+  }
+
+  const prepareReturn = (period) => runVatAction(
+    () => api.post(`/admin/accounting/clients/${clientId}/vat-returns/prepare`, { period_id: period?.id }),
+    "VAT return generated"
+  );
+
+  const updatePeriod = (period, action) => runVatAction(
+    () => api.post(`/admin/accounting/clients/${clientId}/vat/periods/${period.id}/${action}`),
+    `VAT period ${action} complete`
+  );
+
+  const createCode = (event) => {
+    event.preventDefault();
+    return runVatAction(
+      () => api.post(`/admin/accounting/clients/${clientId}/vat/codes`, codeForm),
+      "VAT code created"
+    ).then(() => setCodeForm({ code: "", description: "", percentage: "20", purchase_behavior: "input", sales_behavior: "output", return_box_net: "7", return_box_vat: "4", active: true }));
+  };
+
+  const saveSettings = (event) => {
+    event.preventDefault();
+    return runVatAction(
+      () => api.put(`/admin/accounting/clients/${clientId}/vat/settings`, settingsForm),
+      "VAT settings saved"
+    );
+  };
+
+  const createAdjustment = (event) => {
+    event.preventDefault();
+    return runVatAction(
+      () => api.post(`/admin/accounting/clients/${clientId}/vat/adjustments`, adjustmentForm),
+      "VAT adjustment posted"
+    ).then(() => setAdjustmentForm({ adjustment_date: "", vat_period_id: currentPeriod?.id || "", vat_code: "", reason: "", notes: "", net_amount: "", vat_amount: "", gross_amount: "" }));
+  };
+
+  if (tab === "Dashboard") {
+    return (
       <div className="space-y-4">
-        <LedgerView title="VAT ledger" journals={workspace.journals} accountCodes={["2200"]} />
-        <Panel title="Draft VAT returns">
-          {(workspace.vat_returns || []).length === 0 ? (
-            <p className="py-8 text-center text-sm text-stone-500">No VAT returns prepared yet.</p>
-          ) : (
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+          <SummaryCard label="Current VAT Liability" value={formatMoney(dashboard.current_vat_liability)} />
+          <SummaryCard label="VAT Due to HMRC" value={formatMoney(dashboard.vat_due_hmrc)} tone="warning" />
+          <SummaryCard label="VAT Recoverable" value={formatMoney(dashboard.vat_recoverable)} tone="success" />
+          <SummaryCard label="Current VAT Period" value={currentPeriod ? `${formatDate(currentPeriod.start_date)} - ${formatDate(currentPeriod.end_date)}` : "-"} />
+          <SummaryCard label="Next Return Due" value={formatDate(dashboard.next_return_due)} />
+          <SummaryCard label="Outstanding Returns" value={dashboard.outstanding_returns || 0} />
+        </div>
+        <div className="grid gap-4 xl:grid-cols-[1fr_420px]">
+          <Panel title="Current VAT Summary">
+            <VatBoxGrid boxes={currentBoxes} transactions={transactions} onOpenBox={setOpenBox} />
+            {openBox && <VatBoxDrilldown box={openBox} transactions={transactions} onClose={() => setOpenBox(null)} />}
+          </Panel>
+          <Panel title="Recent VAT Activity">
             <div className="space-y-2">
-              {(workspace.vat_returns || []).map((vatReturn) => (
-                <div key={vatReturn.id} className="grid gap-3 rounded-md border border-stone-200 p-3 sm:grid-cols-5">
-                  <Info label="Period" value={`${formatDate(vatReturn.period_start)} - ${formatDate(vatReturn.period_end)}`} />
-                  <Info label="VAT due" value={formatMoney(vatReturn.vat_due_sales)} />
-                  <Info label="VAT reclaimed" value={formatMoney(vatReturn.vat_reclaimed_purchases)} />
-                  <Info label="Net VAT" value={formatMoney(vatReturn.net_vat_due)} />
-                  <Info label="Status" value={vatReturn.status} />
+              {transactions.slice(0, 8).map((transaction) => (
+                <div key={transaction.id} className="rounded-md border border-stone-200 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="font-semibold text-stone-900">{transaction.document_number || transaction.document_type}</p>
+                      <p className="text-xs text-stone-500">{formatDate(transaction.date)} - {transaction.source_module}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="font-display font-bold text-stone-900">{formatMoney(transaction.vat)}</p>
+                      <p className="text-xs text-stone-500">{transaction.vat_code || "-"}</p>
+                    </div>
+                  </div>
                 </div>
               ))}
+              {transactions.length === 0 && <p className="py-8 text-center text-sm text-stone-500">No VAT activity yet.</p>}
             </div>
-          )}
+          </Panel>
+        </div>
+      </div>
+    );
+  }
+
+  if (tab === "VAT Returns") {
+    return (
+      <div className="grid gap-4 xl:grid-cols-[1fr_420px]">
+        <Panel title="VAT returns">
+          <div className="space-y-3">
+            {periods.map((period) => (
+              <div key={period.id} className="grid gap-3 rounded-md border border-stone-200 p-3 lg:grid-cols-[1fr_repeat(4,120px)_auto] lg:items-center">
+                <Info label="Period" value={`${formatDate(period.start_date)} - ${formatDate(period.end_date)}`} />
+                <Info label="Output VAT" value={formatMoney(period.output_vat)} />
+                <Info label="Input VAT" value={formatMoney(period.input_vat)} />
+                <Info label="Net VAT" value={formatMoney(period.net_vat)} />
+                <Info label="Status" value={period.status} />
+                <Button variant="outline" disabled={busy || period.status === "closed"} onClick={() => prepareReturn(period)}>Generate</Button>
+              </div>
+            ))}
+            {periods.length === 0 && <p className="py-10 text-center text-sm text-stone-500">No VAT periods available yet.</p>}
+          </div>
+        </Panel>
+        <Panel title="Generated returns">
+          <div className="space-y-2">
+            {returns.map((vatReturn) => (
+              <div key={vatReturn.id} className="rounded-md border border-stone-200 p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="font-semibold text-stone-900">{formatDate(vatReturn.period_start)} - {formatDate(vatReturn.period_end)}</p>
+                    <p className="text-xs text-stone-500">Generated {formatDateTime(vatReturn.created_at)}</p>
+                  </div>
+                  <Badge variant="outline" className="capitalize">{vatReturn.status}</Badge>
+                </div>
+                <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
+                  <Info label="Box 1" value={formatMoney(vatReturn.box1)} />
+                  <Info label="Box 4" value={formatMoney(vatReturn.box4)} />
+                  <Info label="Box 5" value={formatMoney(vatReturn.box5)} />
+                </div>
+              </div>
+            ))}
+            {returns.length === 0 && <p className="py-8 text-center text-sm text-stone-500">No VAT returns generated yet.</p>}
+          </div>
         </Panel>
       </div>
-      <Panel title="Prepare VAT return">
-        <form onSubmit={prepareVatReturn} className="space-y-3">
-          <Field label="Period start" type="date" value={form.period_start} onChange={(value) => setForm((current) => ({ ...current, period_start: value }))} />
-          <Field label="Period end" type="date" value={form.period_end} onChange={(value) => setForm((current) => ({ ...current, period_end: value }))} />
-          <Button disabled={busy} className="w-full" style={{ background: "var(--brand)" }}>Prepare draft</Button>
+    );
+  }
+
+  if (tab === "VAT Transactions") {
+    return (
+      <Panel title="VAT transaction audit trail">
+        <VatAccountingFilterBar search={search} setSearch={setSearch} extra={(
+          <select value={vatCodeFilter} onChange={(e) => setVatCodeFilter(e.target.value)} className="h-9 rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm">
+            <option value="">All VAT codes</option>
+            {activeCodes.map((code) => <option key={code.id} value={code.code}>{code.code} - {code.description}</option>)}
+          </select>
+        )} />
+        <VatTransactionsTable transactions={filteredTransactions} />
+      </Panel>
+    );
+  }
+
+  if (tab === "VAT Codes") {
+    return (
+      <div className="grid gap-4 xl:grid-cols-[1fr_360px]">
+        <Panel title="VAT codes">
+          <VatCodeTable codes={codes} />
+        </Panel>
+        <Panel title="Create VAT code">
+          <form onSubmit={createCode} className="space-y-3">
+            <Field label="Code" value={codeForm.code} onChange={(value) => setCodeForm((current) => ({ ...current, code: value }))} />
+            <Field label="Description" value={codeForm.description} onChange={(value) => setCodeForm((current) => ({ ...current, description: value }))} />
+            <Field label="Percentage" type="number" value={codeForm.percentage} onChange={(value) => setCodeForm((current) => ({ ...current, percentage: value }))} />
+            <VatSelect label="Purchase behaviour" value={codeForm.purchase_behavior} onChange={(value) => setCodeForm((current) => ({ ...current, purchase_behavior: value }))} options={["input", "none", "reverse_charge", "outside_scope"]} />
+            <VatSelect label="Sales behaviour" value={codeForm.sales_behavior} onChange={(value) => setCodeForm((current) => ({ ...current, sales_behavior: value }))} options={["output", "none", "reverse_charge", "outside_scope"]} />
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="Net box" value={codeForm.return_box_net} onChange={(value) => setCodeForm((current) => ({ ...current, return_box_net: value }))} />
+              <Field label="VAT box" value={codeForm.return_box_vat} onChange={(value) => setCodeForm((current) => ({ ...current, return_box_vat: value }))} />
+            </div>
+            <label className="flex items-center gap-2 text-sm font-semibold text-stone-700">
+              <input type="checkbox" checked={!!codeForm.active} onChange={(e) => setCodeForm((current) => ({ ...current, active: e.target.checked }))} />
+              Active
+            </label>
+            <Button disabled={busy} className="w-full" style={{ background: "var(--brand)" }}>Create code</Button>
+          </form>
+        </Panel>
+      </div>
+    );
+  }
+
+  if (tab === "VAT Periods") {
+    return (
+      <Panel title="VAT periods">
+        <VatPeriodTable periods={periods} onAction={updatePeriod} busy={busy} />
+      </Panel>
+    );
+  }
+
+  if (tab === "Adjustments") {
+    return (
+      <div className="grid gap-4 xl:grid-cols-[1fr_380px]">
+        <Panel title="VAT adjustments">
+          <div className="space-y-2">
+            {adjustments.map((adjustment) => (
+              <div key={adjustment.id} className="grid gap-3 rounded-md border border-stone-200 p-3 md:grid-cols-[120px_1fr_120px_120px] md:items-center">
+                <Info label="Date" value={formatDate(adjustment.adjustment_date)} />
+                <Info label="Reason" value={adjustment.reason || adjustment.notes || "VAT adjustment"} />
+                <Info label="VAT code" value={adjustment.vat_code || "-"} />
+                <Info label="VAT" value={formatMoney(adjustment.vat_amount)} />
+              </div>
+            ))}
+            {adjustments.length === 0 && <p className="py-10 text-center text-sm text-stone-500">No VAT adjustments posted yet.</p>}
+          </div>
+        </Panel>
+        <Panel title="Post adjustment">
+          <form onSubmit={createAdjustment} className="space-y-3">
+            <Field label="Adjustment date" type="date" value={adjustmentForm.adjustment_date} onChange={(value) => setAdjustmentForm((current) => ({ ...current, adjustment_date: value }))} />
+            <VatSelect label="VAT period" value={adjustmentForm.vat_period_id} onChange={(value) => setAdjustmentForm((current) => ({ ...current, vat_period_id: value }))} options={periods.map((period) => ({ value: period.id, label: `${formatDate(period.start_date)} - ${formatDate(period.end_date)}` }))} />
+            <VatSelect label="VAT code" value={adjustmentForm.vat_code} onChange={(value) => setAdjustmentForm((current) => ({ ...current, vat_code: value }))} options={activeCodes.map((code) => ({ value: code.code, label: `${code.code} - ${code.description}` }))} />
+            <Field label="Reason" value={adjustmentForm.reason} onChange={(value) => setAdjustmentForm((current) => ({ ...current, reason: value }))} />
+            <Field label="Net" type="number" value={adjustmentForm.net_amount} onChange={(value) => setAdjustmentForm((current) => ({ ...current, net_amount: value }))} />
+            <Field label="VAT" type="number" value={adjustmentForm.vat_amount} onChange={(value) => setAdjustmentForm((current) => ({ ...current, vat_amount: value }))} />
+            <Field label="Gross" type="number" value={adjustmentForm.gross_amount} onChange={(value) => setAdjustmentForm((current) => ({ ...current, gross_amount: value }))} />
+            <Field label="Notes" value={adjustmentForm.notes} onChange={(value) => setAdjustmentForm((current) => ({ ...current, notes: value }))} />
+            <Button disabled={busy} className="w-full" style={{ background: "var(--brand)" }}>Post VAT adjustment</Button>
+          </form>
+        </Panel>
+      </div>
+    );
+  }
+
+  if (tab === "Reports") {
+    return <VatReportsWorkspace vat={vat} transactions={transactions} />;
+  }
+
+  if (tab === "Settings") {
+    return (
+      <Panel title="VAT settings">
+        <form onSubmit={saveSettings} className="space-y-4">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <Field label="VAT registration number" value={settingsForm.vat_registration_number || ""} onChange={(value) => setSettingsForm((current) => ({ ...current, vat_registration_number: value }))} />
+            <VatSelect label="VAT scheme" value={settingsForm.vat_scheme || "standard"} onChange={(value) => setSettingsForm((current) => ({ ...current, vat_scheme: value }))} options={["standard", "cash", "flat_rate"]} />
+            <VatSelect label="VAT frequency" value={settingsForm.vat_frequency || "quarterly"} onChange={(value) => setSettingsForm((current) => ({ ...current, vat_frequency: value }))} options={["monthly", "quarterly", "annual"]} />
+            <Field label="VAT start date" type="date" value={settingsForm.vat_start_date || ""} onChange={(value) => setSettingsForm((current) => ({ ...current, vat_start_date: value }))} />
+            <VatSelect label="Default purchase VAT code" value={settingsForm.default_purchase_vat_code || ""} onChange={(value) => setSettingsForm((current) => ({ ...current, default_purchase_vat_code: value }))} options={activeCodes.map((code) => ({ value: code.code, label: `${code.code} - ${code.description}` }))} />
+            <VatSelect label="Default sales VAT code" value={settingsForm.default_sales_vat_code || ""} onChange={(value) => setSettingsForm((current) => ({ ...current, default_sales_vat_code: value }))} options={activeCodes.map((code) => ({ value: code.code, label: `${code.code} - ${code.description}` }))} />
+            <VatSelect label="Default bank VAT code" value={settingsForm.default_bank_vat_code || ""} onChange={(value) => setSettingsForm((current) => ({ ...current, default_bank_vat_code: value }))} options={activeCodes.map((code) => ({ value: code.code, label: `${code.code} - ${code.description}` }))} />
+            <Field label="Flat rate percentage" type="number" value={settingsForm.flat_rate_percentage || ""} onChange={(value) => setSettingsForm((current) => ({ ...current, flat_rate_percentage: value }))} />
+          </div>
+          <div className="grid gap-3 md:grid-cols-3">
+            <VatCheckbox label="Cash accounting" checked={!!settingsForm.cash_accounting} onChange={(value) => setSettingsForm((current) => ({ ...current, cash_accounting: value, accrual_accounting: !value }))} />
+            <VatCheckbox label="Accrual accounting" checked={settingsForm.accrual_accounting !== false} onChange={(value) => setSettingsForm((current) => ({ ...current, accrual_accounting: value, cash_accounting: !value }))} />
+            <VatCheckbox label="MTD ready" checked={!!settingsForm.mtd_enabled} onChange={(value) => setSettingsForm((current) => ({ ...current, mtd_enabled: value }))} />
+          </div>
+          <div className="flex justify-end">
+            <Button disabled={busy} style={{ background: "var(--brand)" }}>Save VAT settings</Button>
+          </div>
         </form>
-        <p className="mt-3 text-xs text-stone-500">
-          Draft values are calculated from posted native journals in the selected period.
-        </p>
+      </Panel>
+    );
+  }
+
+  return <PlaceholderModulePanel title={tab} moduleTitle="VAT" />;
+}
+
+function VatAccountingFilterBar({ search, setSearch, extra }) {
+  return (
+    <div className="mb-3 flex flex-col gap-2 rounded-md border border-stone-200 bg-stone-50 p-2 lg:flex-row lg:items-center">
+      <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search VAT audit trail" className="h-9 lg:max-w-md" />
+      {extra}
+      <div className="ml-auto flex gap-2">
+        <Button type="button" variant="outline" size="sm" className="gap-2"><RefreshCw className="h-4 w-4" />Refresh</Button>
+        <Button type="button" variant="outline" size="sm" className="gap-2"><Download className="h-4 w-4" />Export</Button>
+        <Button type="button" variant="outline" size="sm" className="gap-2"><Printer className="h-4 w-4" />Print</Button>
+      </div>
+    </div>
+  );
+}
+
+function VatBoxGrid({ boxes = {}, transactions = [], onOpenBox }) {
+  const rows = Array.from({ length: 9 }, (_, index) => {
+    const box = `box${index + 1}`;
+    const value = boxes[box] || 0;
+    const count = vatBoxTransactions(box, transactions).length;
+    return { box, label: vatBoxLabel(box), value, count };
+  });
+  return (
+    <div className="grid gap-2 md:grid-cols-3">
+      {rows.map((row) => (
+        <button key={row.box} type="button" onClick={() => onOpenBox(row.box)} className="rounded-md border border-stone-200 bg-white p-3 text-left shadow-sm transition hover:border-emerald-300 hover:shadow-md">
+          <p className="text-xs font-semibold uppercase tracking-wide text-stone-500">{row.box.toUpperCase()}</p>
+          <p className="mt-1 text-sm font-medium text-stone-700">{row.label}</p>
+          <p className="mt-3 font-display text-xl font-bold text-stone-900">{formatMoney(row.value)}</p>
+          <p className="text-xs text-stone-500">{row.count} source transaction{row.count === 1 ? "" : "s"}</p>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function VatBoxDrilldown({ box, transactions, onClose }) {
+  const rows = vatBoxTransactions(box, transactions);
+  return (
+    <div className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div>
+          <p className="font-semibold text-emerald-950">{box.toUpperCase()} drill-down</p>
+          <p className="text-xs text-emerald-800">{vatBoxLabel(box)}</p>
+        </div>
+        <Button type="button" size="sm" variant="outline" onClick={onClose}>Close</Button>
+      </div>
+      <VatTransactionsTable transactions={rows} compact />
+    </div>
+  );
+}
+
+function vatBoxTransactions(box, transactions = []) {
+  return transactions.filter((transaction) => String(transaction.return_box_vat || "") === box.replace("box", "") || String(transaction.return_box_net || "") === box.replace("box", ""));
+}
+
+function vatBoxLabel(box) {
+  const labels = {
+    box1: "VAT due on sales",
+    box2: "VAT due on acquisitions",
+    box3: "Total VAT due",
+    box4: "VAT reclaimed",
+    box5: "Net VAT due",
+    box6: "Net sales",
+    box7: "Net purchases",
+    box8: "EC sales",
+    box9: "EC purchases",
+  };
+  return labels[box] || box;
+}
+
+function VatTransactionsTable({ transactions = [], compact = false }) {
+  if (!transactions.length) {
+    return <p className="py-8 text-center text-sm text-stone-500">No VAT transactions found.</p>;
+  }
+  return (
+    <div className="overflow-auto rounded-md border border-stone-200 bg-white">
+      <table className="min-w-full text-left text-sm">
+        <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
+          <tr>
+            <th className="px-3 py-2">Date</th>
+            {!compact && <th className="px-3 py-2">Source</th>}
+            <th className="px-3 py-2">Document</th>
+            {!compact && <th className="px-3 py-2">Account</th>}
+            <th className="px-3 py-2">VAT code</th>
+            <th className="px-3 py-2 text-right">Net</th>
+            <th className="px-3 py-2 text-right">VAT</th>
+            <th className="px-3 py-2 text-right">Gross</th>
+            {!compact && <th className="px-3 py-2">Period</th>}
+            {!compact && <th className="px-3 py-2">Status</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {transactions.map((transaction) => (
+            <tr key={transaction.id} className="border-t border-stone-100">
+              <td className="whitespace-nowrap px-3 py-2">{formatDate(transaction.date)}</td>
+              {!compact && <td className="px-3 py-2 text-stone-600">{transaction.source_module}</td>}
+              <td className="px-3 py-2 font-medium text-stone-900">{transaction.document_number || transaction.document_type}</td>
+              {!compact && <td className="px-3 py-2 text-stone-600">{transaction.account_name || transaction.account_code || "-"}</td>}
+              <td className="px-3 py-2"><Badge variant="outline">{transaction.vat_code || "-"}</Badge></td>
+              <td className="px-3 py-2 text-right">{formatMoney(transaction.net)}</td>
+              <td className="px-3 py-2 text-right">{formatMoney(transaction.vat)}</td>
+              <td className="px-3 py-2 text-right">{formatMoney(transaction.gross)}</td>
+              {!compact && <td className="px-3 py-2 text-stone-500">{transaction.vat_period || "-"}</td>}
+              {!compact && <td className="px-3 py-2"><Badge className={transaction.status === "locked" ? "bg-stone-200 text-stone-700" : "bg-emerald-100 text-emerald-800"}>{transaction.status || "open"}</Badge></td>}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function VatCodeTable({ codes = [] }) {
+  if (!codes.length) {
+    return <p className="py-10 text-center text-sm text-stone-500">No VAT codes configured yet.</p>;
+  }
+  return (
+    <div className="overflow-auto rounded-md border border-stone-200 bg-white">
+      <table className="min-w-full text-left text-sm">
+        <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
+          <tr>
+            <th className="px-3 py-2">Code</th>
+            <th className="px-3 py-2">Description</th>
+            <th className="px-3 py-2 text-right">Rate</th>
+            <th className="px-3 py-2">Purchase</th>
+            <th className="px-3 py-2">Sales</th>
+            <th className="px-3 py-2">Boxes</th>
+            <th className="px-3 py-2">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {codes.map((code) => (
+            <tr key={code.id || code.code} className="border-t border-stone-100">
+              <td className="px-3 py-2 font-semibold text-stone-900">{code.code}</td>
+              <td className="px-3 py-2 text-stone-700">{code.description}</td>
+              <td className="px-3 py-2 text-right">{Number(code.percentage || 0).toFixed(2)}%</td>
+              <td className="px-3 py-2 text-stone-600">{code.purchase_behavior}</td>
+              <td className="px-3 py-2 text-stone-600">{code.sales_behavior}</td>
+              <td className="px-3 py-2 text-stone-600">Net {code.return_box_net || "-"} / VAT {code.return_box_vat || "-"}</td>
+              <td className="px-3 py-2"><Badge className={code.active ? "bg-emerald-100 text-emerald-800" : "bg-stone-200 text-stone-700"}>{code.active ? "Active" : "Inactive"}</Badge></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function VatPeriodTable({ periods = [], onAction, busy }) {
+  if (!periods.length) {
+    return <p className="py-10 text-center text-sm text-stone-500">No VAT periods configured yet.</p>;
+  }
+  return (
+    <div className="overflow-auto rounded-md border border-stone-200 bg-white">
+      <table className="min-w-full text-left text-sm">
+        <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
+          <tr>
+            <th className="px-3 py-2">Period</th>
+            <th className="px-3 py-2">Due</th>
+            <th className="px-3 py-2">Status</th>
+            <th className="px-3 py-2 text-right">Transactions</th>
+            <th className="px-3 py-2 text-right">Output VAT</th>
+            <th className="px-3 py-2 text-right">Input VAT</th>
+            <th className="px-3 py-2 text-right">Net VAT</th>
+            <th className="px-3 py-2">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {periods.map((period) => (
+            <tr key={period.id} className="border-t border-stone-100">
+              <td className="px-3 py-2 font-semibold text-stone-900">{formatDate(period.start_date)} - {formatDate(period.end_date)}</td>
+              <td className="px-3 py-2">{formatDate(period.due_date)}</td>
+              <td className="px-3 py-2"><Badge variant="outline" className="capitalize">{period.status}</Badge></td>
+              <td className="px-3 py-2 text-right">{period.transaction_count || 0}</td>
+              <td className="px-3 py-2 text-right">{formatMoney(period.output_vat)}</td>
+              <td className="px-3 py-2 text-right">{formatMoney(period.input_vat)}</td>
+              <td className="px-3 py-2 text-right font-semibold">{formatMoney(period.net_vat)}</td>
+              <td className="px-3 py-2">
+                <div className="flex flex-wrap gap-1">
+                  {["open", "locked", "closed"].filter((action) => action !== period.status).map((action) => (
+                    <Button key={action} type="button" size="sm" variant="outline" disabled={busy} onClick={() => onAction(period, action)} className="capitalize">{action}</Button>
+                  ))}
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function VatReportsWorkspace({ vat, transactions }) {
+  const reports = vat.reports || {};
+  const exceptions = reports.exceptions || [];
+  const cards = [
+    ["VAT Return Summary", formatMoney(vat?.current_boxes?.box5 || 0), "Net VAT due for the current open period."],
+    ["VAT Detail Report", transactions.length, "Detailed VAT transaction audit trail."],
+    ["VAT Audit Report", reports.audit_count || transactions.length, "VAT postings, adjustments and return actions."],
+    ["VAT by Nominal", Object.keys(reports.by_nominal || {}).length, "Nominal account VAT totals."],
+    ["VAT by Supplier", Object.keys(reports.by_supplier || {}).length, "Purchase VAT by supplier."],
+    ["VAT by Customer", Object.keys(reports.by_customer || {}).length, "Sales VAT by customer."],
+    ["VAT Exception Report", exceptions.length, "Transactions that need review."],
+  ];
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        {cards.map(([title, value, text]) => (
+          <div key={title} className="rounded-md border border-stone-200 bg-white p-4 shadow-sm">
+            <p className="font-semibold text-stone-900">{title}</p>
+            <p className="mt-2 font-display text-2xl font-bold text-stone-900">{value}</p>
+            <p className="mt-1 text-sm text-stone-500">{text}</p>
+          </div>
+        ))}
+      </div>
+      <Panel title="VAT exceptions">
+        {exceptions.length === 0 ? (
+          <p className="py-8 text-center text-sm text-stone-500">No VAT exceptions found.</p>
+        ) : (
+          <VatTransactionsTable transactions={exceptions} />
+        )}
       </Panel>
     </div>
+  );
+}
+
+function VatSelect({ label, value, onChange, options = [] }) {
+  const normalised = options.map((option) => typeof option === "string" ? { value: option, label: option } : option);
+  return (
+    <div>
+      <Label className="text-xs font-semibold text-stone-600">{label}</Label>
+      <select value={value || ""} onChange={(e) => onChange(e.target.value)} className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm">
+        <option value="">Select</option>
+        {normalised.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select>
+    </div>
+  );
+}
+
+function VatCheckbox({ label, checked, onChange }) {
+  return (
+    <label className="flex items-center gap-3 rounded-md border border-stone-200 bg-white p-3 text-sm font-semibold text-stone-700 shadow-sm">
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      {label}
+    </label>
   );
 }
 
