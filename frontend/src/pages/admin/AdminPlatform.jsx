@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -108,7 +108,7 @@ export default function AdminPlatform() {
   const [jobDraft, setJobDraft] = useState(initialJob);
   const [notificationDraft, setNotificationDraft] = useState(initialNotification);
 
-  async function load(search = query) {
+  const load = useCallback(async (search = query) => {
     try {
       const { data } = await api.get("/admin/platform", { params: search ? { q: search } : {} });
       setWorkspace({ ...emptyPlatform, ...data });
@@ -117,11 +117,11 @@ export default function AdminPlatform() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [query]);
 
   useEffect(() => {
     load("");
-  }, []);
+  }, [load]);
 
   const dashboard = workspace.dashboard || {};
   const permissions = workspace.permissions || {};
