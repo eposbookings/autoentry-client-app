@@ -17,6 +17,7 @@ import {
   RefreshCw,
   Settings,
   ShieldCheck,
+  Upload,
   UsersRound,
   WalletCards,
 } from "lucide-react";
@@ -26,6 +27,7 @@ const MODULES = [
   { key: "dashboard", label: "Overview", icon: LayoutDashboard },
   { key: "payables", label: "Payables", icon: ReceiptText },
   { key: "receivables", label: "Receivables", icon: WalletCards },
+  { key: "contacts", label: "Contacts", icon: UsersRound },
   { key: "banking", label: "Banking", icon: Banknote },
   { key: "vat", label: "VAT", icon: ShieldCheck },
   { key: "gl", label: "General ledger", icon: Landmark },
@@ -54,7 +56,9 @@ export default function AdminAccountancySoftware() {
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
   const [accountForm, setAccountForm] = useState({ code: "", name: "", type: "expense", description: "" });
+  const [contactForm, setContactForm] = useState({ name: "", contact_type: "supplier", email: "" });
   const [bankForm, setBankForm] = useState({ transaction_date: "", description: "", reference: "", money_in: "", money_out: "", bank_account_code: "1200" });
+  const [bankImportFile, setBankImportFile] = useState(null);
   const [vatForm, setVatForm] = useState({ period_start: "", period_end: "" });
   const [periodForm, setPeriodForm] = useState({ period_start: "", period_end: "", notes: "" });
 
@@ -117,6 +121,27 @@ export default function AdminAccountancySoftware() {
     }
   }
 
+  async function createContact(e) {
+    e.preventDefault();
+    if (!workspace?.client?.id) return;
+    if (!contactForm.name.trim()) {
+      toast.error("Contact name is required");
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.post(`/admin/accounting/clients/${workspace.client.id}/contacts`, contactForm);
+      toast.success(`${contactForm.contact_type === "customer" ? "Customer" : "Supplier"} created`);
+      setContactForm({ name: "", contact_type: "supplier", email: "" });
+      await loadWorkspace(workspace.client.id);
+      await loadClients();
+    } catch (e) {
+      toast.error(formatApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function createBankTransaction(e) {
     e.preventDefault();
     if (!workspace?.client?.id) return;
@@ -126,6 +151,35 @@ export default function AdminAccountancySoftware() {
       toast.success("Bank transaction added");
       setBankForm({ transaction_date: "", description: "", reference: "", money_in: "", money_out: "", bank_account_code: "1200" });
       await loadWorkspace(workspace.client.id);
+    } catch (e) {
+      toast.error(formatApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function importBankTransactions(e) {
+    e.preventDefault();
+    if (!workspace?.client?.id) return;
+    if (!bankImportFile) {
+      toast.error("Choose a CSV bank file first");
+      return;
+    }
+    const payload = new FormData();
+    payload.append("file", bankImportFile);
+    payload.append("bank_account_code", bankForm.bank_account_code || "1200");
+    setBusy(true);
+    try {
+      const { data } = await api.post(`/admin/accounting/clients/${workspace.client.id}/bank-transactions/import`, payload, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      toast.success(`Imported ${data?.imported || 0} bank transactions`);
+      if (Array.isArray(data?.errors) && data.errors.length) {
+        toast.warning(`${data.errors.length} rows need checking`);
+      }
+      setBankImportFile(null);
+      await loadWorkspace(workspace.client.id);
+      await loadClients();
     } catch (e) {
       toast.error(formatApiError(e));
     } finally {
@@ -286,12 +340,24 @@ export default function AdminAccountancySoftware() {
                 {module === "dashboard" && <Overview workspace={workspace} />}
                 {module === "payables" && <LedgerView title="Accounts payable" journals={workspace.journals} accountCodes={["2000"]} />}
                 {module === "receivables" && <LedgerView title="Accounts receivable" journals={workspace.journals} accountCodes={["1100"]} />}
+                {module === "contacts" && (
+                  <ContactsWorkspace
+                    contacts={workspace.contacts}
+                    form={contactForm}
+                    setForm={setContactForm}
+                    createContact={createContact}
+                    busy={busy}
+                  />
+                )}
                 {module === "banking" && (
                   <BankingWorkspace
                     workspace={workspace}
                     form={bankForm}
                     setForm={setBankForm}
+                    importFile={bankImportFile}
+                    setImportFile={setBankImportFile}
                     createBankTransaction={createBankTransaction}
+                    importBankTransactions={importBankTransactions}
                     reconcileBankTransaction={reconcileBankTransaction}
                     busy={busy}
                   />
@@ -307,7 +373,7 @@ export default function AdminAccountancySoftware() {
                 )}
                 {module === "gl" && <JournalTable journals={workspace.journals} />}
                 {module === "coa" && <ChartOfAccounts accounts={workspace.accounts} form={accountForm} setForm={setAccountForm} createAccount={createAccount} busy={busy} />}
-                {module === "reports" && <ReportsPlaceholder summary={workspace.summary} />}
+                {module === "reports" && <ReportsWorkspace workspace={workspace} />}
                 {module === "settings" && (
                   <SettingsWorkspace
                     workspace={workspace}
@@ -401,7 +467,7 @@ function LedgerView({ title, journals, accountCodes }) {
   );
 }
 
-function BankingWorkspace({ workspace, form, setForm, createBankTransaction, reconcileBankTransaction, busy }) {
+function BankingWorkspace({ workspace, form, setForm, importFile, setImportFile, createBankTransaction, importBankTransactions, reconcileBankTransaction, busy }) {
   const bankAccounts = (workspace.accounts || []).filter((account) => account.account_type === "bank" || account.code === "1200");
   const postingAccounts = (workspace.accounts || []).filter((account) => account.active && account.account_type !== "bank");
   return (
@@ -423,28 +489,108 @@ function BankingWorkspace({ workspace, form, setForm, createBankTransaction, rec
           </div>
         )}
       </Panel>
-      <Panel title="Add bank line">
-        <form onSubmit={createBankTransaction} className="space-y-3">
-          <Field label="Date" type="date" value={form.transaction_date} onChange={(value) => setForm((current) => ({ ...current, transaction_date: value }))} />
-          <Field label="Description" value={form.description} onChange={(value) => setForm((current) => ({ ...current, description: value }))} />
-          <Field label="Reference" value={form.reference} onChange={(value) => setForm((current) => ({ ...current, reference: value }))} />
+      <div className="space-y-4">
+        <Panel title="Import bank CSV">
+          <form onSubmit={importBankTransactions} className="space-y-3">
+            <div>
+              <Label className="text-xs font-semibold text-stone-600">Bank account</Label>
+              <select
+                value={form.bank_account_code}
+                onChange={(e) => setForm((current) => ({ ...current, bank_account_code: e.target.value }))}
+                className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm"
+              >
+                {(bankAccounts.length ? bankAccounts : [{ code: "1200", name: "Bank account" }]).map((account) => (
+                  <option key={account.code} value={account.code}>{account.code} - {account.name}</option>
+                ))}
+              </select>
+            </div>
+            <Input type="file" accept=".csv,text/csv" onChange={(e) => setImportFile(e.target.files?.[0] || null)} />
+            <Button disabled={busy || !importFile} className="w-full gap-2" style={{ background: "var(--brand)" }}>
+              <Upload className="h-4 w-4" /> Import CSV
+            </Button>
+            <p className="text-xs text-stone-500">
+              Accepts common columns like Date, Description, Reference, Money In, Money Out, Credit, Debit, or Amount.
+            </p>
+          </form>
+        </Panel>
+        <Panel title="Add bank line">
+          <form onSubmit={createBankTransaction} className="space-y-3">
+            <Field label="Date" type="date" value={form.transaction_date} onChange={(value) => setForm((current) => ({ ...current, transaction_date: value }))} />
+            <Field label="Description" value={form.description} onChange={(value) => setForm((current) => ({ ...current, description: value }))} />
+            <Field label="Reference" value={form.reference} onChange={(value) => setForm((current) => ({ ...current, reference: value }))} />
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="Money in" value={form.money_in} onChange={(value) => setForm((current) => ({ ...current, money_in: value, money_out: value ? "" : current.money_out }))} />
+              <Field label="Money out" value={form.money_out} onChange={(value) => setForm((current) => ({ ...current, money_out: value, money_in: value ? "" : current.money_in }))} />
+            </div>
+            <Button disabled={busy} className="w-full" style={{ background: "var(--brand)" }}>Add transaction</Button>
+          </form>
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+function ContactsWorkspace({ contacts = [], form, setForm, createContact, busy }) {
+  const suppliers = contacts.filter((contact) => contact.contact_type === "supplier");
+  const customers = contacts.filter((contact) => contact.contact_type === "customer");
+  return (
+    <div className="grid gap-4 xl:grid-cols-[1fr_360px]">
+      <div className="space-y-4">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <SummaryCard label="Suppliers" value={suppliers.length} tone="amber" />
+          <SummaryCard label="Customers" value={customers.length} tone="blue" />
+        </div>
+        <Panel title="Contacts">
+          {contacts.length === 0 ? (
+            <p className="py-12 text-center text-sm text-stone-500">No native contacts yet. Add suppliers and customers here, or let invoice publishing create them.</p>
+          ) : (
+            <div className="overflow-auto">
+              <table className="min-w-full text-left text-sm">
+                <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
+                  <tr>
+                    <th className="px-3 py-2">Name</th>
+                    <th className="px-3 py-2">Type</th>
+                    <th className="px-3 py-2">Email</th>
+                    <th className="px-3 py-2">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {contacts.map((contact) => (
+                    <tr key={contact.id} className="border-t border-stone-100">
+                      <td className="px-3 py-2 font-semibold text-stone-900">{contact.name}</td>
+                      <td className="px-3 py-2 capitalize text-stone-600">{contact.contact_type}</td>
+                      <td className="px-3 py-2 text-stone-600">{contact.email || "-"}</td>
+                      <td className="px-3 py-2">
+                        <Badge className={contact.active ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-100" : "bg-stone-100 text-stone-700 hover:bg-stone-100"}>
+                          {contact.active ? "Active" : "Inactive"}
+                        </Badge>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Panel>
+      </div>
+      <Panel title="Add contact">
+        <form onSubmit={createContact} className="space-y-3">
+          <Field label="Name" value={form.name} onChange={(value) => setForm((current) => ({ ...current, name: value }))} />
           <div>
-            <Label className="text-xs font-semibold text-stone-600">Bank account</Label>
+            <Label className="text-xs font-semibold text-stone-600">Type</Label>
             <select
-              value={form.bank_account_code}
-              onChange={(e) => setForm((current) => ({ ...current, bank_account_code: e.target.value }))}
+              value={form.contact_type}
+              onChange={(e) => setForm((current) => ({ ...current, contact_type: e.target.value }))}
               className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm"
             >
-              {(bankAccounts.length ? bankAccounts : [{ code: "1200", name: "Bank account" }]).map((account) => (
-                <option key={account.code} value={account.code}>{account.code} - {account.name}</option>
-              ))}
+              <option value="supplier">Supplier</option>
+              <option value="customer">Customer</option>
             </select>
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <Field label="Money in" value={form.money_in} onChange={(value) => setForm((current) => ({ ...current, money_in: value, money_out: value ? "" : current.money_out }))} />
-            <Field label="Money out" value={form.money_out} onChange={(value) => setForm((current) => ({ ...current, money_out: value, money_in: value ? "" : current.money_in }))} />
-          </div>
-          <Button disabled={busy} className="w-full" style={{ background: "var(--brand)" }}>Add transaction</Button>
+          <Field label="Email" type="email" value={form.email} onChange={(value) => setForm((current) => ({ ...current, email: value }))} />
+          <Button disabled={busy} className="w-full gap-2" style={{ background: "var(--brand)" }}>
+            <Plus className="h-4 w-4" /> Create contact
+          </Button>
         </form>
       </Panel>
     </div>
@@ -667,17 +813,123 @@ function ChartOfAccounts({ accounts, form, setForm, createAccount, busy }) {
   );
 }
 
-function ReportsPlaceholder({ summary }) {
+function ReportsWorkspace({ workspace }) {
+  const reports = workspace.reports || {};
+  const pnl = reports.profit_and_loss || {};
+  const balanceSheet = reports.balance_sheet || {};
+  const trialBalance = reports.trial_balance || [];
+  const agedReceivables = reports.aged_receivables || [];
+  const agedPayables = reports.aged_payables || [];
   return (
-    <Panel title="Reports">
+    <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <SummaryCard label="Trial balance status" value="Balanced" tone="emerald" />
-        <SummaryCard label="VAT position" value={formatMoney(summary?.vat_balance || summary?.vat)} tone="emerald" />
-        <SummaryCard label="Debtors" value={formatMoney(summary?.receivables)} tone="blue" />
-        <SummaryCard label="Creditors" value={formatMoney(summary?.payables)} tone="amber" />
+        <SummaryCard label="Income" value={formatMoney(pnl.income)} tone="emerald" />
+        <SummaryCard label="Expenses" value={formatMoney(pnl.expenses)} tone="amber" />
+        <SummaryCard label="Profit" value={formatMoney(pnl.profit)} tone="blue" />
+        <SummaryCard label="Net assets" value={formatMoney(balanceSheet.net_assets)} tone="stone" />
       </div>
-      <p className="mt-4 text-sm text-stone-500">Profit and loss, balance sheet, aged debtors, aged creditors, and VAT return exports will sit here.</p>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Panel title="Profit and loss">
+          <ReportRows rows={[
+            ["Income", pnl.income],
+            ["Expenses", pnl.expenses],
+            ["Profit / loss", pnl.profit],
+          ]} />
+        </Panel>
+        <Panel title="Balance sheet">
+          <ReportRows rows={[
+            ["Assets", balanceSheet.assets],
+            ["Liabilities", balanceSheet.liabilities],
+            ["Equity", balanceSheet.equity],
+            ["Net assets", balanceSheet.net_assets],
+          ]} />
+        </Panel>
+      </div>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <AgedBalanceTable title="Aged debtors" rows={agedReceivables} empty="No customer balances yet." />
+        <AgedBalanceTable title="Aged creditors" rows={agedPayables} empty="No supplier balances yet." />
+      </div>
+      <Panel title="Trial balance">
+        {trialBalance.length === 0 ? (
+          <p className="py-8 text-center text-sm text-stone-500">No posted balances yet.</p>
+        ) : (
+          <div className="overflow-auto">
+            <table className="min-w-full text-left text-sm">
+              <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
+                <tr>
+                  <th className="px-3 py-2">Code</th>
+                  <th className="px-3 py-2">Account</th>
+                  <th className="px-3 py-2">Type</th>
+                  <th className="px-3 py-2 text-right">Debit</th>
+                  <th className="px-3 py-2 text-right">Credit</th>
+                </tr>
+              </thead>
+              <tbody>
+                {trialBalance.map((row) => (
+                  <tr key={row.code} className="border-t border-stone-100">
+                    <td className="px-3 py-2 font-semibold text-stone-900">{row.code}</td>
+                    <td className="px-3 py-2">{row.name}</td>
+                    <td className="px-3 py-2 text-stone-600">{row.type}</td>
+                    <td className="px-3 py-2 text-right">{formatMoney(row.debit)}</td>
+                    <td className="px-3 py-2 text-right">{formatMoney(row.credit)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+function AgedBalanceTable({ title, rows, empty }) {
+  return (
+    <Panel title={title}>
+      {rows.length === 0 ? (
+        <p className="py-8 text-center text-sm text-stone-500">{empty}</p>
+      ) : (
+        <div className="overflow-auto">
+          <table className="min-w-full text-left text-sm">
+            <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
+              <tr>
+                <th className="px-3 py-2">Contact</th>
+                <th className="px-3 py-2 text-right">0-30</th>
+                <th className="px-3 py-2 text-right">31-60</th>
+                <th className="px-3 py-2 text-right">61-90</th>
+                <th className="px-3 py-2 text-right">90+</th>
+                <th className="px-3 py-2 text-right">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.contact_id || row.contact_name} className="border-t border-stone-100">
+                  <td className="px-3 py-2 font-medium text-stone-900">{row.contact_name}</td>
+                  <td className="px-3 py-2 text-right">{formatMoney(row.current)}</td>
+                  <td className="px-3 py-2 text-right">{formatMoney(row.days_31_60)}</td>
+                  <td className="px-3 py-2 text-right">{formatMoney(row.days_61_90)}</td>
+                  <td className="px-3 py-2 text-right">{formatMoney(row.days_90_plus)}</td>
+                  <td className="px-3 py-2 text-right font-semibold">{formatMoney(row.total)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </Panel>
+  );
+}
+
+function ReportRows({ rows }) {
+  return (
+    <div className="divide-y divide-stone-100">
+      {rows.map(([label, value]) => (
+        <div key={label} className="flex items-center justify-between gap-4 py-2 text-sm">
+          <span className="text-stone-600">{label}</span>
+          <strong className="font-display text-stone-900">{formatMoney(value)}</strong>
+        </div>
+      ))}
+    </div>
   );
 }
 

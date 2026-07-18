@@ -1724,6 +1724,151 @@ async def native_account_balances(session: AsyncSession, client_id: str) -> dict
     return balances
 
 
+async def native_accounting_reports(session: AsyncSession, client_id: str) -> dict:
+    accounts = await many(session, select(accounting_accounts).where(accounting_accounts.c.client_id == client_id))
+    account_by_code = {str(account.get("code") or ""): account for account in accounts}
+    contacts = await many(session, select(accounting_contacts).where(accounting_contacts.c.client_id == client_id))
+    contact_by_id = {str(contact.get("id") or ""): contact for contact in contacts}
+    journals = await many(session, select(accounting_journal_entries).where(accounting_journal_entries.c.client_id == client_id))
+    journal_by_id = {str(journal.get("id") or ""): journal for journal in journals}
+    lines = await many(session, select(accounting_journal_lines).where(accounting_journal_lines.c.client_id == client_id))
+
+    balances: dict[str, Decimal] = {}
+    aged_receivables: dict[str, dict] = {}
+    aged_payables: dict[str, dict] = {}
+    today = datetime.now(timezone.utc).date()
+    for line in lines:
+        code = str(line.get("account_code") or "")
+        if not code:
+            continue
+        debit = money(line.get("debit"))
+        credit = money(line.get("credit"))
+        balances[code] = balances.get(code, Decimal("0.00")) + debit - credit
+        if code not in ("1100", "2000"):
+            continue
+        contact_id = str(line.get("contact_id") or "")
+        contact = contact_by_id.get(contact_id) or {}
+        contact_name = contact.get("name") or line.get("contact_name") or "Unassigned"
+        journal = journal_by_id.get(str(line.get("entry_id") or "")) or {}
+        entry_date = str(journal.get("entry_date") or "")[:10]
+        try:
+            age_days = max(0, (today - datetime.fromisoformat(entry_date).date()).days)
+        except Exception:
+            age_days = 0
+        bucket = "current" if age_days <= 30 else "days_31_60" if age_days <= 60 else "days_61_90" if age_days <= 90 else "days_90_plus"
+        target = aged_receivables if code == "1100" else aged_payables
+        movement = debit - credit if code == "1100" else credit - debit
+        if not movement:
+            continue
+        key = contact_id or contact_name.lower()
+        row = target.setdefault(key, {
+            "contact_id": contact_id or None,
+            "contact_name": contact_name,
+            "current": Decimal("0.00"),
+            "days_31_60": Decimal("0.00"),
+            "days_61_90": Decimal("0.00"),
+            "days_90_plus": Decimal("0.00"),
+            "total": Decimal("0.00"),
+        })
+        row[bucket] += movement
+        row["total"] += movement
+
+    trial_balance = []
+    income_total = Decimal("0.00")
+    expense_total = Decimal("0.00")
+    asset_total = Decimal("0.00")
+    liability_total = Decimal("0.00")
+    equity_total = Decimal("0.00")
+
+    for account in sorted(accounts, key=lambda item: str(item.get("code") or "")):
+        code = str(account.get("code") or "")
+        balance = balances.get(code, Decimal("0.00"))
+        account_type = str(account.get("account_type") or "").lower()
+        if account_type == "income":
+            income_total += -balance
+        elif account_type == "expense":
+            expense_total += balance
+        elif account_type in ("asset", "bank", "receivable"):
+            asset_total += balance
+        elif account_type in ("liability", "payable", "vat"):
+            liability_total += -balance
+        elif account_type == "equity":
+            equity_total += -balance
+        if balance:
+            trial_balance.append({
+                "code": code,
+                "name": account.get("name"),
+                "type": account_type,
+                "debit": money_str(balance if balance > 0 else Decimal("0.00")),
+                "credit": money_str(-balance if balance < 0 else Decimal("0.00")),
+            })
+
+    return {
+        "profit_and_loss": {
+            "income": money_str(income_total),
+            "expenses": money_str(expense_total),
+            "profit": money_str(income_total - expense_total),
+        },
+        "balance_sheet": {
+            "assets": money_str(asset_total),
+            "liabilities": money_str(liability_total),
+            "equity": money_str(equity_total),
+            "net_assets": money_str(asset_total - liability_total),
+        },
+        "trial_balance": trial_balance,
+        "aged_receivables": serialize_aged_balances(aged_receivables),
+        "aged_payables": serialize_aged_balances(aged_payables),
+        "account_count": len(account_by_code),
+    }
+
+
+def serialize_aged_balances(rows: dict[str, dict]) -> list[dict]:
+    result = []
+    for row in rows.values():
+        if row["total"] == Decimal("0.00"):
+            continue
+        result.append({
+            "contact_id": row.get("contact_id"),
+            "contact_name": row.get("contact_name"),
+            "current": money_str(row["current"]),
+            "days_31_60": money_str(row["days_31_60"]),
+            "days_61_90": money_str(row["days_61_90"]),
+            "days_90_plus": money_str(row["days_90_plus"]),
+            "total": money_str(row["total"]),
+        })
+    return sorted(result, key=lambda item: str(item.get("contact_name") or "").lower())
+
+
+def pick_csv_value(row: dict, candidates: list[str]) -> str:
+    lookup = {str(k or "").strip().lower(): v for k, v in row.items()}
+    for candidate in candidates:
+        if candidate in lookup and lookup[candidate] not in (None, ""):
+            return str(lookup[candidate]).strip()
+    return ""
+
+
+def parse_bank_csv_amount(value: str) -> Decimal:
+    text_value = str(value or "").strip()
+    if not text_value:
+        return Decimal("0.00")
+    negative = text_value.startswith("(") and text_value.endswith(")")
+    text_value = text_value.replace("£", "").replace(",", "").replace("(", "").replace(")", "")
+    parsed = money(text_value)
+    return -parsed if negative else parsed
+
+
+def normalize_csv_date(value: str) -> str:
+    text_value = str(value or "").strip()
+    if not text_value:
+        return datetime.now(timezone.utc).date().isoformat()
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%d/%m/%y", "%d-%m-%y"):
+        try:
+            return datetime.strptime(text_value, fmt).date().isoformat()
+        except ValueError:
+            pass
+    return text_value
+
+
 @api.get("/admin/accounting/clients")
 async def list_native_accounting_clients(
     user: dict = Depends(require_admin),
@@ -1808,6 +1953,7 @@ async def get_native_accounting_workspace(
         "vat_returns": [serialize_vat_return(r) for r in vat_returns],
         "periods": [serialize_period(p) for p in periods],
         "audit_log": [serialize_audit_event(e) for e in audit_events],
+        "reports": await native_accounting_reports(session, client_id),
     }
 
 
@@ -1847,6 +1993,51 @@ async def create_native_account(
     return serialize_native_account(row)
 
 
+@api.post("/admin/accounting/clients/{client_id}/contacts")
+async def create_native_contact(
+    client_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before adding contacts.")
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Contact name is required.")
+    contact_type = str(payload.get("contact_type") or payload.get("type") or "supplier").strip().lower()
+    if contact_type not in ("supplier", "customer"):
+        contact_type = "supplier"
+    existing = await one(
+        session,
+        select(accounting_contacts).where(
+            accounting_contacts.c.client_id == client_id,
+            func.lower(accounting_contacts.c.name) == name.lower(),
+            accounting_contacts.c.contact_type == contact_type,
+        ),
+    )
+    if existing:
+        raise HTTPException(status_code=400, detail="This contact already exists.")
+    now = utc_now_iso()
+    row = {
+        "id": new_id(),
+        "client_id": client_id,
+        "name": name,
+        "contact_type": contact_type,
+        "email": str(payload.get("email") or "").strip(),
+        "external_id": str(payload.get("external_id") or "").strip(),
+        "active": bool(payload.get("active", True)),
+        "raw_json": json.dumps({"source": "native"}),
+        "created_at": now,
+        "updated_at": now,
+    }
+    await session.execute(insert(accounting_contacts).values(**row))
+    await add_accounting_audit(session, client_id, user.get("id"), "contact_created", "contact", row["id"], {"name": name, "type": contact_type})
+    await session.commit()
+    return serialize_native_contact(row)
+
+
 @api.post("/admin/accounting/clients/{client_id}/bank-transactions")
 async def create_native_bank_transaction(
     client_id: str,
@@ -1881,6 +2072,79 @@ async def create_native_bank_transaction(
     await add_accounting_audit(session, client_id, user.get("id"), "bank_transaction_created", "bank_transaction", row["id"], row)
     await session.commit()
     return serialize_bank_transaction(row)
+
+
+@api.post("/admin/accounting/clients/{client_id}/bank-transactions/import")
+async def import_native_bank_transactions(
+    client_id: str,
+    bank_account_code: str = Form("1200"),
+    file: UploadFile = File(...),
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before importing bank transactions.")
+    content = await file.read()
+    if len(content) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Bank CSV is too large. Keep imports under 2MB.")
+    try:
+        raw = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raw = content.decode("latin-1")
+    reader = csv.DictReader(io.StringIO(raw))
+    if not reader.fieldnames:
+        raise HTTPException(status_code=400, detail="CSV headers were not found.")
+
+    imported = 0
+    errors = []
+    now = utc_now_iso()
+    for index, row in enumerate(reader, start=2):
+        if imported >= 1000:
+            errors.append("Stopped after 1,000 rows. Split larger files before importing.")
+            break
+        transaction_date = normalize_csv_date(pick_csv_value(row, ["date", "transaction date", "posted date", "posting date", "value date"]))
+        description = pick_csv_value(row, ["description", "details", "narrative", "transaction description", "payee"])
+        reference = pick_csv_value(row, ["reference", "ref", "transaction id", "transaction reference"])
+        money_in = parse_bank_csv_amount(pick_csv_value(row, ["money in", "paid in", "credit", "credits", "deposit"]))
+        money_out = parse_bank_csv_amount(pick_csv_value(row, ["money out", "paid out", "debit", "debits", "withdrawal"]))
+        amount = parse_bank_csv_amount(pick_csv_value(row, ["amount", "transaction amount", "value"]))
+        if amount:
+            if amount > 0:
+                money_in = amount
+                money_out = Decimal("0.00")
+            else:
+                money_in = Decimal("0.00")
+                money_out = -amount
+        if money_in == Decimal("0.00") and money_out == Decimal("0.00"):
+            errors.append(f"Row {index}: no money in/out amount found")
+            continue
+        row_values = {
+            "id": new_id(),
+            "client_id": client_id,
+            "bank_account_code": str(bank_account_code or "1200"),
+            "transaction_date": transaction_date,
+            "description": description,
+            "reference": reference,
+            "money_in": money_str(money_in),
+            "money_out": money_str(money_out),
+            "status": "unreconciled",
+            "created_at": now,
+            "updated_at": now,
+        }
+        await session.execute(insert(accounting_bank_transactions).values(**row_values))
+        imported += 1
+    await add_accounting_audit(
+        session,
+        client_id,
+        user.get("id"),
+        "bank_transactions_imported",
+        "bank_transaction",
+        client_id,
+        {"file": file.filename, "imported": imported, "errors": errors[:20]},
+    )
+    await session.commit()
+    return {"imported": imported, "errors": errors[:50]}
 
 
 @api.post("/admin/accounting/clients/{client_id}/bank-transactions/{transaction_id}/reconcile")
