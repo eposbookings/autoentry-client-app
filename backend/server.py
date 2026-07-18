@@ -328,6 +328,200 @@ accounting_contacts = Table(
     Column("updated_at", String(64)),
 )
 
+accounting_ap_settings = Table(
+    "accounting_ap_settings",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, unique=True, index=True),
+    Column("approval_required", Boolean, default=True),
+    Column("default_payment_terms_days", Integer, default=30),
+    Column("default_purchase_account", String(32)),
+    Column("default_vat_code", String(255)),
+    Column("duplicate_invoice_warning", Boolean, default=True),
+    Column("allow_future_posting_dates", Boolean, default=False),
+    Column("automatic_invoice_numbering", Boolean, default=False),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_ap_supplier_profiles = Table(
+    "accounting_ap_supplier_profiles",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("contact_id", String(36), nullable=False, index=True),
+    Column("supplier_code", String(64), index=True),
+    Column("trading_name", String(255)),
+    Column("phone", String(64)),
+    Column("website", String(255)),
+    Column("vat_number", String(64)),
+    Column("company_number", String(64)),
+    Column("payment_terms_days", Integer, default=30),
+    Column("default_currency", String(8), default="GBP"),
+    Column("default_purchase_account", String(32)),
+    Column("default_vat_code", String(255)),
+    Column("bank_name", String(255)),
+    Column("bank_sort_code", String(32)),
+    Column("bank_account_number", String(64)),
+    Column("cis_registered", Boolean, default=False),
+    Column("reverse_charge", Boolean, default=False),
+    Column("status", String(32), default="active", index=True),
+    Column("notes", Text),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_ap_supplier_addresses = Table(
+    "accounting_ap_supplier_addresses",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("supplier_id", String(36), nullable=False, index=True),
+    Column("address_type", String(32), default="main"),
+    Column("line1", String(255)),
+    Column("line2", String(255)),
+    Column("city", String(128)),
+    Column("postcode", String(32)),
+    Column("country", String(128)),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_ap_supplier_contacts = Table(
+    "accounting_ap_supplier_contacts",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("supplier_id", String(36), nullable=False, index=True),
+    Column("name", String(255)),
+    Column("email", String(255)),
+    Column("phone", String(64)),
+    Column("role", String(128)),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_ap_invoices = Table(
+    "accounting_ap_invoices",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("supplier_id", String(36), nullable=False, index=True),
+    Column("contact_id", String(36), index=True),
+    Column("invoice_number", String(255), index=True),
+    Column("reference", String(255)),
+    Column("invoice_date", String(32), index=True),
+    Column("due_date", String(32), index=True),
+    Column("currency", String(8), default="GBP"),
+    Column("status", String(32), default="draft", index=True),
+    Column("net_amount", String(64), default="0.00"),
+    Column("vat_amount", String(64), default="0.00"),
+    Column("gross_amount", String(64), default="0.00"),
+    Column("outstanding_amount", String(64), default="0.00"),
+    Column("source_submission_id", String(36), index=True),
+    Column("attachment_path", Text),
+    Column("extracted_json", Text),
+    Column("posted_journal_id", String(36)),
+    Column("approved_by", String(36)),
+    Column("approved_at", String(64)),
+    Column("posted_by", String(36)),
+    Column("posted_at", String(64)),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_ap_invoice_lines = Table(
+    "accounting_ap_invoice_lines",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("invoice_id", String(36), nullable=False, index=True),
+    Column("line_number", Integer, default=1),
+    Column("description", Text),
+    Column("nominal_account_code", String(32)),
+    Column("quantity", String(64), default="1.00"),
+    Column("unit_price", String(64), default="0.00"),
+    Column("discount_amount", String(64), default="0.00"),
+    Column("vat_code", String(255)),
+    Column("net_amount", String(64), default="0.00"),
+    Column("vat_amount", String(64), default="0.00"),
+    Column("gross_amount", String(64), default="0.00"),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_ap_credit_notes = Table(
+    "accounting_ap_credit_notes",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("supplier_id", String(36), nullable=False, index=True),
+    Column("contact_id", String(36), index=True),
+    Column("credit_note_number", String(255), index=True),
+    Column("reference", String(255)),
+    Column("credit_note_date", String(32), index=True),
+    Column("currency", String(8), default="GBP"),
+    Column("status", String(32), default="draft", index=True),
+    Column("net_amount", String(64), default="0.00"),
+    Column("vat_amount", String(64), default="0.00"),
+    Column("gross_amount", String(64), default="0.00"),
+    Column("unallocated_amount", String(64), default="0.00"),
+    Column("posted_journal_id", String(36)),
+    Column("posted_by", String(36)),
+    Column("posted_at", String(64)),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_ap_credit_note_lines = Table(
+    "accounting_ap_credit_note_lines",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("credit_note_id", String(36), nullable=False, index=True),
+    Column("line_number", Integer, default=1),
+    Column("description", Text),
+    Column("nominal_account_code", String(32)),
+    Column("quantity", String(64), default="1.00"),
+    Column("unit_price", String(64), default="0.00"),
+    Column("vat_code", String(255)),
+    Column("net_amount", String(64), default="0.00"),
+    Column("vat_amount", String(64), default="0.00"),
+    Column("gross_amount", String(64), default="0.00"),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_ap_payments = Table(
+    "accounting_ap_payments",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("supplier_id", String(36), nullable=False, index=True),
+    Column("contact_id", String(36), index=True),
+    Column("payment_date", String(32), index=True),
+    Column("bank_account_code", String(32)),
+    Column("reference", String(255)),
+    Column("amount", String(64), default="0.00"),
+    Column("currency", String(8), default="GBP"),
+    Column("status", String(32), default="posted", index=True),
+    Column("posted_journal_id", String(36)),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_ap_payment_allocations = Table(
+    "accounting_ap_payment_allocations",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("payment_id", String(36), nullable=False, index=True),
+    Column("invoice_id", String(36), index=True),
+    Column("credit_note_id", String(36), index=True),
+    Column("amount", String(64), default="0.00"),
+    Column("created_at", String(64)),
+)
+
 accounting_journal_entries = Table(
     "accounting_journal_entries",
     metadata,
@@ -487,6 +681,16 @@ async def ensure_schema_columns(conn):
         accounting_accounts,
         accounting_settings,
         accounting_contacts,
+        accounting_ap_settings,
+        accounting_ap_supplier_profiles,
+        accounting_ap_supplier_addresses,
+        accounting_ap_supplier_contacts,
+        accounting_ap_invoices,
+        accounting_ap_invoice_lines,
+        accounting_ap_credit_notes,
+        accounting_ap_credit_note_lines,
+        accounting_ap_payments,
+        accounting_ap_payment_allocations,
         accounting_journal_entries,
         accounting_journal_lines,
         accounting_audit_log,
@@ -1789,10 +1993,261 @@ async def ensure_accounting_settings(session: AsyncSession, client_id: str) -> d
     return row
 
 
+def default_ap_settings(client_id: str, accounting_defaults: Optional[dict] = None, now: Optional[str] = None) -> dict:
+    defaults = accounting_defaults or {}
+    timestamp = now or utc_now_iso()
+    return {
+        "id": new_id(),
+        "client_id": client_id,
+        "approval_required": True,
+        "default_payment_terms_days": 30,
+        "default_purchase_account": defaults.get("default_purchase_account") or "5000",
+        "default_vat_code": "",
+        "duplicate_invoice_warning": True,
+        "allow_future_posting_dates": False,
+        "automatic_invoice_numbering": False,
+        "created_at": timestamp,
+        "updated_at": timestamp,
+    }
+
+
+async def ensure_ap_settings(session: AsyncSession, client_id: str) -> dict:
+    existing = await one(session, select(accounting_ap_settings).where(accounting_ap_settings.c.client_id == client_id))
+    if existing:
+        return existing
+    accounting_defaults = await ensure_accounting_settings(session, client_id)
+    row = default_ap_settings(client_id, accounting_defaults)
+    await session.execute(insert(accounting_ap_settings).values(**row))
+    await session.flush()
+    return row
+
+
+def parse_date_or_today(value: Any) -> date:
+    raw = str(value or "").strip()
+    if raw:
+        try:
+            return datetime.fromisoformat(raw[:10]).date()
+        except Exception:
+            pass
+    return datetime.now(timezone.utc).date()
+
+
+def ap_line_values(raw_line: dict, default_account: str = "5000") -> dict:
+    quantity = money(raw_line.get("quantity"), "1.00")
+    unit_price = money(raw_line.get("unit_price") if raw_line.get("unit_price") not in (None, "") else raw_line.get("price"))
+    discount = money(raw_line.get("discount_amount"))
+    explicit_net = raw_line.get("net_amount")
+    net_amount = money(explicit_net) if explicit_net not in (None, "") else (quantity * unit_price - discount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    vat_amount = money(raw_line.get("vat_amount"))
+    gross_amount = money(raw_line.get("gross_amount")) if raw_line.get("gross_amount") not in (None, "") else net_amount + vat_amount
+    return {
+        "description": str(raw_line.get("description") or "").strip(),
+        "nominal_account_code": str(raw_line.get("nominal_account_code") or raw_line.get("account_code") or default_account or "5000").strip(),
+        "quantity": money_str(quantity),
+        "unit_price": money_str(unit_price),
+        "discount_amount": money_str(discount),
+        "vat_code": str(raw_line.get("vat_code") or "").strip(),
+        "net_amount": money_str(net_amount),
+        "vat_amount": money_str(vat_amount),
+        "gross_amount": money_str(gross_amount),
+    }
+
+
+def ap_totals(lines: list[dict]) -> dict:
+    net = sum((money(line.get("net_amount")) for line in lines), Decimal("0.00"))
+    vat = sum((money(line.get("vat_amount")) for line in lines), Decimal("0.00"))
+    gross = sum((money(line.get("gross_amount")) for line in lines), Decimal("0.00"))
+    if gross == Decimal("0.00") and (net or vat):
+        gross = net + vat
+    return {"net_amount": money_str(net), "vat_amount": money_str(vat), "gross_amount": money_str(gross)}
+
+
+def serialize_ap_settings(row: dict) -> dict:
+    return dict(row)
+
+
 def serialize_native_contact(row: dict) -> dict:
     row = dict(row)
     row["raw_json"] = parse_json_object(row.get("raw_json")) or {}
     return row
+
+
+def serialize_ap_supplier(profile: dict, contact: Optional[dict] = None, balance: Decimal = Decimal("0.00")) -> dict:
+    row = dict(profile)
+    contact = contact or {}
+    row["name"] = contact.get("name") or profile.get("trading_name") or profile.get("supplier_code") or "Supplier"
+    row["email"] = contact.get("email") or ""
+    row["external_id"] = contact.get("external_id") or ""
+    row["account_code"] = contact.get("account_code") or ""
+    row["balance"] = money_str(balance)
+    return row
+
+
+def serialize_ap_invoice(row: dict, lines: Optional[list[dict]] = None, supplier: Optional[dict] = None) -> dict:
+    item = dict(row)
+    item["extracted_json"] = parse_json_object(item.get("extracted_json")) or {}
+    item["lines"] = [dict(line) for line in (lines or [])]
+    if supplier:
+        item["supplier_name"] = supplier.get("name")
+        item["supplier_code"] = supplier.get("supplier_code")
+    return item
+
+
+def serialize_ap_credit_note(row: dict, lines: Optional[list[dict]] = None, supplier: Optional[dict] = None) -> dict:
+    item = dict(row)
+    item["lines"] = [dict(line) for line in (lines or [])]
+    if supplier:
+        item["supplier_name"] = supplier.get("name")
+        item["supplier_code"] = supplier.get("supplier_code")
+    return item
+
+
+def serialize_ap_payment(row: dict, allocations: Optional[list[dict]] = None, supplier: Optional[dict] = None) -> dict:
+    item = dict(row)
+    item["allocations"] = [dict(allocation) for allocation in (allocations or [])]
+    if supplier:
+        item["supplier_name"] = supplier.get("name")
+        item["supplier_code"] = supplier.get("supplier_code")
+    return item
+
+
+async def accounts_payable_workspace(session: AsyncSession, client_id: str) -> dict:
+    ap_settings = await ensure_ap_settings(session, client_id)
+    contacts = await many(session, select(accounting_contacts).where(accounting_contacts.c.client_id == client_id, accounting_contacts.c.contact_type == "supplier"))
+    contact_by_id = {str(contact.get("id")): contact for contact in contacts}
+    profiles = await many(
+        session,
+        select(accounting_ap_supplier_profiles).where(accounting_ap_supplier_profiles.c.client_id == client_id).order_by(accounting_ap_supplier_profiles.c.supplier_code.asc(), accounting_ap_supplier_profiles.c.created_at.asc()),
+    )
+    existing_profile_contact_ids = {str(profile.get("contact_id")) for profile in profiles}
+    now = utc_now_iso()
+    for contact in contacts:
+        if str(contact.get("id")) in existing_profile_contact_ids:
+            continue
+        profile = {
+            "id": new_id(),
+            "client_id": client_id,
+            "contact_id": contact.get("id"),
+            "supplier_code": contact.get("account_code") or "",
+            "trading_name": contact.get("name"),
+            "payment_terms_days": int(ap_settings.get("default_payment_terms_days") or 30),
+            "default_currency": "GBP",
+            "default_purchase_account": ap_settings.get("default_purchase_account") or "5000",
+            "default_vat_code": ap_settings.get("default_vat_code") or "",
+            "status": "active" if contact.get("active", True) else "inactive",
+            "created_at": now,
+            "updated_at": now,
+        }
+        await session.execute(insert(accounting_ap_supplier_profiles).values(**profile))
+        profiles.append(profile)
+        existing_profile_contact_ids.add(str(contact.get("id")))
+    await session.flush()
+
+    supplier_by_id: dict[str, dict] = {}
+    supplier_by_contact: dict[str, dict] = {}
+    for profile in profiles:
+        contact = contact_by_id.get(str(profile.get("contact_id"))) or {}
+        supplier = serialize_ap_supplier(profile, contact)
+        supplier_by_id[str(profile["id"])] = supplier
+        supplier_by_contact[str(profile.get("contact_id"))] = supplier
+
+    invoices = await many(
+        session,
+        select(accounting_ap_invoices).where(accounting_ap_invoices.c.client_id == client_id).order_by(accounting_ap_invoices.c.invoice_date.desc(), accounting_ap_invoices.c.created_at.desc()),
+    )
+    invoice_ids = [str(row["id"]) for row in invoices]
+    invoice_lines = []
+    if invoice_ids:
+        invoice_lines = await many(session, select(accounting_ap_invoice_lines).where(accounting_ap_invoice_lines.c.invoice_id.in_(invoice_ids)).order_by(accounting_ap_invoice_lines.c.line_number.asc()))
+    invoice_lines_by_id: dict[str, list[dict]] = {}
+    for line in invoice_lines:
+        invoice_lines_by_id.setdefault(str(line.get("invoice_id")), []).append(line)
+
+    credit_notes = await many(
+        session,
+        select(accounting_ap_credit_notes).where(accounting_ap_credit_notes.c.client_id == client_id).order_by(accounting_ap_credit_notes.c.credit_note_date.desc(), accounting_ap_credit_notes.c.created_at.desc()),
+    )
+    credit_ids = [str(row["id"]) for row in credit_notes]
+    credit_lines = []
+    if credit_ids:
+        credit_lines = await many(session, select(accounting_ap_credit_note_lines).where(accounting_ap_credit_note_lines.c.credit_note_id.in_(credit_ids)).order_by(accounting_ap_credit_note_lines.c.line_number.asc()))
+    credit_lines_by_id: dict[str, list[dict]] = {}
+    for line in credit_lines:
+        credit_lines_by_id.setdefault(str(line.get("credit_note_id")), []).append(line)
+
+    payments = await many(
+        session,
+        select(accounting_ap_payments).where(accounting_ap_payments.c.client_id == client_id).order_by(accounting_ap_payments.c.payment_date.desc(), accounting_ap_payments.c.created_at.desc()),
+    )
+    payment_ids = [str(row["id"]) for row in payments]
+    allocations = []
+    if payment_ids:
+        allocations = await many(session, select(accounting_ap_payment_allocations).where(accounting_ap_payment_allocations.c.payment_id.in_(payment_ids)))
+    allocations_by_payment: dict[str, list[dict]] = {}
+    for allocation in allocations:
+        allocations_by_payment.setdefault(str(allocation.get("payment_id")), []).append(allocation)
+
+    supplier_balances: dict[str, Decimal] = {}
+    for invoice in invoices:
+        supplier_balances[str(invoice.get("supplier_id"))] = supplier_balances.get(str(invoice.get("supplier_id")), Decimal("0.00")) + money(invoice.get("outstanding_amount"))
+    for credit in credit_notes:
+        supplier_balances[str(credit.get("supplier_id"))] = supplier_balances.get(str(credit.get("supplier_id")), Decimal("0.00")) - money(credit.get("unallocated_amount"))
+
+    serialized_suppliers = []
+    for profile in profiles:
+        contact = contact_by_id.get(str(profile.get("contact_id"))) or {}
+        serialized_suppliers.append(serialize_ap_supplier(profile, contact, supplier_balances.get(str(profile.get("id")), Decimal("0.00"))))
+
+    today = datetime.now(timezone.utc).date()
+    aged: dict[str, dict] = {}
+    for invoice in invoices:
+        outstanding = money(invoice.get("outstanding_amount"))
+        if outstanding <= 0 or invoice.get("status") in {"void", "draft"}:
+            continue
+        supplier = supplier_by_id.get(str(invoice.get("supplier_id"))) or {}
+        due_raw = str(invoice.get("due_date") or invoice.get("invoice_date") or "")[:10]
+        try:
+            due_date = datetime.fromisoformat(due_raw).date()
+            age_days = max(0, (today - due_date).days)
+        except Exception:
+            age_days = 0
+        bucket = "current" if age_days <= 0 else "days_1_30" if age_days <= 30 else "days_31_60" if age_days <= 60 else "days_61_90" if age_days <= 90 else "days_90_plus"
+        row = aged.setdefault(str(invoice.get("supplier_id")), {
+            "supplier_id": invoice.get("supplier_id"),
+            "supplier_name": supplier.get("name") or "Supplier",
+            "current": Decimal("0.00"),
+            "days_1_30": Decimal("0.00"),
+            "days_31_60": Decimal("0.00"),
+            "days_61_90": Decimal("0.00"),
+            "days_90_plus": Decimal("0.00"),
+            "total": Decimal("0.00"),
+        })
+        row[bucket] += outstanding
+        row["total"] += outstanding
+
+    dashboard = {
+        "supplier_count": len(serialized_suppliers),
+        "draft_invoices": len([i for i in invoices if i.get("status") == "draft"]),
+        "awaiting_approval": len([i for i in invoices if i.get("status") == "awaiting_approval"]),
+        "posted_invoices": len([i for i in invoices if i.get("status") in {"posted", "part_paid", "paid"}]),
+        "overdue_invoices": len([i for i in invoices if money(i.get("outstanding_amount")) > 0 and str(i.get("due_date") or "9999-99-99") < today.isoformat()]),
+        "outstanding_total": money_str(sum((money(i.get("outstanding_amount")) for i in invoices), Decimal("0.00"))),
+        "unallocated_credits": money_str(sum((money(c.get("unallocated_amount")) for c in credit_notes), Decimal("0.00"))),
+        "payments_total": money_str(sum((money(p.get("amount")) for p in payments), Decimal("0.00"))),
+    }
+
+    return {
+        "settings": serialize_ap_settings(ap_settings),
+        "dashboard": dashboard,
+        "suppliers": serialized_suppliers,
+        "invoices": [serialize_ap_invoice(row, invoice_lines_by_id.get(str(row["id"]), []), supplier_by_id.get(str(row.get("supplier_id")))) for row in invoices],
+        "credit_notes": [serialize_ap_credit_note(row, credit_lines_by_id.get(str(row["id"]), []), supplier_by_id.get(str(row.get("supplier_id")))) for row in credit_notes],
+        "payments": [serialize_ap_payment(row, allocations_by_payment.get(str(row["id"]), []), supplier_by_id.get(str(row.get("supplier_id")))) for row in payments],
+        "aged_creditors": [
+            {**item, **{key: money_str(value) for key, value in item.items() if isinstance(value, Decimal)}}
+            for item in sorted(aged.values(), key=lambda x: str(x.get("supplier_name") or ""))
+        ],
+    }
 
 
 async def native_accounting_summary(session: AsyncSession, client_id: str) -> dict:
@@ -1800,6 +2255,7 @@ async def native_accounting_summary(session: AsyncSession, client_id: str) -> di
     lines = await many(session, select(accounting_journal_lines).where(accounting_journal_lines.c.client_id == client_id))
     bank_transactions = await many(session, select(accounting_bank_transactions).where(accounting_bank_transactions.c.client_id == client_id))
     vat_returns = await many(session, select(accounting_vat_returns).where(accounting_vat_returns.c.client_id == client_id))
+    ap_invoices = await many(session, select(accounting_ap_invoices).where(accounting_ap_invoices.c.client_id == client_id))
     payables = Decimal("0.00")
     receivables = Decimal("0.00")
     vat = Decimal("0.00")
@@ -1827,6 +2283,8 @@ async def native_accounting_summary(session: AsyncSession, client_id: str) -> di
         "unreconciled_bank_transactions": len([t for t in bank_transactions if t.get("status") != "reconciled"]),
         "vat_returns": len(vat_returns),
         "draft_vat_returns": len([r for r in vat_returns if r.get("status") == "draft"]),
+        "ap_open_invoices": len([i for i in ap_invoices if money(i.get("outstanding_amount")) > 0]),
+        "ap_outstanding": money_str(sum((money(i.get("outstanding_amount")) for i in ap_invoices), Decimal("0.00"))),
     }
 
 
@@ -2170,6 +2628,7 @@ async def get_native_accounting_workspace(
         "periods": [serialize_period(p) for p in periods],
         "audit_log": [serialize_audit_event(e) for e in audit_events],
         "reports": await native_accounting_reports(session, client_id),
+        "accounts_payable": await accounts_payable_workspace(session, client_id),
     }
 
 
@@ -2255,6 +2714,574 @@ async def create_native_contact(
     await add_accounting_audit(session, client_id, user.get("id"), "contact_created", "contact", row["id"], {"name": name, "type": contact_type})
     await session.commit()
     return serialize_native_contact(row)
+
+
+async def get_ap_supplier_or_404(session: AsyncSession, client_id: str, supplier_id: str) -> dict:
+    supplier = await one(
+        session,
+        select(accounting_ap_supplier_profiles).where(
+            accounting_ap_supplier_profiles.c.client_id == client_id,
+            accounting_ap_supplier_profiles.c.id == supplier_id,
+        ),
+    )
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Supplier not found.")
+    return supplier
+
+
+async def get_ap_invoice_or_404(session: AsyncSession, client_id: str, invoice_id: str) -> dict:
+    invoice = await one(
+        session,
+        select(accounting_ap_invoices).where(
+            accounting_ap_invoices.c.client_id == client_id,
+            accounting_ap_invoices.c.id == invoice_id,
+        ),
+    )
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Purchase invoice not found.")
+    return invoice
+
+
+async def create_ap_invoice_record(
+    session: AsyncSession,
+    client_id: str,
+    payload: dict,
+    actor_id: Optional[str] = None,
+) -> dict:
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before adding purchase invoices.")
+    ap_settings = await ensure_ap_settings(session, client_id)
+    settings_row = await ensure_accounting_settings(session, client_id)
+    supplier_id = str(payload.get("supplier_id") or "").strip()
+    supplier = None
+    if supplier_id:
+        supplier = await get_ap_supplier_or_404(session, client_id, supplier_id)
+    else:
+        supplier_name = str(payload.get("supplier_name") or payload.get("vendor_name") or "").strip()
+        if not supplier_name:
+            raise HTTPException(status_code=400, detail="Supplier is required.")
+        contact = await get_or_create_native_contact(session, client_id, supplier_name, "supplier")
+        profile = await one(session, select(accounting_ap_supplier_profiles).where(accounting_ap_supplier_profiles.c.contact_id == contact["id"]))
+        if not profile:
+            now = utc_now_iso()
+            profile = {
+                "id": new_id(),
+                "client_id": client_id,
+                "contact_id": contact["id"],
+                "supplier_code": contact.get("account_code") or "",
+                "trading_name": contact.get("name"),
+                "payment_terms_days": int(ap_settings.get("default_payment_terms_days") or 30),
+                "default_currency": str(payload.get("currency") or "GBP")[:8],
+                "default_purchase_account": ap_settings.get("default_purchase_account") or "5000",
+                "default_vat_code": ap_settings.get("default_vat_code") or "",
+                "status": "active",
+                "created_at": now,
+                "updated_at": now,
+            }
+            await session.execute(insert(accounting_ap_supplier_profiles).values(**profile))
+        supplier = serialize_ap_supplier(profile, contact)
+    invoice_number = str(payload.get("invoice_number") or payload.get("bill_number") or payload.get("number") or "").strip()
+    if not invoice_number:
+        if bool(ap_settings.get("automatic_invoice_numbering")):
+            invoice_number = f"PINV-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+        else:
+            raise HTTPException(status_code=400, detail="Invoice number is required.")
+    duplicate = await one(
+        session,
+        select(accounting_ap_invoices).where(
+            accounting_ap_invoices.c.client_id == client_id,
+            accounting_ap_invoices.c.supplier_id == supplier["id"],
+            func.lower(accounting_ap_invoices.c.invoice_number) == invoice_number.lower(),
+            accounting_ap_invoices.c.status != "void",
+        ),
+    )
+    if duplicate and bool(ap_settings.get("duplicate_invoice_warning", True)):
+        raise HTTPException(status_code=409, detail=f"Possible duplicate: supplier already has invoice {invoice_number}.")
+    invoice_date = parse_date_or_today(payload.get("invoice_date") or payload.get("date")).isoformat()
+    due_date_raw = payload.get("due_date")
+    if due_date_raw:
+        due_date = parse_date_or_today(due_date_raw).isoformat()
+    else:
+        due_date = (date.fromisoformat(invoice_date) + timedelta(days=int(supplier.get("payment_terms_days") or ap_settings.get("default_payment_terms_days") or 30))).isoformat()
+    lines = [ap_line_values(line, supplier.get("default_purchase_account") or settings_row.get("default_purchase_account") or "5000") for line in (payload.get("lines") or [])]
+    if not lines:
+        lines = [
+            ap_line_values(
+                {
+                    "description": payload.get("description") or invoice_number,
+                    "net_amount": payload.get("net_amount") or payload.get("net"),
+                    "vat_amount": payload.get("vat_amount") or payload.get("vat"),
+                    "gross_amount": payload.get("gross_amount") or payload.get("total"),
+                    "vat_code": payload.get("vat_code") or supplier.get("default_vat_code") or ap_settings.get("default_vat_code"),
+                },
+                supplier.get("default_purchase_account") or settings_row.get("default_purchase_account") or "5000",
+            )
+        ]
+    totals = ap_totals(lines)
+    now = utc_now_iso()
+    status = "awaiting_approval" if bool(ap_settings.get("approval_required", True)) else "approved"
+    row = {
+        "id": new_id(),
+        "client_id": client_id,
+        "supplier_id": supplier["id"],
+        "contact_id": supplier.get("contact_id"),
+        "invoice_number": invoice_number,
+        "reference": str(payload.get("reference") or "").strip(),
+        "invoice_date": invoice_date,
+        "due_date": due_date,
+        "currency": str(payload.get("currency") or supplier.get("default_currency") or "GBP")[:8],
+        "status": status,
+        "outstanding_amount": totals["gross_amount"],
+        "source_submission_id": str(payload.get("source_submission_id") or "").strip(),
+        "attachment_path": str(payload.get("attachment_path") or "").strip(),
+        "extracted_json": json.dumps(payload.get("extracted_json") or {}, default=str),
+        "created_at": now,
+        "updated_at": now,
+        **totals,
+    }
+    await session.execute(insert(accounting_ap_invoices).values(**row))
+    for index, line in enumerate(lines, start=1):
+        await session.execute(insert(accounting_ap_invoice_lines).values(id=new_id(), client_id=client_id, invoice_id=row["id"], line_number=index, created_at=now, updated_at=now, **line))
+    await add_accounting_audit(session, client_id, actor_id, "purchase_invoice_created", "accounts_payable", row["id"], {"invoice_number": invoice_number, "status": status})
+    fresh = await accounts_payable_workspace(session, client_id)
+    return next((item for item in fresh["invoices"] if item["id"] == row["id"]), serialize_ap_invoice(row, lines, supplier))
+
+
+@api.post("/admin/accounting/clients/{client_id}/ap/suppliers")
+async def create_ap_supplier(
+    client_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before adding suppliers.")
+    name = str(payload.get("name") or payload.get("trading_name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Supplier name is required.")
+    existing_contact = await one(
+        session,
+        select(accounting_contacts).where(
+            accounting_contacts.c.client_id == client_id,
+            accounting_contacts.c.contact_type == "supplier",
+            func.lower(accounting_contacts.c.name) == name.lower(),
+        ),
+    )
+    now = utc_now_iso()
+    contact = existing_contact or {
+        "id": new_id(),
+        "client_id": client_id,
+        "contact_type": "supplier",
+        "name": name,
+        "email": str(payload.get("email") or "").strip(),
+        "external_id": str(payload.get("external_id") or "").strip(),
+        "account_code": str(payload.get("supplier_code") or "").strip(),
+        "active": bool(payload.get("active", True)),
+        "raw_json": json.dumps({"source": "native_ap"}),
+        "created_at": now,
+        "updated_at": now,
+    }
+    if not existing_contact:
+        await session.execute(insert(accounting_contacts).values(**contact))
+    else:
+        await session.execute(
+            update(accounting_contacts)
+            .where(accounting_contacts.c.id == existing_contact["id"])
+            .values(
+                email=str(payload.get("email") or existing_contact.get("email") or "").strip(),
+                account_code=str(payload.get("supplier_code") or existing_contact.get("account_code") or "").strip(),
+                active=bool(payload.get("active", existing_contact.get("active", True))),
+                updated_at=now,
+            )
+        )
+        contact = {**existing_contact, "email": str(payload.get("email") or existing_contact.get("email") or "").strip(), "account_code": str(payload.get("supplier_code") or existing_contact.get("account_code") or "").strip()}
+    ap_settings = await ensure_ap_settings(session, client_id)
+    profile = {
+        "id": new_id(),
+        "client_id": client_id,
+        "contact_id": contact["id"],
+        "supplier_code": str(payload.get("supplier_code") or contact.get("account_code") or "").strip(),
+        "trading_name": str(payload.get("trading_name") or name).strip(),
+        "phone": str(payload.get("phone") or "").strip(),
+        "website": str(payload.get("website") or "").strip(),
+        "vat_number": str(payload.get("vat_number") or "").strip(),
+        "company_number": str(payload.get("company_number") or "").strip(),
+        "payment_terms_days": int(payload.get("payment_terms_days") or ap_settings.get("default_payment_terms_days") or 30),
+        "default_currency": str(payload.get("default_currency") or "GBP").strip().upper()[:8],
+        "default_purchase_account": str(payload.get("default_purchase_account") or ap_settings.get("default_purchase_account") or "5000"),
+        "default_vat_code": str(payload.get("default_vat_code") or ap_settings.get("default_vat_code") or ""),
+        "bank_name": str(payload.get("bank_name") or "").strip(),
+        "bank_sort_code": str(payload.get("bank_sort_code") or "").strip(),
+        "bank_account_number": str(payload.get("bank_account_number") or "").strip(),
+        "cis_registered": bool(payload.get("cis_registered", False)),
+        "reverse_charge": bool(payload.get("reverse_charge", False)),
+        "status": "active" if bool(payload.get("active", True)) else "inactive",
+        "notes": str(payload.get("notes") or "").strip(),
+        "created_at": now,
+        "updated_at": now,
+    }
+    await session.execute(insert(accounting_ap_supplier_profiles).values(**profile))
+    await add_accounting_audit(session, client_id, user.get("id"), "supplier_created", "accounts_payable", profile["id"], {"name": name})
+    await session.commit()
+    return serialize_ap_supplier(profile, contact)
+
+
+@api.put("/admin/accounting/clients/{client_id}/ap/suppliers/{supplier_id}")
+async def update_ap_supplier(
+    client_id: str,
+    supplier_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await get_client_or_404(session, client_id)
+    supplier = await get_ap_supplier_or_404(session, client_id, supplier_id)
+    contact_values = {}
+    if "name" in payload or "trading_name" in payload:
+        contact_values["name"] = str(payload.get("name") or payload.get("trading_name") or "").strip()
+    if "email" in payload:
+        contact_values["email"] = str(payload.get("email") or "").strip()
+    if "supplier_code" in payload:
+        contact_values["account_code"] = str(payload.get("supplier_code") or "").strip()
+    if "active" in payload:
+        contact_values["active"] = bool(payload.get("active"))
+    if contact_values:
+        contact_values["updated_at"] = utc_now_iso()
+        await session.execute(update(accounting_contacts).where(accounting_contacts.c.id == supplier["contact_id"]).values(**contact_values))
+    values = {
+        "supplier_code": str(payload.get("supplier_code", supplier.get("supplier_code") or "") or "").strip(),
+        "trading_name": str(payload.get("trading_name", supplier.get("trading_name") or "") or "").strip(),
+        "phone": str(payload.get("phone", supplier.get("phone") or "") or "").strip(),
+        "website": str(payload.get("website", supplier.get("website") or "") or "").strip(),
+        "vat_number": str(payload.get("vat_number", supplier.get("vat_number") or "") or "").strip(),
+        "company_number": str(payload.get("company_number", supplier.get("company_number") or "") or "").strip(),
+        "payment_terms_days": int(payload.get("payment_terms_days", supplier.get("payment_terms_days") or 30) or 30),
+        "default_currency": str(payload.get("default_currency", supplier.get("default_currency") or "GBP") or "GBP").strip().upper()[:8],
+        "default_purchase_account": str(payload.get("default_purchase_account", supplier.get("default_purchase_account") or "5000") or "5000"),
+        "default_vat_code": str(payload.get("default_vat_code", supplier.get("default_vat_code") or "") or ""),
+        "bank_name": str(payload.get("bank_name", supplier.get("bank_name") or "") or "").strip(),
+        "bank_sort_code": str(payload.get("bank_sort_code", supplier.get("bank_sort_code") or "") or "").strip(),
+        "bank_account_number": str(payload.get("bank_account_number", supplier.get("bank_account_number") or "") or "").strip(),
+        "cis_registered": bool(payload.get("cis_registered", supplier.get("cis_registered", False))),
+        "reverse_charge": bool(payload.get("reverse_charge", supplier.get("reverse_charge", False))),
+        "status": str(payload.get("status") or ("active" if bool(payload.get("active", supplier.get("status") == "active")) else "inactive")),
+        "notes": str(payload.get("notes", supplier.get("notes") or "") or "").strip(),
+        "updated_at": utc_now_iso(),
+    }
+    await session.execute(update(accounting_ap_supplier_profiles).where(accounting_ap_supplier_profiles.c.id == supplier_id).values(**values))
+    await add_accounting_audit(session, client_id, user.get("id"), "supplier_updated", "accounts_payable", supplier_id, {"previous": supplier, "new": values})
+    await session.commit()
+    return {"ok": True}
+
+
+@api.post("/admin/accounting/clients/{client_id}/ap/invoices")
+async def create_ap_invoice(
+    client_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    invoice = await create_ap_invoice_record(session, client_id, payload, user.get("id"))
+    await session.commit()
+    return invoice
+
+
+@api.post("/admin/accounting/clients/{client_id}/ap/invoices/{invoice_id}/approve")
+async def approve_ap_invoice(
+    client_id: str,
+    invoice_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    invoice = await get_ap_invoice_or_404(session, client_id, invoice_id)
+    if invoice.get("status") in {"posted", "paid", "part_paid"}:
+        raise HTTPException(status_code=400, detail="Posted invoices are already approved.")
+    await session.execute(update(accounting_ap_invoices).where(accounting_ap_invoices.c.id == invoice_id).values(status="approved", approved_by=user.get("id"), approved_at=utc_now_iso(), updated_at=utc_now_iso()))
+    await add_accounting_audit(session, client_id, user.get("id"), "purchase_invoice_approved", "accounts_payable", invoice_id, {"previous_status": invoice.get("status")})
+    await session.commit()
+    return {"ok": True}
+
+
+@api.post("/admin/accounting/clients/{client_id}/ap/invoices/{invoice_id}/post")
+async def post_ap_invoice(
+    client_id: str,
+    invoice_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    invoice = await get_ap_invoice_or_404(session, client_id, invoice_id)
+    if invoice.get("posted_journal_id"):
+        raise HTTPException(status_code=400, detail="Purchase invoice is already posted.")
+    ap_settings = await ensure_ap_settings(session, client_id)
+    if bool(ap_settings.get("approval_required", True)) and invoice.get("status") != "approved":
+        raise HTTPException(status_code=400, detail="Approve this purchase invoice before posting.")
+    if invoice.get("status") not in {"approved", "draft"}:
+        raise HTTPException(status_code=400, detail="Purchase invoice cannot be posted from this status.")
+    accounts = await ensure_native_accounting_client(session, client_id)
+    settings_row = await ensure_accounting_settings(session, client_id)
+    supplier = await get_ap_supplier_or_404(session, client_id, str(invoice.get("supplier_id")))
+    contact = await one(session, select(accounting_contacts).where(accounting_contacts.c.id == supplier.get("contact_id")))
+    lines = await many(session, select(accounting_ap_invoice_lines).where(accounting_ap_invoice_lines.c.invoice_id == invoice_id).order_by(accounting_ap_invoice_lines.c.line_number.asc()))
+    journal_lines = []
+    for line in lines:
+        amount = money(line.get("net_amount"))
+        if amount:
+            expense_account = find_native_account(accounts, line.get("nominal_account_code"), supplier.get("default_purchase_account") or settings_row.get("default_purchase_account") or "5000")
+            journal_lines.append({"account": expense_account, "contact": contact, "debit": money_str(amount), "credit": "0.00", "vat_code": line.get("vat_code"), "description": line.get("description")})
+    vat_amount = money(invoice.get("vat_amount"))
+    if vat_amount:
+        vat_account = find_native_account(accounts, settings_row.get("default_vat_control_account"), "2200")
+        journal_lines.append({"account": vat_account, "contact": contact, "debit": money_str(vat_amount), "credit": "0.00", "description": f"VAT on {invoice.get('invoice_number')}"})
+    creditors = find_native_account(accounts, settings_row.get("default_creditors_control_account"), "2000")
+    gross = money(invoice.get("gross_amount"))
+    journal_lines.append({"account": creditors, "contact": contact, "debit": "0.00", "credit": money_str(gross), "description": invoice.get("invoice_number")})
+    journal = await post_native_journal(
+        session,
+        client_id=client_id,
+        source_type="ap_invoice",
+        source_id=invoice_id,
+        entry_date=invoice.get("invoice_date"),
+        reference=invoice.get("invoice_number") or invoice_id,
+        description=f"Purchase invoice {invoice.get('invoice_number')}",
+        lines=journal_lines,
+        actor_id=user.get("id"),
+    )
+    now = utc_now_iso()
+    await session.execute(
+        update(accounting_ap_invoices)
+        .where(accounting_ap_invoices.c.id == invoice_id)
+        .values(status="posted", posted_journal_id=journal.get("id"), posted_by=user.get("id"), posted_at=now, approved_by=invoice.get("approved_by") or user.get("id"), approved_at=invoice.get("approved_at") or now, updated_at=now)
+    )
+    await add_accounting_audit(session, client_id, user.get("id"), "purchase_invoice_posted", "accounts_payable", invoice_id, {"journal_id": journal.get("id")})
+    await session.commit()
+    return {"ok": True, "journal": journal}
+
+
+@api.post("/admin/accounting/clients/{client_id}/ap/invoices/{invoice_id}/void")
+async def void_ap_invoice(
+    client_id: str,
+    invoice_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    invoice = await get_ap_invoice_or_404(session, client_id, invoice_id)
+    if invoice.get("posted_journal_id") or invoice.get("status") in {"posted", "paid", "part_paid"}:
+        raise HTTPException(status_code=400, detail="Posted purchase invoices cannot be voided. Post a credit note instead.")
+    if invoice.get("status") == "void":
+        return {"ok": True}
+    now = utc_now_iso()
+    await session.execute(update(accounting_ap_invoices).where(accounting_ap_invoices.c.id == invoice_id).values(status="void", outstanding_amount="0.00", updated_at=now))
+    await add_accounting_audit(session, client_id, user.get("id"), "purchase_invoice_voided", "accounts_payable", invoice_id, {"previous_status": invoice.get("status")})
+    await session.commit()
+    return {"ok": True}
+
+
+@api.post("/admin/accounting/clients/{client_id}/ap/credit-notes")
+async def create_ap_credit_note(
+    client_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before adding supplier credit notes.")
+    settings_row = await ensure_accounting_settings(session, client_id)
+    supplier = await get_ap_supplier_or_404(session, client_id, str(payload.get("supplier_id") or ""))
+    number = str(payload.get("credit_note_number") or payload.get("number") or "").strip()
+    if not number:
+        raise HTTPException(status_code=400, detail="Credit note number is required.")
+    credit_date = parse_date_or_today(payload.get("credit_note_date") or payload.get("date")).isoformat()
+    lines = [ap_line_values(line, supplier.get("default_purchase_account") or settings_row.get("default_purchase_account") or "5000") for line in (payload.get("lines") or [])]
+    if not lines:
+        lines = [ap_line_values({"description": payload.get("description") or number, "net_amount": payload.get("net_amount"), "vat_amount": payload.get("vat_amount"), "gross_amount": payload.get("gross_amount")}, supplier.get("default_purchase_account") or "5000")]
+    totals = ap_totals(lines)
+    now = utc_now_iso()
+    row = {
+        "id": new_id(),
+        "client_id": client_id,
+        "supplier_id": supplier["id"],
+        "contact_id": supplier.get("contact_id"),
+        "credit_note_number": number,
+        "reference": str(payload.get("reference") or "").strip(),
+        "credit_note_date": credit_date,
+        "currency": str(payload.get("currency") or "GBP").strip().upper()[:8],
+        "status": "draft",
+        **totals,
+        "unallocated_amount": totals["gross_amount"],
+        "created_at": now,
+        "updated_at": now,
+    }
+    await session.execute(insert(accounting_ap_credit_notes).values(**row))
+    for index, line in enumerate(lines, start=1):
+        cleaned = dict(line)
+        cleaned.pop("discount_amount", None)
+        await session.execute(insert(accounting_ap_credit_note_lines).values(id=new_id(), client_id=client_id, credit_note_id=row["id"], line_number=index, created_at=now, updated_at=now, **cleaned))
+    await add_accounting_audit(session, client_id, user.get("id"), "supplier_credit_note_created", "accounts_payable", row["id"], {"credit_note_number": number})
+    await session.commit()
+    return serialize_ap_credit_note(row, lines)
+
+
+@api.post("/admin/accounting/clients/{client_id}/ap/credit-notes/{credit_note_id}/post")
+async def post_ap_credit_note(
+    client_id: str,
+    credit_note_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    credit = await one(session, select(accounting_ap_credit_notes).where(accounting_ap_credit_notes.c.client_id == client_id, accounting_ap_credit_notes.c.id == credit_note_id))
+    if not credit:
+        raise HTTPException(status_code=404, detail="Supplier credit note not found.")
+    if credit.get("posted_journal_id"):
+        raise HTTPException(status_code=400, detail="Supplier credit note is already posted.")
+    accounts = await ensure_native_accounting_client(session, client_id)
+    settings_row = await ensure_accounting_settings(session, client_id)
+    supplier = await get_ap_supplier_or_404(session, client_id, str(credit.get("supplier_id")))
+    contact = await one(session, select(accounting_contacts).where(accounting_contacts.c.id == supplier.get("contact_id")))
+    lines = await many(session, select(accounting_ap_credit_note_lines).where(accounting_ap_credit_note_lines.c.credit_note_id == credit_note_id).order_by(accounting_ap_credit_note_lines.c.line_number.asc()))
+    creditors = find_native_account(accounts, settings_row.get("default_creditors_control_account"), "2000")
+    journal_lines = [{"account": creditors, "contact": contact, "debit": money_str(money(credit.get("gross_amount"))), "credit": "0.00", "description": credit.get("credit_note_number")}]
+    for line in lines:
+        amount = money(line.get("net_amount"))
+        if amount:
+            expense_account = find_native_account(accounts, line.get("nominal_account_code"), supplier.get("default_purchase_account") or settings_row.get("default_purchase_account") or "5000")
+            journal_lines.append({"account": expense_account, "contact": contact, "debit": "0.00", "credit": money_str(amount), "vat_code": line.get("vat_code"), "description": line.get("description")})
+    vat_amount = money(credit.get("vat_amount"))
+    if vat_amount:
+        vat_account = find_native_account(accounts, settings_row.get("default_vat_control_account"), "2200")
+        journal_lines.append({"account": vat_account, "contact": contact, "debit": "0.00", "credit": money_str(vat_amount), "description": f"VAT credit {credit.get('credit_note_number')}"})
+    journal = await post_native_journal(
+        session,
+        client_id=client_id,
+        source_type="ap_credit_note",
+        source_id=credit_note_id,
+        entry_date=credit.get("credit_note_date"),
+        reference=credit.get("credit_note_number") or credit_note_id,
+        description=f"Supplier credit note {credit.get('credit_note_number')}",
+        lines=journal_lines,
+        actor_id=user.get("id"),
+    )
+    now = utc_now_iso()
+    await session.execute(update(accounting_ap_credit_notes).where(accounting_ap_credit_notes.c.id == credit_note_id).values(status="posted", posted_journal_id=journal.get("id"), posted_by=user.get("id"), posted_at=now, updated_at=now))
+    await add_accounting_audit(session, client_id, user.get("id"), "supplier_credit_note_posted", "accounts_payable", credit_note_id, {"journal_id": journal.get("id")})
+    await session.commit()
+    return {"ok": True, "journal": journal}
+
+
+@api.post("/admin/accounting/clients/{client_id}/ap/payments")
+async def create_ap_payment(
+    client_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before adding supplier payments.")
+    supplier = await get_ap_supplier_or_404(session, client_id, str(payload.get("supplier_id") or ""))
+    amount = money(payload.get("amount"))
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Payment amount must be greater than zero.")
+    settings_row = await ensure_accounting_settings(session, client_id)
+    accounts = await ensure_native_accounting_client(session, client_id)
+    contact = await one(session, select(accounting_contacts).where(accounting_contacts.c.id == supplier.get("contact_id")))
+    bank_account_code = str(payload.get("bank_account_code") or settings_row.get("default_bank_account") or "1200")
+    bank = find_native_account(accounts, bank_account_code, "1200")
+    creditors = find_native_account(accounts, settings_row.get("default_creditors_control_account"), "2000")
+    payment_date = parse_date_or_today(payload.get("payment_date")).isoformat()
+    reference = str(payload.get("reference") or f"Payment {payment_date}").strip()
+    journal = await post_native_journal(
+        session,
+        client_id=client_id,
+        source_type="ap_payment",
+        source_id="pending",
+        entry_date=payment_date,
+        reference=reference,
+        description=f"Supplier payment {supplier.get('trading_name') or contact.get('name')}",
+        lines=[
+            {"account": creditors, "contact": contact, "debit": money_str(amount), "credit": "0.00", "description": reference},
+            {"account": bank, "contact": contact, "debit": "0.00", "credit": money_str(amount), "description": reference},
+        ],
+        actor_id=user.get("id"),
+    )
+    now = utc_now_iso()
+    payment_id = new_id()
+    row = {
+        "id": payment_id,
+        "client_id": client_id,
+        "supplier_id": supplier["id"],
+        "contact_id": supplier.get("contact_id"),
+        "payment_date": payment_date,
+        "bank_account_code": bank_account_code,
+        "reference": reference,
+        "amount": money_str(amount),
+        "currency": str(payload.get("currency") or "GBP").strip().upper()[:8],
+        "status": "posted",
+        "posted_journal_id": journal.get("id"),
+        "created_at": now,
+        "updated_at": now,
+    }
+    await session.execute(insert(accounting_ap_payments).values(**row))
+    remaining = amount
+    invoice_ids = [str(item.get("invoice_id")) for item in (payload.get("allocations") or []) if item.get("invoice_id")]
+    invoices = []
+    if invoice_ids:
+        invoices = await many(session, select(accounting_ap_invoices).where(accounting_ap_invoices.c.client_id == client_id, accounting_ap_invoices.c.id.in_(invoice_ids)))
+    else:
+        invoices = await many(
+            session,
+            select(accounting_ap_invoices)
+            .where(accounting_ap_invoices.c.client_id == client_id, accounting_ap_invoices.c.supplier_id == supplier["id"], accounting_ap_invoices.c.outstanding_amount != "0.00")
+            .order_by(accounting_ap_invoices.c.due_date.asc(), accounting_ap_invoices.c.invoice_date.asc()),
+        )
+    allocation_by_invoice = {str(item.get("invoice_id")): money(item.get("amount")) for item in (payload.get("allocations") or []) if item.get("invoice_id")}
+    for invoice in invoices:
+        if remaining <= 0:
+            break
+        outstanding = money(invoice.get("outstanding_amount"))
+        if outstanding <= 0:
+            continue
+        desired = allocation_by_invoice.get(str(invoice["id"]), outstanding)
+        allocate = min(remaining, outstanding, desired if desired > 0 else outstanding)
+        if allocate <= 0:
+            continue
+        await session.execute(insert(accounting_ap_payment_allocations).values(id=new_id(), client_id=client_id, payment_id=payment_id, invoice_id=invoice["id"], amount=money_str(allocate), created_at=now))
+        new_outstanding = outstanding - allocate
+        new_status = "paid" if new_outstanding == 0 else "part_paid"
+        await session.execute(update(accounting_ap_invoices).where(accounting_ap_invoices.c.id == invoice["id"]).values(outstanding_amount=money_str(new_outstanding), status=new_status, updated_at=now))
+        remaining -= allocate
+    await session.execute(update(accounting_journal_entries).where(accounting_journal_entries.c.id == journal.get("id")).values(source_id=payment_id))
+    await add_accounting_audit(session, client_id, user.get("id"), "supplier_payment_posted", "accounts_payable", payment_id, {"journal_id": journal.get("id"), "amount": money_str(amount)})
+    await session.commit()
+    return serialize_ap_payment(row)
+
+
+@api.put("/admin/accounting/clients/{client_id}/ap/settings")
+async def update_ap_settings(
+    client_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await get_client_or_404(session, client_id)
+    existing = await ensure_ap_settings(session, client_id)
+    values = {
+        "approval_required": bool(payload.get("approval_required", existing.get("approval_required", True))),
+        "default_payment_terms_days": int(payload.get("default_payment_terms_days", existing.get("default_payment_terms_days") or 30) or 30),
+        "default_purchase_account": str(payload.get("default_purchase_account", existing.get("default_purchase_account") or "5000") or "5000"),
+        "default_vat_code": str(payload.get("default_vat_code", existing.get("default_vat_code") or "") or ""),
+        "duplicate_invoice_warning": bool(payload.get("duplicate_invoice_warning", existing.get("duplicate_invoice_warning", True))),
+        "allow_future_posting_dates": bool(payload.get("allow_future_posting_dates", existing.get("allow_future_posting_dates", False))),
+        "automatic_invoice_numbering": bool(payload.get("automatic_invoice_numbering", existing.get("automatic_invoice_numbering", False))),
+        "updated_at": utc_now_iso(),
+    }
+    await session.execute(update(accounting_ap_settings).where(accounting_ap_settings.c.client_id == client_id).values(**values))
+    await add_accounting_audit(session, client_id, user.get("id"), "ap_settings_updated", "accounts_payable", existing["id"], values)
+    await session.commit()
+    updated = await ensure_ap_settings(session, client_id)
+    return serialize_ap_settings(updated)
 
 
 @api.post("/admin/accounting/clients/{client_id}/bank-transactions")
@@ -3843,6 +4870,71 @@ async def publish_submission_to_native_accounting(
     accounts = await ensure_native_accounting_client(session, client_id)
     doc_type = (submission.get("type") or "purchase").lower()
     is_sales = doc_type == "sales"
+    if not is_sales:
+        existing_ap_invoice = await one(
+            session,
+            select(accounting_ap_invoices).where(
+                accounting_ap_invoices.c.client_id == client_id,
+                accounting_ap_invoices.c.source_submission_id == str(submission["id"]),
+                accounting_ap_invoices.c.status != "void",
+            ),
+        )
+        if existing_ap_invoice:
+            return {
+                "provider": "epos_native",
+                "entity": "PurchaseInvoice",
+                "id": existing_ap_invoice.get("id"),
+                "reference": existing_ap_invoice.get("invoice_number"),
+                "status": existing_ap_invoice.get("status"),
+                "gross_amount": existing_ap_invoice.get("gross_amount"),
+                "outstanding_amount": existing_ap_invoice.get("outstanding_amount"),
+                "already_posted": True,
+            }
+        line_items = coding_fields.get("line_items") if isinstance(coding_fields.get("line_items"), list) else []
+        ap_invoice = await create_ap_invoice_record(
+            session,
+            client_id,
+            {
+                "supplier_name": coding_fields.get("vendor_name") or submission.get("client_business_name") or "Supplier",
+                "invoice_number": coding_fields.get("bill_number") or coding_fields.get("invoice_number") or coding_fields.get("reference") or submission.get("description"),
+                "reference": coding_fields.get("reference") or "",
+                "invoice_date": coding_fields.get("date") or submission.get("date"),
+                "due_date": coding_fields.get("due_date") or coding_fields.get("date") or submission.get("date"),
+                "currency": coding_fields.get("currency") or "GBP",
+                "net_amount": coding_fields.get("net"),
+                "vat_amount": coding_fields.get("vat"),
+                "gross_amount": coding_fields.get("total") or coding_fields.get("gross") or submission.get("amount"),
+                "vat_code": coding_fields.get("vat_code"),
+                "description": coding_fields.get("description") or submission.get("description"),
+                "lines": [
+                    {
+                        "description": line.get("description") or coding_fields.get("description") or submission.get("description"),
+                        "nominal_account_code": line.get("account_code") or line.get("category") or coding_fields.get("category"),
+                        "quantity": line.get("units") or line.get("quantity") or "1",
+                        "unit_price": line.get("price") or line.get("unit_price"),
+                        "net_amount": line.get("net") or line.get("net_amount") or line.get("total"),
+                        "vat_amount": line.get("vat") or line.get("vat_amount"),
+                        "gross_amount": line.get("gross") or line.get("gross_amount") or line.get("total"),
+                        "vat_code": line.get("vat_code") or coding_fields.get("vat_code"),
+                    }
+                    for line in line_items
+                ],
+                "source_submission_id": str(submission["id"]),
+                "attachment_path": submission.get("image_filename") or "",
+                "extracted_json": coding_fields,
+            },
+            actor_id,
+        )
+        return {
+            "provider": "epos_native",
+            "entity": "PurchaseInvoice",
+            "id": ap_invoice.get("id"),
+            "reference": ap_invoice.get("invoice_number"),
+            "status": ap_invoice.get("status"),
+            "gross_amount": ap_invoice.get("gross_amount"),
+            "outstanding_amount": ap_invoice.get("outstanding_amount"),
+            "created_at": ap_invoice.get("created_at"),
+        }
     contact_type = "customer" if is_sales else "supplier"
     contact_name = coding_fields.get("customer_name") if is_sales else coding_fields.get("vendor_name")
     contact_name = contact_name or coding_fields.get("vendor_name") or coding_fields.get("customer_name") or submission.get("client_business_name") or ""
