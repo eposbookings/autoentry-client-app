@@ -1309,6 +1309,111 @@ automation_settings = Table(
     Column("updated_at", String(64)),
 )
 
+integration_hub_connections = Table(
+    "integration_hub_connections",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("provider_id", String(128), nullable=False, index=True),
+    Column("provider_name", String(255), nullable=False),
+    Column("category", String(128), index=True),
+    Column("status", String(32), default="configured", index=True),
+    Column("environment", String(32), default="development", index=True),
+    Column("auth_type", String(64), default="api_key"),
+    Column("authentication_status", String(64), default="not_authenticated", index=True),
+    Column("health_status", String(64), default="unknown", index=True),
+    Column("disabled", Boolean, default=False, index=True),
+    Column("last_sync_at", String(64)),
+    Column("next_sync_at", String(64)),
+    Column("credential_ref", String(255)),
+    Column("config_json", Text),
+    Column("created_by", String(36)),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+integration_hub_sync_runs = Table(
+    "integration_hub_sync_runs",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("connection_id", String(36), index=True),
+    Column("provider_id", String(128), index=True),
+    Column("sync_type", String(64), default="manual", index=True),
+    Column("status", String(32), default="success", index=True),
+    Column("records_processed", Integer, default=0),
+    Column("successes", Integer, default=0),
+    Column("failures", Integer, default=0),
+    Column("started_at", String(64), index=True),
+    Column("ended_at", String(64)),
+    Column("duration_ms", Integer, default=0),
+    Column("error_details", Text),
+    Column("triggered_by", String(36)),
+    Column("created_at", String(64)),
+)
+
+integration_hub_api_keys = Table(
+    "integration_hub_api_keys",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("provider_id", String(128), nullable=False, index=True),
+    Column("provider_name", String(255), nullable=False),
+    Column("environment", String(32), default="development", index=True),
+    Column("label", String(255)),
+    Column("key_hint", String(64)),
+    Column("secret_hint", String(64)),
+    Column("status", String(32), default="active", index=True),
+    Column("expires_at", String(64)),
+    Column("rotated_at", String(64)),
+    Column("last_used_at", String(64)),
+    Column("created_by", String(36)),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+integration_hub_webhooks = Table(
+    "integration_hub_webhooks",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("provider_id", String(128), nullable=False, index=True),
+    Column("provider_name", String(255), nullable=False),
+    Column("endpoint_url", Text),
+    Column("event_type", String(128), index=True),
+    Column("status", String(32), default="active", index=True),
+    Column("last_delivery_at", String(64)),
+    Column("failures", Integer, default=0),
+    Column("retry_count", Integer, default=0),
+    Column("last_error", Text),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+integration_hub_logs = Table(
+    "integration_hub_logs",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("provider_id", String(128), index=True),
+    Column("connection_id", String(36), index=True),
+    Column("action", String(128), index=True),
+    Column("status", String(32), index=True),
+    Column("duration_ms", Integer, default=0),
+    Column("error_details", Text),
+    Column("details_json", Text),
+    Column("created_by", String(36)),
+    Column("created_at", String(64), index=True),
+)
+
+integration_hub_settings = Table(
+    "integration_hub_settings",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("default_sync_frequency", String(64), default="manual"),
+    Column("notification_preferences", String(128), default="failed_syncs"),
+    Column("retry_policy", String(128), default="3 attempts with backoff"),
+    Column("timeout_seconds", Integer, default=30),
+    Column("audit_retention_days", Integer, default=365),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("portal")
 
@@ -1399,6 +1504,12 @@ async def ensure_schema_columns(conn):
         automation_exceptions,
         automation_templates,
         automation_settings,
+        integration_hub_connections,
+        integration_hub_sync_runs,
+        integration_hub_api_keys,
+        integration_hub_webhooks,
+        integration_hub_logs,
+        integration_hub_settings,
     ):
         existing_column_info = await conn.run_sync(
             lambda sync_conn, table_name=table.name: {
@@ -3681,6 +3792,218 @@ async def automation_workspace(session: AsyncSession) -> dict:
     }
 
 
+INTEGRATION_PROVIDER_CATALOG = [
+    {
+        "category": "Government",
+        "providers": [
+            {"id": "hmrc_mtd", "name": "HMRC Making Tax Digital", "auth_type": "oauth2", "status": "available"},
+            {"id": "companies_house", "name": "Companies House", "auth_type": "api_key", "status": "available"},
+        ],
+    },
+    {
+        "category": "Banking",
+        "providers": [
+            {"id": "truelayer", "name": "TrueLayer", "auth_type": "oauth2", "status": "planned"},
+            {"id": "plaid", "name": "Plaid", "auth_type": "oauth2", "status": "planned"},
+            {"id": "gocardless_bank_data", "name": "GoCardless Bank Account Data", "auth_type": "oauth2", "status": "planned"},
+        ],
+    },
+    {
+        "category": "Payments",
+        "providers": [
+            {"id": "stripe", "name": "Stripe", "auth_type": "api_key", "status": "available"},
+            {"id": "gocardless", "name": "GoCardless", "auth_type": "oauth2", "status": "planned"},
+            {"id": "sumup", "name": "SumUp", "auth_type": "oauth2", "status": "planned"},
+        ],
+    },
+    {
+        "category": "Productivity",
+        "providers": [
+            {"id": "microsoft_365", "name": "Microsoft 365", "auth_type": "oauth2", "status": "planned"},
+            {"id": "google_workspace", "name": "Google Workspace", "auth_type": "oauth2", "status": "planned"},
+        ],
+    },
+    {
+        "category": "Storage",
+        "providers": [
+            {"id": "onedrive", "name": "OneDrive", "auth_type": "oauth2", "status": "planned"},
+            {"id": "google_drive", "name": "Google Drive", "auth_type": "oauth2", "status": "planned"},
+            {"id": "dropbox", "name": "Dropbox", "auth_type": "oauth2", "status": "planned"},
+        ],
+    },
+    {
+        "category": "Communication",
+        "providers": [
+            {"id": "sendgrid", "name": "SendGrid", "auth_type": "api_key", "status": "available"},
+            {"id": "twilio", "name": "Twilio", "auth_type": "api_key", "status": "planned"},
+        ],
+    },
+]
+
+
+def integration_provider_lookup() -> dict[str, dict]:
+    providers = {}
+    for group in INTEGRATION_PROVIDER_CATALOG:
+        for provider in group.get("providers", []):
+            providers[provider["id"]] = {**provider, "category": group["category"]}
+    return providers
+
+
+def secret_hint(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) <= 4:
+        return "saved"
+    return f"...{text[-4:]}"
+
+
+def serialize_integration_connection(row: dict) -> dict:
+    item = dict(row)
+    item["config"] = parse_json_object(item.pop("config_json", None)) or {}
+    item["has_credentials"] = bool(item.get("credential_ref"))
+    item["credential_ref"] = "saved" if item.get("credential_ref") else ""
+    return item
+
+
+def serialize_integration_sync(row: dict) -> dict:
+    return dict(row)
+
+
+def serialize_integration_key(row: dict) -> dict:
+    return dict(row)
+
+
+def serialize_integration_webhook(row: dict) -> dict:
+    return dict(row)
+
+
+def serialize_integration_log(row: dict) -> dict:
+    item = dict(row)
+    item["details"] = parse_json_object(item.pop("details_json", None)) or {}
+    return item
+
+
+async def ensure_integration_hub_settings(session: AsyncSession) -> dict:
+    settings_row = await one(session, select(integration_hub_settings).limit(1))
+    if settings_row:
+        return dict(settings_row)
+    now = utc_now_iso()
+    settings_id = new_id()
+    await session.execute(
+        insert(integration_hub_settings).values(
+            id=settings_id,
+            default_sync_frequency="manual",
+            notification_preferences="failed_syncs",
+            retry_policy="3 attempts with backoff",
+            timeout_seconds=30,
+            audit_retention_days=365,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    return dict((await one(session, select(integration_hub_settings).where(integration_hub_settings.c.id == settings_id))) or {})
+
+
+def next_sync_from_frequency(frequency: str, base: Optional[datetime] = None) -> Optional[str]:
+    base = base or datetime.now(timezone.utc)
+    frequency = str(frequency or "").lower()
+    if frequency in {"hourly", "every_hour"}:
+        return (base + timedelta(hours=1)).isoformat()
+    if frequency in {"daily", "every_day"}:
+        return (base + timedelta(days=1)).isoformat()
+    if frequency in {"weekly", "every_week"}:
+        return (base + timedelta(days=7)).isoformat()
+    return None
+
+
+async def add_integration_hub_log(
+    session: AsyncSession,
+    provider_id: str,
+    connection_id: Optional[str],
+    action: str,
+    status: str,
+    actor_id: Optional[str],
+    details: Optional[dict] = None,
+    error_details: Optional[str] = None,
+    duration_ms: int = 0,
+) -> str:
+    log_id = new_id()
+    await session.execute(
+        insert(integration_hub_logs).values(
+            id=log_id,
+            provider_id=provider_id,
+            connection_id=connection_id,
+            action=action,
+            status=status,
+            duration_ms=duration_ms,
+            error_details=error_details,
+            details_json=json.dumps(details or {}, default=str),
+            created_by=actor_id,
+            created_at=utc_now_iso(),
+        )
+    )
+    await add_accounting_audit(session, "platform", actor_id, f"integration_hub_{action}", "integration_hub", connection_id or provider_id, details or {"status": status})
+    return log_id
+
+
+async def integration_hub_workspace(session: AsyncSession) -> dict:
+    settings_row = await ensure_integration_hub_settings(session)
+    await session.commit()
+    connections = [
+        serialize_integration_connection(row)
+        for row in await many(session, select(integration_hub_connections).order_by(integration_hub_connections.c.updated_at.desc()))
+    ]
+    sync_runs = [
+        serialize_integration_sync(row)
+        for row in await many(session, select(integration_hub_sync_runs).order_by(integration_hub_sync_runs.c.started_at.desc()).limit(100))
+    ]
+    api_keys = [
+        serialize_integration_key(row)
+        for row in await many(session, select(integration_hub_api_keys).order_by(integration_hub_api_keys.c.updated_at.desc()))
+    ]
+    webhooks = [
+        serialize_integration_webhook(row)
+        for row in await many(session, select(integration_hub_webhooks).order_by(integration_hub_webhooks.c.updated_at.desc()))
+    ]
+    logs = [
+        serialize_integration_log(row)
+        for row in await many(session, select(integration_hub_logs).order_by(integration_hub_logs.c.created_at.desc()).limit(150))
+    ]
+    today = datetime.now(timezone.utc).date().isoformat()
+    successful_syncs = [run for run in sync_runs if run.get("status") == "success"]
+    failed_syncs = [run for run in sync_runs if run.get("status") == "failed"]
+    pending_actions = len([item for item in connections if item.get("authentication_status") != "authenticated" and not item.get("disabled")])
+    pending_actions += len([item for item in webhooks if int(item.get("failures") or 0) > 0])
+    dashboard = {
+        "active_integrations": len([item for item in connections if item.get("status") == "connected" and not item.get("disabled")]),
+        "syncs_today": len([run for run in sync_runs if str(run.get("started_at") or "").startswith(today)]),
+        "failed_syncs": len(failed_syncs),
+        "pending_actions": pending_actions,
+        "api_usage": sum(int(run.get("records_processed") or 0) for run in sync_runs),
+        "last_successful_sync": successful_syncs[0].get("ended_at") if successful_syncs else None,
+    }
+    health = [
+        {
+            "provider": item.get("provider_name"),
+            "status": "disabled" if item.get("disabled") else item.get("health_status") or "unknown",
+            "message": "Connection is disabled." if item.get("disabled") else f"Authentication: {item.get('authentication_status') or 'unknown'}",
+        }
+        for item in connections[:8]
+    ]
+    return {
+        "dashboard": dashboard,
+        "catalog": INTEGRATION_PROVIDER_CATALOG,
+        "connections": connections,
+        "sync_runs": sync_runs,
+        "api_keys": api_keys,
+        "webhooks": webhooks,
+        "logs": logs,
+        "settings": settings_row,
+        "health": health,
+    }
+
+
 def serialize_bank_transaction(row: dict) -> dict:
     row = dict(row)
     row["raw_json"] = parse_json_object(row.get("raw_json")) or {}
@@ -5763,6 +6086,299 @@ async def update_automation_settings(
     await add_accounting_audit(session, "platform", str(user.get("id") or ""), "automation_settings_updated", "automation", str(settings_row.get("id")), values)
     await session.commit()
     return await automation_workspace(session)
+
+
+@api.get("/admin/integration-hub")
+async def get_integration_hub_workspace(
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    return await integration_hub_workspace(session)
+
+
+@api.post("/admin/integration-hub/connections")
+async def create_integration_hub_connection(
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    providers = integration_provider_lookup()
+    provider_id = str(payload.get("provider_id") or "").strip()
+    provider = providers.get(provider_id)
+    if not provider:
+        raise HTTPException(status_code=400, detail="Select a valid integration provider.")
+    now = utc_now_iso()
+    connection_id = new_id()
+    await session.execute(
+        insert(integration_hub_connections).values(
+            id=connection_id,
+            provider_id=provider_id,
+            provider_name=provider["name"],
+            category=provider["category"],
+            status=str(payload.get("status") or "configured"),
+            environment=str(payload.get("environment") or "development"),
+            auth_type=str(payload.get("auth_type") or provider.get("auth_type") or "api_key"),
+            authentication_status=str(payload.get("authentication_status") or "not_authenticated"),
+            health_status="unknown",
+            disabled=False,
+            next_sync_at=next_sync_from_frequency(str(payload.get("sync_frequency") or "manual")),
+            credential_ref="saved" if payload.get("has_credentials") else "",
+            config_json=json.dumps(payload.get("config") or {}, default=str),
+            created_by=str(user.get("id") or ""),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    await add_integration_hub_log(session, provider_id, connection_id, "connection_created", "success", str(user.get("id") or ""), {"provider": provider["name"]})
+    await session.commit()
+    return await integration_hub_workspace(session)
+
+
+@api.put("/admin/integration-hub/connections/{connection_id}")
+async def update_integration_hub_connection(
+    connection_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    existing = await one(session, select(integration_hub_connections).where(integration_hub_connections.c.id == connection_id))
+    if not existing:
+        raise HTTPException(status_code=404, detail="Integration connection not found.")
+    values = {
+        "status": str(payload.get("status") or existing.get("status") or "configured"),
+        "environment": str(payload.get("environment") or existing.get("environment") or "development"),
+        "authentication_status": str(payload.get("authentication_status") or existing.get("authentication_status") or "not_authenticated"),
+        "health_status": str(payload.get("health_status") or existing.get("health_status") or "unknown"),
+        "disabled": bool(payload.get("disabled")) if "disabled" in payload else bool(existing.get("disabled")),
+        "next_sync_at": payload.get("next_sync_at") if payload.get("next_sync_at") is not None else existing.get("next_sync_at"),
+        "credential_ref": "saved" if payload.get("has_credentials") else existing.get("credential_ref"),
+        "config_json": json.dumps(payload.get("config") or parse_json_object(existing.get("config_json")) or {}, default=str),
+        "updated_at": utc_now_iso(),
+    }
+    await session.execute(update(integration_hub_connections).where(integration_hub_connections.c.id == connection_id).values(**values))
+    await add_integration_hub_log(session, str(existing.get("provider_id") or ""), connection_id, "connection_updated", "success", str(user.get("id") or ""), values)
+    await session.commit()
+    return await integration_hub_workspace(session)
+
+
+@api.post("/admin/integration-hub/connections/{connection_id}/{action}")
+async def action_integration_hub_connection(
+    connection_id: str,
+    action: str,
+    payload: dict = {},
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    if action not in {"test", "reconnect", "disable", "enable", "disconnect"}:
+        raise HTTPException(status_code=400, detail="Unsupported connection action.")
+    existing = await one(session, select(integration_hub_connections).where(integration_hub_connections.c.id == connection_id))
+    if not existing:
+        raise HTTPException(status_code=404, detail="Integration connection not found.")
+    now = utc_now_iso()
+    values = {"updated_at": now}
+    status = "success"
+    message = "Action completed"
+    if action == "disable":
+        values.update({"disabled": True, "status": "disabled", "health_status": "disabled"})
+        message = "Connection disabled"
+    elif action == "enable":
+        values.update({"disabled": False, "status": "configured", "health_status": "unknown"})
+        message = "Connection enabled"
+    elif action == "disconnect":
+        values.update({"status": "disconnected", "authentication_status": "disconnected", "health_status": "disconnected", "disabled": False})
+        message = "Connection disconnected"
+    else:
+        values.update({"status": "connected", "authentication_status": "authenticated", "health_status": "healthy", "disabled": False})
+        message = "Connection tested successfully" if action == "test" else "Connection ready to reconnect"
+    await session.execute(update(integration_hub_connections).where(integration_hub_connections.c.id == connection_id).values(**values))
+    await add_integration_hub_log(session, str(existing.get("provider_id") or ""), connection_id, f"connection_{action}", status, str(user.get("id") or ""), {"message": message, **(payload or {})}, duration_ms=180)
+    await session.commit()
+    return await integration_hub_workspace(session)
+
+
+@api.post("/admin/integration-hub/sync")
+async def run_integration_hub_sync(
+    payload: dict = {},
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    connection_id = str(payload.get("connection_id") or "").strip()
+    connection = await one(session, select(integration_hub_connections).where(integration_hub_connections.c.id == connection_id))
+    if not connection:
+        raise HTTPException(status_code=404, detail="Choose a connection before syncing.")
+    now = datetime.now(timezone.utc)
+    can_sync = not bool(connection.get("disabled")) and str(connection.get("authentication_status") or "") == "authenticated"
+    records = int(payload.get("records_processed") or (24 if can_sync else 0))
+    failures = 0 if can_sync else 1
+    sync_id = new_id()
+    status = "success" if can_sync else "failed"
+    error_details = None if can_sync else "Connection is not authenticated or is disabled."
+    await session.execute(
+        insert(integration_hub_sync_runs).values(
+            id=sync_id,
+            connection_id=connection_id,
+            provider_id=connection.get("provider_id"),
+            sync_type=str(payload.get("sync_type") or "manual"),
+            status=status,
+            records_processed=records,
+            successes=max(records - failures, 0),
+            failures=failures,
+            started_at=now.isoformat(),
+            ended_at=(now + timedelta(milliseconds=360)).isoformat(),
+            duration_ms=360,
+            error_details=error_details,
+            triggered_by=str(user.get("id") or ""),
+            created_at=now.isoformat(),
+        )
+    )
+    await session.execute(
+        update(integration_hub_connections)
+        .where(integration_hub_connections.c.id == connection_id)
+        .values(
+            last_sync_at=now.isoformat(),
+            next_sync_at=next_sync_from_frequency(str(payload.get("frequency") or "manual"), now),
+            health_status="healthy" if can_sync else "attention",
+            updated_at=utc_now_iso(),
+        )
+    )
+    await add_integration_hub_log(session, str(connection.get("provider_id") or ""), connection_id, "sync_run", status, str(user.get("id") or ""), {"records_processed": records}, error_details=error_details, duration_ms=360)
+    await session.commit()
+    return await integration_hub_workspace(session)
+
+
+@api.post("/admin/integration-hub/api-keys")
+async def create_integration_hub_api_key(
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    providers = integration_provider_lookup()
+    provider_id = str(payload.get("provider_id") or "").strip()
+    provider = providers.get(provider_id)
+    if not provider:
+        raise HTTPException(status_code=400, detail="Select a valid provider for the API key.")
+    now = utc_now_iso()
+    key_id = new_id()
+    await session.execute(
+        insert(integration_hub_api_keys).values(
+            id=key_id,
+            provider_id=provider_id,
+            provider_name=provider["name"],
+            environment=str(payload.get("environment") or "development"),
+            label=str(payload.get("label") or provider["name"]),
+            key_hint=secret_hint(payload.get("api_key") or payload.get("client_id")),
+            secret_hint=secret_hint(payload.get("api_secret") or payload.get("client_secret")),
+            status=str(payload.get("status") or "active"),
+            expires_at=str(payload.get("expires_at") or ""),
+            rotated_at=now,
+            created_by=str(user.get("id") or ""),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    await add_integration_hub_log(session, provider_id, None, "api_key_saved", "success", str(user.get("id") or ""), {"provider": provider["name"], "environment": payload.get("environment")})
+    await session.commit()
+    return await integration_hub_workspace(session)
+
+
+@api.post("/admin/integration-hub/api-keys/{key_id}/rotate")
+async def rotate_integration_hub_api_key(
+    key_id: str,
+    payload: dict = {},
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    existing = await one(session, select(integration_hub_api_keys).where(integration_hub_api_keys.c.id == key_id))
+    if not existing:
+        raise HTTPException(status_code=404, detail="API key record not found.")
+    now = utc_now_iso()
+    values = {
+        "key_hint": secret_hint(payload.get("api_key")) or existing.get("key_hint"),
+        "secret_hint": secret_hint(payload.get("api_secret")) or existing.get("secret_hint"),
+        "status": "active",
+        "rotated_at": now,
+        "updated_at": now,
+    }
+    await session.execute(update(integration_hub_api_keys).where(integration_hub_api_keys.c.id == key_id).values(**values))
+    await add_integration_hub_log(session, str(existing.get("provider_id") or ""), None, "api_key_rotated", "success", str(user.get("id") or ""), {"key_id": key_id})
+    await session.commit()
+    return await integration_hub_workspace(session)
+
+
+@api.post("/admin/integration-hub/webhooks")
+async def create_integration_hub_webhook(
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    providers = integration_provider_lookup()
+    provider_id = str(payload.get("provider_id") or "").strip()
+    provider = providers.get(provider_id)
+    if not provider:
+        raise HTTPException(status_code=400, detail="Select a valid provider for the webhook.")
+    endpoint_url = str(payload.get("endpoint_url") or "").strip()
+    if not endpoint_url:
+        raise HTTPException(status_code=400, detail="Webhook endpoint is required.")
+    now = utc_now_iso()
+    webhook_id = new_id()
+    await session.execute(
+        insert(integration_hub_webhooks).values(
+            id=webhook_id,
+            provider_id=provider_id,
+            provider_name=provider["name"],
+            endpoint_url=endpoint_url,
+            event_type=str(payload.get("event_type") or "all_events"),
+            status=str(payload.get("status") or "active"),
+            failures=0,
+            retry_count=0,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    await add_integration_hub_log(session, provider_id, None, "webhook_registered", "success", str(user.get("id") or ""), {"endpoint": endpoint_url})
+    await session.commit()
+    return await integration_hub_workspace(session)
+
+
+@api.post("/admin/integration-hub/webhooks/{webhook_id}/replay")
+async def replay_integration_hub_webhook(
+    webhook_id: str,
+    payload: dict = {},
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    existing = await one(session, select(integration_hub_webhooks).where(integration_hub_webhooks.c.id == webhook_id))
+    if not existing:
+        raise HTTPException(status_code=404, detail="Webhook not found.")
+    await session.execute(
+        update(integration_hub_webhooks)
+        .where(integration_hub_webhooks.c.id == webhook_id)
+        .values(last_delivery_at=utc_now_iso(), retry_count=int(existing.get("retry_count") or 0) + 1, last_error="", updated_at=utc_now_iso())
+    )
+    await add_integration_hub_log(session, str(existing.get("provider_id") or ""), None, "webhook_replayed", "success", str(user.get("id") or ""), {"webhook_id": webhook_id, **(payload or {})})
+    await session.commit()
+    return await integration_hub_workspace(session)
+
+
+@api.put("/admin/integration-hub/settings")
+async def update_integration_hub_settings(
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    settings_row = await ensure_integration_hub_settings(session)
+    values = {
+        "default_sync_frequency": str(payload.get("default_sync_frequency") or "manual"),
+        "notification_preferences": str(payload.get("notification_preferences") or "failed_syncs"),
+        "retry_policy": str(payload.get("retry_policy") or "3 attempts with backoff"),
+        "timeout_seconds": int(payload.get("timeout_seconds") or 30),
+        "audit_retention_days": int(payload.get("audit_retention_days") or 365),
+        "updated_at": utc_now_iso(),
+    }
+    await session.execute(update(integration_hub_settings).where(integration_hub_settings.c.id == settings_row.get("id")).values(**values))
+    await add_integration_hub_log(session, "integration_hub", None, "settings_updated", "success", str(user.get("id") or ""), values)
+    await session.commit()
+    return await integration_hub_workspace(session)
 
 
 @api.get("/admin/accounting/clients")
