@@ -1698,7 +1698,6 @@ async def lifespan(app: FastAPI):
             )
             await session.commit()
             logger.info("Admin password updated.")
-
     yield
     await engine.dispose()
 
