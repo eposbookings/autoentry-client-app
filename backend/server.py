@@ -922,7 +922,98 @@ accounting_vat_returns = Table(
     Column("net_vat_due", String(64), default="0.00"),
     Column("sales_net", String(64), default="0.00"),
     Column("purchase_net", String(64), default="0.00"),
+    Column("box1", String(64), default="0.00"),
+    Column("box2", String(64), default="0.00"),
+    Column("box3", String(64), default="0.00"),
+    Column("box4", String(64), default="0.00"),
+    Column("box5", String(64), default="0.00"),
+    Column("box6", String(64), default="0.00"),
+    Column("box7", String(64), default="0.00"),
+    Column("box8", String(64), default="0.00"),
+    Column("box9", String(64), default="0.00"),
+    Column("locked_at", String(64)),
+    Column("submitted_at", String(64)),
+    Column("notes", Text),
     Column("prepared_json", Text),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_vat_settings = Table(
+    "accounting_vat_settings",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, unique=True, index=True),
+    Column("vat_registration_number", String(64)),
+    Column("vat_scheme", String(64), default="standard"),
+    Column("vat_frequency", String(32), default="quarterly"),
+    Column("vat_start_date", String(32)),
+    Column("default_purchase_vat_code", String(255)),
+    Column("default_sales_vat_code", String(255)),
+    Column("default_bank_vat_code", String(255)),
+    Column("flat_rate_percentage", String(64), default="0.00"),
+    Column("cash_accounting", Boolean, default=False),
+    Column("accrual_accounting", Boolean, default=True),
+    Column("mtd_enabled", Boolean, default=False),
+    Column("hmrc_connection_status", String(32), default="not_connected"),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_vat_codes = Table(
+    "accounting_vat_codes",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("code", String(255), nullable=False, index=True),
+    Column("description", Text),
+    Column("percentage", String(64), default="0.00"),
+    Column("purchase_behavior", String(64), default="recoverable"),
+    Column("sales_behavior", String(64), default="output"),
+    Column("box_sales_vat", String(16), default="1"),
+    Column("box_purchase_vat", String(16), default="4"),
+    Column("box_sales_net", String(16), default="6"),
+    Column("box_purchase_net", String(16), default="7"),
+    Column("active", Boolean, default=True),
+    Column("system_code", Boolean, default=False),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_vat_periods = Table(
+    "accounting_vat_periods",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("period_start", String(32), index=True),
+    Column("period_end", String(32), index=True),
+    Column("due_date", String(32), index=True),
+    Column("status", String(32), default="open", index=True),
+    Column("output_vat", String(64), default="0.00"),
+    Column("input_vat", String(64), default="0.00"),
+    Column("net_vat", String(64), default="0.00"),
+    Column("transaction_count", Integer, default=0),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_vat_adjustments = Table(
+    "accounting_vat_adjustments",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("vat_period_id", String(36), index=True),
+    Column("adjustment_date", String(32), index=True),
+    Column("adjustment_type", String(64), default="manual"),
+    Column("vat_code", String(255)),
+    Column("reason", String(255)),
+    Column("notes", Text),
+    Column("net_amount", String(64), default="0.00"),
+    Column("vat_amount", String(64), default="0.00"),
+    Column("gross_amount", String(64), default="0.00"),
+    Column("status", String(32), default="posted", index=True),
+    Column("journal_entry_id", String(36)),
+    Column("created_by", String(36)),
     Column("created_at", String(64)),
     Column("updated_at", String(64)),
 )
@@ -1027,6 +1118,10 @@ async def ensure_schema_columns(conn):
         accounting_bank_transfers,
         accounting_bank_settings,
         accounting_vat_returns,
+        accounting_vat_settings,
+        accounting_vat_codes,
+        accounting_vat_periods,
+        accounting_vat_adjustments,
         accounting_periods,
         accounting_financial_years,
     ):
@@ -3218,6 +3313,345 @@ def serialize_vat_return(row: dict) -> dict:
     return row
 
 
+DEFAULT_NATIVE_VAT_CODES = [
+    {"code": "20% S", "description": "Standard rate", "percentage": "20.00", "purchase_behavior": "recoverable", "sales_behavior": "output", "box_sales_vat": "1", "box_purchase_vat": "4", "box_sales_net": "6", "box_purchase_net": "7"},
+    {"code": "5% R", "description": "Reduced rate", "percentage": "5.00", "purchase_behavior": "recoverable", "sales_behavior": "output", "box_sales_vat": "1", "box_purchase_vat": "4", "box_sales_net": "6", "box_purchase_net": "7"},
+    {"code": "0% Z", "description": "Zero rated", "percentage": "0.00", "purchase_behavior": "zero", "sales_behavior": "zero", "box_sales_vat": "", "box_purchase_vat": "", "box_sales_net": "6", "box_purchase_net": "7"},
+    {"code": "EXEMPT", "description": "Exempt from VAT", "percentage": "0.00", "purchase_behavior": "exempt", "sales_behavior": "exempt", "box_sales_vat": "", "box_purchase_vat": "", "box_sales_net": "", "box_purchase_net": ""},
+    {"code": "NO VAT", "description": "Outside scope / no VAT", "percentage": "0.00", "purchase_behavior": "outside_scope", "sales_behavior": "outside_scope", "box_sales_vat": "", "box_purchase_vat": "", "box_sales_net": "", "box_purchase_net": ""},
+    {"code": "RC 20%", "description": "Domestic reverse charge 20%", "percentage": "20.00", "purchase_behavior": "reverse_charge", "sales_behavior": "reverse_charge", "box_sales_vat": "1", "box_purchase_vat": "4", "box_sales_net": "6", "box_purchase_net": "7"},
+    {"code": "EC GOODS", "description": "EC goods", "percentage": "0.00", "purchase_behavior": "ec_goods", "sales_behavior": "ec_goods", "box_sales_vat": "", "box_purchase_vat": "", "box_sales_net": "8", "box_purchase_net": "9"},
+    {"code": "EC SERVICES", "description": "EC services", "percentage": "0.00", "purchase_behavior": "ec_services", "sales_behavior": "ec_services", "box_sales_vat": "", "box_purchase_vat": "", "box_sales_net": "6", "box_purchase_net": "7"},
+    {"code": "IMPORT VAT", "description": "Import VAT", "percentage": "20.00", "purchase_behavior": "import_vat", "sales_behavior": "outside_scope", "box_sales_vat": "", "box_purchase_vat": "4", "box_sales_net": "", "box_purchase_net": "7"},
+    {"code": "EXPORT", "description": "Export outside UK", "percentage": "0.00", "purchase_behavior": "outside_scope", "sales_behavior": "export", "box_sales_vat": "", "box_purchase_vat": "", "box_sales_net": "6", "box_purchase_net": ""},
+]
+
+
+def serialize_vat_code(row: dict) -> dict:
+    row = dict(row)
+    row["percentage"] = money_str(money(row.get("percentage")))
+    row["active"] = bool(row.get("active", True))
+    row["system_code"] = bool(row.get("system_code", False))
+    return row
+
+
+def serialize_vat_period(row: dict) -> dict:
+    row = dict(row)
+    for key in ("output_vat", "input_vat", "net_vat"):
+        row[key] = money_str(money(row.get(key)))
+    return row
+
+
+def serialize_vat_adjustment(row: dict) -> dict:
+    row = dict(row)
+    for key in ("net_amount", "vat_amount", "gross_amount"):
+        row[key] = money_str(money(row.get(key)))
+    return row
+
+
+async def ensure_vat_settings(session: AsyncSession, client_id: str) -> dict:
+    row = await one(session, select(accounting_vat_settings).where(accounting_vat_settings.c.client_id == client_id))
+    if row:
+        return row
+    today = datetime.now(timezone.utc).date()
+    quarter_start_month = (((today.month - 1) // 3) * 3) + 1
+    now = utc_now_iso()
+    row = {
+        "id": new_id(),
+        "client_id": client_id,
+        "vat_registration_number": "",
+        "vat_scheme": "standard",
+        "vat_frequency": "quarterly",
+        "vat_start_date": date(today.year, quarter_start_month, 1).isoformat(),
+        "default_purchase_vat_code": "20% S",
+        "default_sales_vat_code": "20% S",
+        "default_bank_vat_code": "NO VAT",
+        "flat_rate_percentage": "0.00",
+        "cash_accounting": False,
+        "accrual_accounting": True,
+        "mtd_enabled": False,
+        "hmrc_connection_status": "not_connected",
+        "created_at": now,
+        "updated_at": now,
+    }
+    await session.execute(insert(accounting_vat_settings).values(**row))
+    return row
+
+
+async def ensure_vat_codes(session: AsyncSession, client_id: str) -> list[dict]:
+    existing = await many(session, select(accounting_vat_codes).where(accounting_vat_codes.c.client_id == client_id).order_by(accounting_vat_codes.c.code.asc()))
+    if existing:
+        return existing
+    now = utc_now_iso()
+    rows = []
+    for item in DEFAULT_NATIVE_VAT_CODES:
+        row = {"id": new_id(), "client_id": client_id, "active": True, "system_code": True, "created_at": now, "updated_at": now, **item}
+        rows.append(row)
+    await session.execute(insert(accounting_vat_codes), rows)
+    return rows
+
+
+def vat_period_months(frequency: str) -> int:
+    value = str(frequency or "quarterly").lower()
+    if value == "monthly":
+        return 1
+    if value == "annual":
+        return 12
+    return 3
+
+
+def vat_period_due_date(period_end: date) -> date:
+    return add_months_to_date(period_end, 1) + timedelta(days=7)
+
+
+def find_vat_period_for_date(periods: list[dict], value: str) -> Optional[dict]:
+    iso = str(value or "")[:10]
+    for period in periods:
+        if str(period.get("period_start") or "") <= iso <= str(period.get("period_end") or ""):
+            return period
+    return None
+
+
+async def ensure_vat_periods(session: AsyncSession, client_id: str, settings_row: Optional[dict] = None) -> list[dict]:
+    settings_row = settings_row or await ensure_vat_settings(session, client_id)
+    periods = await many(session, select(accounting_vat_periods).where(accounting_vat_periods.c.client_id == client_id).order_by(accounting_vat_periods.c.period_start.asc()))
+    today = datetime.now(timezone.utc).date()
+    if periods:
+        return periods
+    start = parse_date_or_today(settings_row.get("vat_start_date") or today.isoformat())
+    months = vat_period_months(settings_row.get("vat_frequency"))
+    rows = []
+    now = utc_now_iso()
+    cursor = start
+    while cursor <= add_months_to_date(today, 18):
+        period_end = add_months_to_date(cursor, months) - timedelta(days=1)
+        rows.append({
+            "id": new_id(),
+            "client_id": client_id,
+            "period_start": cursor.isoformat(),
+            "period_end": period_end.isoformat(),
+            "due_date": vat_period_due_date(period_end).isoformat(),
+            "status": "open",
+            "created_at": now,
+            "updated_at": now,
+        })
+        cursor = period_end + timedelta(days=1)
+    await session.execute(insert(accounting_vat_periods), rows)
+    return rows
+
+
+def vat_source_module(source_type: str) -> str:
+    if source_type.startswith("ap_"):
+        return "Accounts Payable"
+    if source_type.startswith("ar_"):
+        return "Accounts Receivable"
+    if source_type.startswith("bank_"):
+        return "Banking"
+    return "General Ledger"
+
+
+def vat_document_type(source_type: str) -> str:
+    labels = {
+        "ap_invoice": "Purchase Invoice",
+        "ap_credit_note": "Purchase Credit Note",
+        "ar_invoice": "Sales Invoice",
+        "ar_credit_note": "Sales Credit Note",
+        "vat_adjustment": "VAT Adjustment",
+    }
+    return labels.get(source_type, source_type.replace("_", " ").title())
+
+
+def apply_vat_box(boxes: dict[str, Decimal], box: str, amount: Decimal) -> None:
+    if not box:
+        return
+    key = f"box{box}"
+    if key in boxes:
+        boxes[key] += amount
+
+
+async def vat_transactions_for_client(session: AsyncSession, client_id: str) -> list[dict]:
+    codes = {str(c.get("code") or "").lower(): c for c in await ensure_vat_codes(session, client_id)}
+    periods = await ensure_vat_periods(session, client_id)
+    transactions: list[dict] = []
+
+    def add_transaction(row: dict, line: dict, date_key: str, number_key: str, source_type: str, direction: str, sign: Decimal = Decimal("1")):
+        net = money(line.get("net_amount")) * sign
+        vat = money(line.get("vat_amount")) * sign
+        gross = money(line.get("gross_amount")) * sign
+        code = str(line.get("vat_code") or "").strip()
+        if not code and vat == 0 and net == 0:
+            return
+        code_row = codes.get(code.lower(), {})
+        period = find_vat_period_for_date(periods, str(row.get(date_key) or ""))
+        transactions.append({
+            "id": str(line.get("id") or new_id()),
+            "date": str(row.get(date_key) or ""),
+            "source_module": vat_source_module(source_type),
+            "source_type": source_type,
+            "document_type": vat_document_type(source_type),
+            "document_number": str(row.get(number_key) or row.get("reference") or row.get("id") or ""),
+            "source_id": str(row.get("id") or ""),
+            "account": str(line.get("nominal_account_code") or ""),
+            "vat_code": code,
+            "vat_code_description": str(code_row.get("description") or ""),
+            "net": money_str(net),
+            "vat": money_str(vat),
+            "gross": money_str(gross),
+            "direction": direction,
+            "vat_period_id": period.get("id") if period else None,
+            "vat_period": f"{period.get('period_start')} to {period.get('period_end')}" if period else "Unassigned",
+            "status": period.get("status") if period else "unassigned",
+            "box_sales_vat": code_row.get("box_sales_vat") or "",
+            "box_purchase_vat": code_row.get("box_purchase_vat") or "",
+            "box_sales_net": code_row.get("box_sales_net") or "",
+            "box_purchase_net": code_row.get("box_purchase_net") or "",
+        })
+
+    ap_invoices = await many(session, select(accounting_ap_invoices).where(accounting_ap_invoices.c.client_id == client_id, accounting_ap_invoices.c.posted_journal_id.isnot(None)))
+    if ap_invoices:
+        rows = await many(session, select(accounting_ap_invoice_lines).where(accounting_ap_invoice_lines.c.invoice_id.in_([r["id"] for r in ap_invoices])))
+        by_id = {str(r["id"]): r for r in ap_invoices}
+        for line in rows:
+            add_transaction(by_id.get(str(line.get("invoice_id")), {}), line, "invoice_date", "invoice_number", "ap_invoice", "purchase")
+
+    ap_credits = await many(session, select(accounting_ap_credit_notes).where(accounting_ap_credit_notes.c.client_id == client_id, accounting_ap_credit_notes.c.posted_journal_id.isnot(None)))
+    if ap_credits:
+        rows = await many(session, select(accounting_ap_credit_note_lines).where(accounting_ap_credit_note_lines.c.credit_note_id.in_([r["id"] for r in ap_credits])))
+        by_id = {str(r["id"]): r for r in ap_credits}
+        for line in rows:
+            add_transaction(by_id.get(str(line.get("credit_note_id")), {}), line, "credit_note_date", "credit_note_number", "ap_credit_note", "purchase", Decimal("-1"))
+
+    ar_invoices = await many(session, select(accounting_ar_invoices).where(accounting_ar_invoices.c.client_id == client_id, accounting_ar_invoices.c.posted_journal_id.isnot(None)))
+    if ar_invoices:
+        rows = await many(session, select(accounting_ar_invoice_lines).where(accounting_ar_invoice_lines.c.invoice_id.in_([r["id"] for r in ar_invoices])))
+        by_id = {str(r["id"]): r for r in ar_invoices}
+        for line in rows:
+            add_transaction(by_id.get(str(line.get("invoice_id")), {}), line, "invoice_date", "invoice_number", "ar_invoice", "sales")
+
+    ar_credits = await many(session, select(accounting_ar_credit_notes).where(accounting_ar_credit_notes.c.client_id == client_id, accounting_ar_credit_notes.c.posted_journal_id.isnot(None)))
+    if ar_credits:
+        rows = await many(session, select(accounting_ar_credit_note_lines).where(accounting_ar_credit_note_lines.c.credit_note_id.in_([r["id"] for r in ar_credits])))
+        by_id = {str(r["id"]): r for r in ar_credits}
+        for line in rows:
+            add_transaction(by_id.get(str(line.get("credit_note_id")), {}), line, "credit_note_date", "credit_note_number", "ar_credit_note", "sales", Decimal("-1"))
+
+    adjustments = await many(session, select(accounting_vat_adjustments).where(accounting_vat_adjustments.c.client_id == client_id).order_by(accounting_vat_adjustments.c.adjustment_date.desc()))
+    for adjustment in adjustments:
+        period = find_vat_period_for_date(periods, str(adjustment.get("adjustment_date") or ""))
+        code = str(adjustment.get("vat_code") or "").strip()
+        code_row = codes.get(code.lower(), {})
+        transactions.append({
+            "id": str(adjustment.get("id")),
+            "date": adjustment.get("adjustment_date"),
+            "source_module": "VAT",
+            "source_type": "vat_adjustment",
+            "document_type": "VAT Adjustment",
+            "document_number": adjustment.get("reason") or adjustment.get("id"),
+            "source_id": adjustment.get("id"),
+            "account": "2200",
+            "vat_code": code,
+            "vat_code_description": code_row.get("description") or "",
+            "net": money_str(money(adjustment.get("net_amount"))),
+            "vat": money_str(money(adjustment.get("vat_amount"))),
+            "gross": money_str(money(adjustment.get("gross_amount"))),
+            "direction": "adjustment",
+            "vat_period_id": period.get("id") if period else None,
+            "vat_period": f"{period.get('period_start')} to {period.get('period_end')}" if period else "Unassigned",
+            "status": period.get("status") if period else "unassigned",
+            "box_sales_vat": code_row.get("box_sales_vat") or "1",
+            "box_purchase_vat": "",
+            "box_sales_net": "",
+            "box_purchase_net": "",
+        })
+
+    return sorted(transactions, key=lambda item: (str(item.get("date") or ""), str(item.get("document_number") or "")), reverse=True)
+
+
+def calculate_vat_boxes(transactions: list[dict]) -> dict[str, Decimal]:
+    boxes = {f"box{i}": Decimal("0.00") for i in range(1, 10)}
+    for item in transactions:
+        direction = str(item.get("direction") or "")
+        net = money(item.get("net")).copy_abs()
+        vat = money(item.get("vat")).copy_abs()
+        sign = Decimal("-1") if money(item.get("net")) < 0 or money(item.get("vat")) < 0 else Decimal("1")
+        if direction == "sales":
+            apply_vat_box(boxes, str(item.get("box_sales_vat") or ""), vat * sign)
+            apply_vat_box(boxes, str(item.get("box_sales_net") or ""), net * sign)
+        elif direction == "purchase":
+            apply_vat_box(boxes, str(item.get("box_purchase_vat") or ""), vat * sign)
+            apply_vat_box(boxes, str(item.get("box_purchase_net") or ""), net * sign)
+        else:
+            apply_vat_box(boxes, str(item.get("box_sales_vat") or "1"), money(item.get("vat")))
+    boxes["box3"] = boxes["box1"] + boxes["box2"]
+    boxes["box5"] = boxes["box3"] - boxes["box4"]
+    return boxes
+
+
+async def vat_engine_workspace(session: AsyncSession, client_id: str) -> dict:
+    settings_row = await ensure_vat_settings(session, client_id)
+    codes = await ensure_vat_codes(session, client_id)
+    periods = await ensure_vat_periods(session, client_id, settings_row)
+    transactions = await vat_transactions_for_client(session, client_id)
+    period_totals: dict[str, dict] = {}
+    for period in periods:
+        period_totals[str(period.get("id"))] = {"output": Decimal("0.00"), "input": Decimal("0.00"), "net": Decimal("0.00"), "count": 0}
+    for item in transactions:
+        pid = str(item.get("vat_period_id") or "")
+        if pid not in period_totals:
+            continue
+        total = period_totals[pid]
+        vat = money(item.get("vat"))
+        if item.get("direction") == "purchase":
+            total["input"] += vat
+        else:
+            total["output"] += vat
+        total["net"] = total["output"] - total["input"]
+        total["count"] += 1
+    serialized_periods = []
+    for period in periods:
+        item = serialize_vat_period(period)
+        totals = period_totals.get(str(period.get("id")), {})
+        item["output_vat"] = money_str(totals.get("output", Decimal("0.00")))
+        item["input_vat"] = money_str(totals.get("input", Decimal("0.00")))
+        item["net_vat"] = money_str(totals.get("net", Decimal("0.00")))
+        item["transaction_count"] = totals.get("count", 0)
+        serialized_periods.append(item)
+    today = datetime.now(timezone.utc).date().isoformat()
+    current_period = next((p for p in serialized_periods if str(p.get("period_start")) <= today <= str(p.get("period_end"))), serialized_periods[0] if serialized_periods else None)
+    current_transactions = [t for t in transactions if current_period and t.get("vat_period_id") == current_period.get("id")]
+    boxes = calculate_vat_boxes(current_transactions)
+    returns = [serialize_vat_return(r) for r in await many(session, select(accounting_vat_returns).where(accounting_vat_returns.c.client_id == client_id).order_by(accounting_vat_returns.c.period_end.desc(), accounting_vat_returns.c.created_at.desc()))]
+    adjustments = [serialize_vat_adjustment(a) for a in await many(session, select(accounting_vat_adjustments).where(accounting_vat_adjustments.c.client_id == client_id).order_by(accounting_vat_adjustments.c.adjustment_date.desc(), accounting_vat_adjustments.c.created_at.desc()))]
+    dashboard = {
+        "current_vat_liability": money_str(boxes["box5"]),
+        "vat_due_to_hmrc": money_str(max(boxes["box5"], Decimal("0.00"))),
+        "vat_recoverable": money_str(boxes["box4"]),
+        "current_period": f"{current_period.get('period_start')} to {current_period.get('period_end')}" if current_period else "-",
+        "next_return_due": current_period.get("due_date") if current_period else None,
+        "outstanding_returns": len([p for p in serialized_periods if p.get("status") == "open" and str(p.get("due_date") or "") <= today]),
+        "progress": int(min(100, max(0, (len(current_transactions) / 25) * 100))) if current_transactions else 0,
+        "output_vat": money_str(boxes["box1"] + boxes["box2"]),
+        "input_vat": money_str(boxes["box4"]),
+        "net_vat_due": money_str(boxes["box5"]),
+    }
+    return {
+        "settings": dict(settings_row),
+        "codes": [serialize_vat_code(c) for c in codes],
+        "periods": serialized_periods,
+        "transactions": transactions,
+        "returns": returns,
+        "adjustments": adjustments,
+        "current_boxes": {key: money_str(value) for key, value in boxes.items()},
+        "dashboard": dashboard,
+        "reports": {
+            "vat_by_nominal": [],
+            "vat_by_supplier": [],
+            "vat_by_customer": [],
+            "exceptions": [t for t in transactions if not t.get("vat_period_id") or not t.get("vat_code")],
+        },
+    }
+
+
 def serialize_period(row: dict) -> dict:
     return dict(row)
 
@@ -3513,6 +3947,7 @@ async def get_native_accounting_workspace(
         "banking": await banking_workspace(session, client_id, accounts),
         "bank_transactions": [serialize_bank_transaction(t) for t in (await many(session, select(accounting_bank_transactions).where(accounting_bank_transactions.c.client_id == client_id).order_by(accounting_bank_transactions.c.transaction_date.desc(), accounting_bank_transactions.c.created_at.desc())))],
         "vat_returns": [serialize_vat_return(r) for r in vat_returns],
+        "vat_engine": await vat_engine_workspace(session, client_id),
         "periods": [serialize_period(p) for p in periods],
         "audit_log": [serialize_audit_event(e) for e in audit_events],
         "reports": await native_accounting_reports(session, client_id),
@@ -5221,38 +5656,20 @@ async def prepare_native_vat_return(
         raise HTTPException(status_code=400, detail="Enable EPOS native accounting before preparing VAT returns.")
     period_start = str(payload.get("period_start") or "").strip()
     period_end = str(payload.get("period_end") or "").strip()
+    period_id = str(payload.get("period_id") or "").strip()
+    if period_id:
+        period = await one(session, select(accounting_vat_periods).where(accounting_vat_periods.c.client_id == client_id, accounting_vat_periods.c.id == period_id))
+        if not period:
+            raise HTTPException(status_code=404, detail="VAT period not found.")
+        period_start = str(period.get("period_start") or "")
+        period_end = str(period.get("period_end") or "")
     if not period_start or not period_end:
         raise HTTPException(status_code=400, detail="Period start and end are required.")
-    journals = await many(
-        session,
-        select(accounting_journal_entries).where(
-            accounting_journal_entries.c.client_id == client_id,
-            accounting_journal_entries.c.entry_date >= period_start,
-            accounting_journal_entries.c.entry_date <= period_end,
-            accounting_journal_entries.c.status == "posted",
-        ),
-    )
-    journal_ids = [str(j["id"]) for j in journals]
-    lines = []
-    if journal_ids:
-        lines = await many(session, select(accounting_journal_lines).where(accounting_journal_lines.c.entry_id.in_(journal_ids)))
-    vat_due_sales = Decimal("0.00")
-    vat_reclaimed_purchases = Decimal("0.00")
-    sales_net = Decimal("0.00")
-    purchase_net = Decimal("0.00")
-    for line in lines:
-        code = str(line.get("account_code") or "")
-        debit = money(line.get("debit"))
-        credit = money(line.get("credit"))
-        if code == "2200":
-            if credit:
-                vat_due_sales += credit
-            if debit:
-                vat_reclaimed_purchases += debit
-        elif code.startswith("4"):
-            sales_net += credit - debit
-        elif code.startswith("5"):
-            purchase_net += debit - credit
+    transactions = [
+        item for item in await vat_transactions_for_client(session, client_id)
+        if period_start <= str(item.get("date") or "") <= period_end
+    ]
+    boxes = calculate_vat_boxes(transactions)
     now = utc_now_iso()
     row = {
         "id": new_id(),
@@ -5260,19 +5677,196 @@ async def prepare_native_vat_return(
         "period_start": period_start,
         "period_end": period_end,
         "status": "draft",
-        "vat_due_sales": money_str(vat_due_sales),
-        "vat_reclaimed_purchases": money_str(vat_reclaimed_purchases),
-        "net_vat_due": money_str(vat_due_sales - vat_reclaimed_purchases),
-        "sales_net": money_str(sales_net),
-        "purchase_net": money_str(purchase_net),
-        "prepared_json": json.dumps({"journal_count": len(journals), "line_count": len(lines)}),
+        "vat_due_sales": money_str(boxes["box1"] + boxes["box2"]),
+        "vat_reclaimed_purchases": money_str(boxes["box4"]),
+        "net_vat_due": money_str(boxes["box5"]),
+        "sales_net": money_str(boxes["box6"] + boxes["box8"]),
+        "purchase_net": money_str(boxes["box7"] + boxes["box9"]),
+        "box1": money_str(boxes["box1"]),
+        "box2": money_str(boxes["box2"]),
+        "box3": money_str(boxes["box3"]),
+        "box4": money_str(boxes["box4"]),
+        "box5": money_str(boxes["box5"]),
+        "box6": money_str(boxes["box6"]),
+        "box7": money_str(boxes["box7"]),
+        "box8": money_str(boxes["box8"]),
+        "box9": money_str(boxes["box9"]),
+        "prepared_json": json.dumps({"transaction_count": len(transactions), "source": "vat_engine"}),
         "created_at": now,
         "updated_at": now,
     }
     await session.execute(insert(accounting_vat_returns).values(**row))
+    if period_id:
+        await session.execute(update(accounting_vat_periods).where(accounting_vat_periods.c.id == period_id).values(status="locked", output_vat=row["vat_due_sales"], input_vat=row["vat_reclaimed_purchases"], net_vat=row["net_vat_due"], transaction_count=len(transactions), updated_at=now))
     await add_accounting_audit(session, client_id, user.get("id"), "vat_return_prepared", "vat_return", row["id"], row)
     await session.commit()
     return serialize_vat_return(row)
+
+
+@api.post("/admin/accounting/clients/{client_id}/vat/codes")
+async def create_native_vat_code(
+    client_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_native_accounting_client(session, client_id)
+    code = str(payload.get("code") or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="VAT code is required.")
+    existing = await one(session, select(accounting_vat_codes).where(accounting_vat_codes.c.client_id == client_id, func.lower(accounting_vat_codes.c.code) == code.lower()))
+    if existing:
+        raise HTTPException(status_code=400, detail="VAT code already exists.")
+    now = utc_now_iso()
+    row = {
+        "id": new_id(),
+        "client_id": client_id,
+        "code": code,
+        "description": str(payload.get("description") or "").strip(),
+        "percentage": money_str(money(payload.get("percentage"))),
+        "purchase_behavior": str(payload.get("purchase_behavior") or "recoverable"),
+        "sales_behavior": str(payload.get("sales_behavior") or "output"),
+        "box_sales_vat": str(payload.get("box_sales_vat") or ""),
+        "box_purchase_vat": str(payload.get("box_purchase_vat") or ""),
+        "box_sales_net": str(payload.get("box_sales_net") or ""),
+        "box_purchase_net": str(payload.get("box_purchase_net") or ""),
+        "active": bool(payload.get("active", True)),
+        "system_code": False,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await session.execute(insert(accounting_vat_codes).values(**row))
+    await add_accounting_audit(session, client_id, user.get("id"), "vat_code_created", "vat", row["id"], row)
+    await session.commit()
+    return serialize_vat_code(row)
+
+
+@api.put("/admin/accounting/clients/{client_id}/vat/codes/{code_id}")
+async def update_native_vat_code(
+    client_id: str,
+    code_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    row = await one(session, select(accounting_vat_codes).where(accounting_vat_codes.c.client_id == client_id, accounting_vat_codes.c.id == code_id))
+    if not row:
+        raise HTTPException(status_code=404, detail="VAT code not found.")
+    values = {key: payload[key] for key in ("description", "purchase_behavior", "sales_behavior", "box_sales_vat", "box_purchase_vat", "box_sales_net", "box_purchase_net") if key in payload}
+    if "percentage" in payload:
+        values["percentage"] = money_str(money(payload.get("percentage")))
+    if "active" in payload:
+        values["active"] = bool(payload.get("active"))
+    values["updated_at"] = utc_now_iso()
+    await session.execute(update(accounting_vat_codes).where(accounting_vat_codes.c.id == code_id).values(**values))
+    await add_accounting_audit(session, client_id, user.get("id"), "vat_code_updated", "vat", code_id, {"previous": dict(row), "new": values})
+    await session.commit()
+    updated = await one(session, select(accounting_vat_codes).where(accounting_vat_codes.c.id == code_id))
+    return serialize_vat_code(updated)
+
+
+@api.put("/admin/accounting/clients/{client_id}/vat/settings")
+async def update_native_vat_settings(
+    client_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    row = await ensure_vat_settings(session, client_id)
+    values = {key: payload[key] for key in (
+        "vat_registration_number", "vat_scheme", "vat_frequency", "vat_start_date",
+        "default_purchase_vat_code", "default_sales_vat_code", "default_bank_vat_code",
+        "hmrc_connection_status"
+    ) if key in payload}
+    for key in ("cash_accounting", "accrual_accounting", "mtd_enabled"):
+        if key in payload:
+            values[key] = bool(payload.get(key))
+    if "flat_rate_percentage" in payload:
+        values["flat_rate_percentage"] = money_str(money(payload.get("flat_rate_percentage")))
+    values["updated_at"] = utc_now_iso()
+    await session.execute(update(accounting_vat_settings).where(accounting_vat_settings.c.id == row["id"]).values(**values))
+    await add_accounting_audit(session, client_id, user.get("id"), "vat_settings_updated", "vat", row["id"], {"previous": dict(row), "new": values})
+    await session.commit()
+    return dict(await one(session, select(accounting_vat_settings).where(accounting_vat_settings.c.id == row["id"])))
+
+
+@api.post("/admin/accounting/clients/{client_id}/vat/periods/{period_id}/{action}")
+async def update_native_vat_period_status(
+    client_id: str,
+    period_id: str,
+    action: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    period = await one(session, select(accounting_vat_periods).where(accounting_vat_periods.c.client_id == client_id, accounting_vat_periods.c.id == period_id))
+    if not period:
+        raise HTTPException(status_code=404, detail="VAT period not found.")
+    status_map = {"open": "open", "lock": "locked", "close": "closed", "reopen": "open"}
+    if action not in status_map:
+        raise HTTPException(status_code=400, detail="VAT period action must be open, lock, close or reopen.")
+    await session.execute(update(accounting_vat_periods).where(accounting_vat_periods.c.id == period_id).values(status=status_map[action], updated_at=utc_now_iso()))
+    await add_accounting_audit(session, client_id, user.get("id"), f"vat_period_{action}", "vat", period_id, {"previous_status": period.get("status"), "new_status": status_map[action]})
+    await session.commit()
+    return {"ok": True, "status": status_map[action]}
+
+
+@api.post("/admin/accounting/clients/{client_id}/vat/adjustments")
+async def create_native_vat_adjustment(
+    client_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    accounts = await ensure_native_accounting_client(session, client_id)
+    settings_row = await ensure_accounting_settings(session, client_id)
+    date_value = parse_date_or_today(payload.get("adjustment_date")).isoformat()
+    vat_amount = money(payload.get("vat_amount"))
+    if vat_amount == 0:
+        raise HTTPException(status_code=400, detail="VAT adjustment amount is required.")
+    notes = str(payload.get("notes") or "").strip()
+    if not notes:
+        raise HTTPException(status_code=400, detail="VAT adjustment notes are required.")
+    vat_account = find_native_account(accounts, settings_row.get("default_vat_control_account"), "2200")
+    suspense = find_native_account(accounts, settings_row.get("default_suspense_account"), "9999")
+    adjustment_id = new_id()
+    debit_vat = vat_amount > 0
+    journal = await post_native_journal(
+        session,
+        client_id,
+        "vat_adjustment",
+        adjustment_id,
+        date_value,
+        str(payload.get("reason") or "VAT adjustment"),
+        notes,
+        [
+            {"account": vat_account if debit_vat else suspense, "debit": money_str(abs(vat_amount)), "credit": "0.00", "vat_code": payload.get("vat_code"), "description": notes},
+            {"account": suspense if debit_vat else vat_account, "debit": "0.00", "credit": money_str(abs(vat_amount)), "vat_code": payload.get("vat_code"), "description": notes},
+        ],
+        user.get("id"),
+    )
+    now = utc_now_iso()
+    row = {
+        "id": adjustment_id,
+        "client_id": client_id,
+        "vat_period_id": str(payload.get("vat_period_id") or ""),
+        "adjustment_date": date_value,
+        "adjustment_type": str(payload.get("adjustment_type") or "manual"),
+        "vat_code": str(payload.get("vat_code") or ""),
+        "reason": str(payload.get("reason") or "VAT adjustment"),
+        "notes": notes,
+        "net_amount": money_str(money(payload.get("net_amount"))),
+        "vat_amount": money_str(vat_amount),
+        "gross_amount": money_str(money(payload.get("gross_amount"))),
+        "status": "posted",
+        "journal_entry_id": journal.get("id"),
+        "created_by": user.get("id"),
+        "created_at": now,
+        "updated_at": now,
+    }
+    await session.execute(insert(accounting_vat_adjustments).values(**row))
+    await add_accounting_audit(session, client_id, user.get("id"), "vat_adjustment_created", "vat", adjustment_id, row)
+    await session.commit()
+    return serialize_vat_adjustment(row)
 
 
 @api.post("/admin/accounting/clients/{client_id}/periods")
