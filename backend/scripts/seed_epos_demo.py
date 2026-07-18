@@ -1261,10 +1261,31 @@ class DemoBuilder:
         return templates, workflows, runs, approvals, exceptions
 
 
-async def seed(scale: str):
+async def demo_client_exists() -> bool:
+    async with server.SessionLocal() as session:
+        result = await session.execute(select(server.users.c.id).where(server.users.c.id == DEMO_CLIENT_ID))
+        return result.scalar_one_or_none() is not None
+
+
+async def seed(scale: str, if_missing: bool = False):
     async with server.engine.begin() as conn:
         await conn.run_sync(server.metadata.create_all)
         await server.ensure_schema_columns(conn)
+
+    if if_missing and await demo_client_exists():
+        print(
+            json.dumps(
+                {
+                    "skipped": True,
+                    "reason": "Demo client already exists.",
+                    "client": DEMO_BUSINESS_NAME,
+                    "client_id": DEMO_CLIENT_ID,
+                    "login_email": DEMO_EMAIL,
+                },
+                indent=2,
+            )
+        )
+        return
 
     builder = DemoBuilder(scale)
     supplier_rows = suppliers()
@@ -1572,8 +1593,9 @@ async def seed(scale: str):
 def main():
     parser = argparse.ArgumentParser(description="Seed the EPOS Accountancy Demo account as a normal live client.")
     parser.add_argument("--scale", choices=["quick", "full"], default="full", help="Use quick for local smoke tests or full for pilot-scale demo data.")
+    parser.add_argument("--if-missing", action="store_true", help="Skip without changing data when the demo client already exists.")
     args = parser.parse_args()
-    asyncio.run(seed(args.scale))
+    asyncio.run(seed(args.scale, if_missing=args.if_missing))
 
 
 if __name__ == "__main__":
