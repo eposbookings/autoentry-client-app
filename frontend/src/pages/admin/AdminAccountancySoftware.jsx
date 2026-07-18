@@ -3445,7 +3445,7 @@ function AIAccountingWorkspace({ workspace, activeTab }) {
 function AIOverview({ ai }) {
   return (
     <div className="space-y-4">
-      <AIKpiGrid kpis={ai.kpis || []} />
+      <AIKpiGrid kpis={ai.kpis} />
       <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
         <AIWorkQueue ai={ai} compact />
         <AIHealthCheck ai={ai} compact />
@@ -3460,9 +3460,10 @@ function AIOverview({ ai }) {
 }
 
 function AIKpiGrid({ kpis }) {
+  const rows = Array.isArray(kpis) ? kpis : [];
   return (
     <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-5">
-      {kpis.map((item) => (
+      {rows.map((item) => (
         <button key={item.label} type="button" className="rounded-md border border-stone-200 bg-white p-4 text-left shadow-sm transition hover:border-emerald-200 hover:bg-emerald-50/40">
           <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-stone-500">
             <Sparkles className="h-3.5 w-3.5 text-emerald-700" /> {item.module}
@@ -3471,7 +3472,7 @@ function AIKpiGrid({ kpis }) {
           <span className="mt-1 block text-sm text-stone-600">{item.label}</span>
         </button>
       ))}
-      {!kpis.length && <EmptyAIState title="No AI workspace data yet" detail="Open a native accounting client with activity to populate the command centre." />}
+      {!rows.length && <EmptyAIState title="No AI workspace data yet" detail="Open a native accounting client with activity to populate the command centre." />}
     </div>
   );
 }
@@ -3486,7 +3487,7 @@ function AIWorkQueue({ ai, compact = false }) {
     <Panel title={compact ? "My Work Queue" : "My Work Queue"}>
       <div className="grid gap-3">
         {groups.map(([key, label, tone]) => {
-          const rows = ai.work_queue?.[key] || [];
+          const rows = Array.isArray(ai.work_queue?.[key]) ? ai.work_queue[key] : [];
           return (
             <section key={key} className="rounded-md border border-stone-200 bg-white">
               <div className="flex items-center justify-between border-b border-stone-100 px-4 py-3">
@@ -3515,7 +3516,7 @@ function AIWorkQueue({ ai, compact = false }) {
 }
 
 function AIInsights({ ai, compact = false }) {
-  const rows = ai.insights || [];
+  const rows = Array.isArray(ai.insights) ? ai.insights : [];
   return (
     <Panel title="Insights">
       <div className="grid gap-3">
@@ -3541,7 +3542,7 @@ function AIExceptions({ ai }) {
   return (
     <Panel title="Exceptions">
       <ReportTable
-        rows={ai.exceptions || []}
+        rows={ai.exceptions}
         empty="No exceptions detected."
         columns={[
           { key: "severity", label: "Severity" },
@@ -3559,7 +3560,7 @@ function AIApprovals({ ai }) {
   return (
     <Panel title="Approvals">
       <ReportTable
-        rows={ai.approvals || []}
+        rows={ai.approvals}
         empty="No approvals waiting."
         columns={[
           { key: "date", label: "Date", type: "date" },
@@ -3579,7 +3580,7 @@ function AIDeadlines({ ai }) {
   return (
     <Panel title="Deadlines">
       <ReportTable
-        rows={ai.deadlines || []}
+        rows={ai.deadlines}
         empty="No upcoming accounting deadlines."
         columns={[
           { key: "module", label: "Module" },
@@ -3609,7 +3610,7 @@ function AIHealthCheck({ ai, compact = false }) {
           </div>
         </div>
         <div className="grid gap-3">
-          {(health.categories || []).slice(0, compact ? 4 : 50).map((item) => (
+          {(Array.isArray(health.categories) ? health.categories : []).slice(0, compact ? 4 : 50).map((item) => (
             <div key={item.area} className="rounded-md border border-stone-200 bg-white p-4">
               <div className="flex items-center justify-between gap-3">
                 <div>
@@ -3627,7 +3628,7 @@ function AIHealthCheck({ ai, compact = false }) {
 }
 
 function AIAssistant({ ai }) {
-  const questions = ai.assistant?.suggested_questions || [];
+  const questions = Array.isArray(ai.assistant?.suggested_questions) ? ai.assistant.suggested_questions : [];
   const answers = ai.assistant?.answers || {};
   const [question, setQuestion] = useState(questions[0] || "");
   const answer = answers[question] || "This assistant is rule-based at the moment. Choose a suggested question to inspect the current accounting workspace.";
@@ -3660,7 +3661,7 @@ function AIGlobalSearch({ ai }) {
   const [query, setQuery] = useState("");
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const index = ai.global_search?.index || [];
+    const index = Array.isArray(ai.global_search?.index) ? ai.global_search.index : [];
     if (!q) return index.slice(0, 12);
     return index.filter((item) => Object.values(item).join(" ").toLowerCase().includes(q)).slice(0, 25);
   }, [ai.global_search, query]);
@@ -3687,7 +3688,7 @@ function AIGlobalSearch({ ai }) {
 }
 
 function AINotifications({ ai }) {
-  const rows = ai.notifications || [];
+  const rows = Array.isArray(ai.notifications) ? ai.notifications : [];
   return (
     <Panel title="Notifications">
       <div className="grid gap-3">
@@ -3723,13 +3724,13 @@ function AIWorkspaceSettings({ ai }) {
         <div className="rounded-md border border-stone-200 bg-white p-4 md:col-span-2">
           <Label>Visible KPI cards</Label>
           <div className="mt-3 flex flex-wrap gap-2">
-            {(settings.kpi_visibility || []).map((item) => <Badge key={item} variant="secondary">{item}</Badge>)}
+            {(Array.isArray(settings.kpi_visibility) ? settings.kpi_visibility : []).map((item) => <Badge key={item} variant="secondary">{item}</Badge>)}
           </div>
         </div>
         <div className="rounded-md border border-stone-200 bg-white p-4 md:col-span-2">
           <Label>Work queue priorities</Label>
           <div className="mt-3 flex flex-wrap gap-2">
-            {(settings.work_queue_priorities || []).map((item) => <Badge key={item}>{item}</Badge>)}
+            {(Array.isArray(settings.work_queue_priorities) ? settings.work_queue_priorities : []).map((item) => <Badge key={item}>{item}</Badge>)}
           </div>
         </div>
       </div>
@@ -4073,12 +4074,13 @@ function ReportActionBar({ title, rows }) {
 
 function ExpandableReportRows({ title, rows }) {
   const [openCode, setOpenCode] = useState("");
-  if (!rows?.length) return null;
+  const safeRows = Array.isArray(rows) ? rows : [];
+  if (!safeRows.length) return null;
   return (
     <div className="mt-3 rounded-md border border-stone-100">
       <div className="bg-stone-50 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-stone-500">{title}</div>
       <div className="divide-y divide-stone-100">
-        {rows.map((row) => {
+        {safeRows.map((row) => {
           const isOpen = openCode === row.code;
           return (
             <div key={row.code}>
@@ -4096,19 +4098,37 @@ function ExpandableReportRows({ title, rows }) {
 }
 
 function ReportTable({ rows, columns, empty, compact = false }) {
-  if (!rows?.length) return <p className="py-8 text-center text-sm text-stone-500">{empty || "No report rows yet."}</p>;
+  const safeRows = Array.isArray(rows) ? rows : [];
+  const safeColumns = (Array.isArray(columns) ? columns : []).map((column) => {
+    if (Array.isArray(column)) {
+      const [key, label, type] = column;
+      return { key, label: label || key, type };
+    }
+    if (column && typeof column === "object") {
+      return {
+        key: column.key,
+        label: column.label || column.key,
+        type: column.type,
+      };
+    }
+    return null;
+  }).filter((column) => column?.key);
+
+  if (!safeRows.length) return <p className="py-8 text-center text-sm text-stone-500">{empty || "No report rows yet."}</p>;
+  if (!safeColumns.length) return <p className="py-8 text-center text-sm text-stone-500">No columns configured for this report.</p>;
+
   return (
     <div className="overflow-auto">
       <table className="min-w-full text-left text-sm">
         <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
           <tr>
-            {columns.map(([key, label]) => <th key={key} className={`px-3 ${compact ? "py-1.5" : "py-2"}`}>{label}</th>)}
+            {safeColumns.map(({ key, label }) => <th key={key} className={`px-3 ${compact ? "py-1.5" : "py-2"}`}>{label}</th>)}
           </tr>
         </thead>
         <tbody>
-          {rows.map((row, index) => (
+          {safeRows.map((row, index) => (
             <tr key={row.id || row.code || `${row.reference || row.name || row.description || "row"}-${index}`} className="border-t border-stone-100">
-              {columns.map(([key, , type]) => (
+              {safeColumns.map(({ key, type }) => (
                 <td key={key} className={`px-3 ${compact ? "py-1.5" : "py-2"} ${type === "money" ? "text-right font-medium" : ""}`}>
                   {type === "money" ? formatMoney(row[key]) : type === "date" ? formatDate(row[key]) : row[key] ?? "-"}
                 </td>
@@ -4195,14 +4215,20 @@ function AgedBalanceTable({ title, rows, empty }) {
 }
 
 function ReportRows({ rows }) {
+  const safeRows = Array.isArray(rows) ? rows : [];
   return (
     <div className="divide-y divide-stone-100">
-      {rows.map(([label, value]) => (
+      {safeRows.map((item) => {
+        const [label, value] = Array.isArray(item)
+          ? item
+          : [item?.label ?? item?.name ?? "Value", item?.value ?? item?.amount ?? ""];
+        return (
         <div key={label} className="flex items-center justify-between gap-4 py-2 text-sm">
           <span className="text-stone-600">{label}</span>
           <strong className="font-display text-stone-900">{formatReportValue(value)}</strong>
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
