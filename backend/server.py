@@ -1048,6 +1048,120 @@ accounting_financial_years = Table(
     Column("updated_at", String(64)),
 )
 
+accounting_fixed_asset_settings = Table(
+    "accounting_fixed_asset_settings",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, unique=True, index=True),
+    Column("default_depreciation_method", String(64), default="straight_line"),
+    Column("posting_frequency", String(32), default="monthly"),
+    Column("asset_number_prefix", String(32), default="FA"),
+    Column("next_asset_number", Integer, default=1),
+    Column("capitalisation_threshold", String(64), default="500.00"),
+    Column("default_fixed_asset_account", String(32), default="1500"),
+    Column("default_accumulated_depreciation_account", String(32), default="1590"),
+    Column("default_depreciation_expense_account", String(32), default="7000"),
+    Column("default_disposal_account", String(32), default="7010"),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_fixed_asset_categories = Table(
+    "accounting_fixed_asset_categories",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("name", String(255), nullable=False, index=True),
+    Column("description", Text),
+    Column("default_depreciation_method", String(64), default="straight_line"),
+    Column("default_useful_life_months", Integer, default=36),
+    Column("default_residual_value", String(64), default="0.00"),
+    Column("fixed_asset_account", String(32), default="1500"),
+    Column("accumulated_depreciation_account", String(32), default="1590"),
+    Column("depreciation_expense_account", String(32), default="7000"),
+    Column("active", Boolean, default=True, index=True),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_fixed_assets = Table(
+    "accounting_fixed_assets",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("asset_code", String(64), nullable=False, index=True),
+    Column("asset_name", String(255), nullable=False, index=True),
+    Column("description", Text),
+    Column("category_id", String(36), index=True),
+    Column("category_name", String(255)),
+    Column("location", String(255)),
+    Column("department", String(255)),
+    Column("serial_number", String(255)),
+    Column("manufacturer", String(255)),
+    Column("model", String(255)),
+    Column("supplier_id", String(36), index=True),
+    Column("supplier_name", String(255)),
+    Column("purchase_invoice_id", String(36), index=True),
+    Column("purchase_date", String(32), index=True),
+    Column("in_service_date", String(32), index=True),
+    Column("capitalisation_date", String(32), index=True),
+    Column("purchase_cost", String(64), default="0.00"),
+    Column("residual_value", String(64), default="0.00"),
+    Column("useful_life_months", Integer, default=36),
+    Column("depreciation_method", String(64), default="straight_line"),
+    Column("depreciation_frequency", String(32), default="monthly"),
+    Column("fixed_asset_account", String(32), default="1500"),
+    Column("accumulated_depreciation_account", String(32), default="1590"),
+    Column("depreciation_expense_account", String(32), default="7000"),
+    Column("accumulated_depreciation", String(64), default="0.00"),
+    Column("net_book_value", String(64), default="0.00"),
+    Column("status", String(32), default="active", index=True),
+    Column("disposal_date", String(32)),
+    Column("disposal_proceeds", String(64), default="0.00"),
+    Column("created_from_submission_id", String(36), index=True),
+    Column("notes", Text),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_fixed_asset_depreciation = Table(
+    "accounting_fixed_asset_depreciation",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("asset_id", String(36), nullable=False, index=True),
+    Column("period_label", String(64)),
+    Column("period_start", String(32), index=True),
+    Column("period_end", String(32), index=True),
+    Column("opening_nbv", String(64), default="0.00"),
+    Column("charge", String(64), default="0.00"),
+    Column("ytd_depreciation", String(64), default="0.00"),
+    Column("accumulated_depreciation", String(64), default="0.00"),
+    Column("closing_nbv", String(64), default="0.00"),
+    Column("status", String(32), default="scheduled", index=True),
+    Column("journal_entry_id", String(36)),
+    Column("posted_at", String(64)),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_fixed_asset_events = Table(
+    "accounting_fixed_asset_events",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("asset_id", String(36), index=True),
+    Column("event_type", String(64), nullable=False, index=True),
+    Column("event_date", String(32), index=True),
+    Column("from_value", Text),
+    Column("to_value", Text),
+    Column("amount", String(64), default="0.00"),
+    Column("notes", Text),
+    Column("journal_entry_id", String(36)),
+    Column("created_by", String(36)),
+    Column("created_at", String(64)),
+)
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("portal")
 
@@ -1124,6 +1238,11 @@ async def ensure_schema_columns(conn):
         accounting_vat_adjustments,
         accounting_periods,
         accounting_financial_years,
+        accounting_fixed_asset_settings,
+        accounting_fixed_asset_categories,
+        accounting_fixed_assets,
+        accounting_fixed_asset_depreciation,
+        accounting_fixed_asset_events,
     ):
         existing_column_info = await conn.run_sync(
             lambda sync_conn, table_name=table.name: {
@@ -1359,13 +1478,15 @@ NATIVE_ACCOUNTING_MODULES = [
     {"key": "audit", "label": "Audit Trail", "description": "Permanent accounting activity history across all modules."},
     {"key": "reports", "label": "Reports", "description": "Profit and loss, balance sheet, trial balance, and ledgers."},
     {"key": "settings", "label": "Settings", "description": "Accounting periods, defaults, VAT basis, and locks."},
-    {"key": "fixed_assets", "label": "Fixed Assets", "description": "Coming next: asset register and depreciation journals."},
+    {"key": "fixed_assets", "label": "Fixed Assets", "description": "Asset register, depreciation, disposals, transfers, revaluations and reports."},
     {"key": "payroll", "label": "Payroll", "description": "Placeholder for payroll summaries and posting journals."},
 ]
 
 DEFAULT_NATIVE_ACCOUNTS = [
     {"code": "1100", "name": "Trade debtors", "category": "Asset", "account_type": "Receivable", "purpose": "Sales Ledger", "normal_balance": "debit", "control_account": True, "is_control_account": True},
     {"code": "1200", "name": "Bank", "category": "Asset", "account_type": "Bank", "purpose": "Bank Account", "normal_balance": "debit", "control_account": True, "is_control_account": True},
+    {"code": "1500", "name": "Fixed assets", "category": "Asset", "account_type": "Asset", "purpose": "Standard Nominal", "normal_balance": "debit", "control_account": False, "is_control_account": False},
+    {"code": "1590", "name": "Accumulated depreciation", "category": "Asset", "account_type": "Asset", "purpose": "Standard Nominal", "normal_balance": "credit", "control_account": False, "is_control_account": False},
     {"code": "2000", "name": "Trade creditors", "category": "Liability", "account_type": "Payable", "purpose": "Purchase Ledger", "normal_balance": "credit", "control_account": True, "is_control_account": True},
     {"code": "2200", "name": "VAT control", "category": "Liability", "account_type": "VAT", "purpose": "VAT Control", "normal_balance": "credit", "control_account": True, "is_control_account": True},
     {"code": "2210", "name": "Payroll control", "category": "Liability", "account_type": "Payroll", "purpose": "Payroll Control", "normal_balance": "credit", "control_account": True, "is_control_account": True},
@@ -1377,6 +1498,8 @@ DEFAULT_NATIVE_ACCOUNTS = [
     {"code": "5200", "name": "Materials", "category": "Expense", "account_type": "Cost of Sales", "purpose": "Standard Nominal", "normal_balance": "debit", "control_account": False, "is_control_account": False},
     {"code": "5300", "name": "Motor and travel", "category": "Expense", "account_type": "Overheads", "purpose": "Standard Nominal", "normal_balance": "debit", "control_account": False, "is_control_account": False},
     {"code": "5400", "name": "Office and software", "category": "Expense", "account_type": "Overheads", "purpose": "Standard Nominal", "normal_balance": "debit", "control_account": False, "is_control_account": False},
+    {"code": "7000", "name": "Depreciation expense", "category": "Expense", "account_type": "Overheads", "purpose": "Standard Nominal", "normal_balance": "debit", "control_account": False, "is_control_account": False},
+    {"code": "7010", "name": "Gain/loss on asset disposal", "category": "Expense", "account_type": "Overheads", "purpose": "Standard Nominal", "normal_balance": "debit", "control_account": False, "is_control_account": False},
     {"code": "9999", "name": "Suspense", "category": "Asset", "account_type": "Suspense", "purpose": "Suspense", "normal_balance": "debit", "control_account": True, "is_control_account": True},
 ]
 
@@ -1618,6 +1741,20 @@ async def ensure_native_accounting_client(session: AsyncSession, client_id: str)
     )
     if existing:
         defaults_by_code = {item["code"]: item for item in DEFAULT_NATIVE_ACCOUNTS}
+        existing_codes = {str(item.get("code") or "") for item in existing}
+        for default_account in DEFAULT_NATIVE_ACCOUNTS:
+            if default_account["code"] in existing_codes:
+                continue
+            await session.execute(
+                insert(accounting_accounts).values(
+                    id=new_id(),
+                    client_id=client_id,
+                    created_at=now,
+                    updated_at=now,
+                    active=True,
+                    **default_account,
+                )
+            )
         for account in existing:
             defaults = defaults_by_code.get(str(account.get("code") or ""), {})
             values = {}
@@ -1632,7 +1769,12 @@ async def ensure_native_accounting_client(session: AsyncSession, client_id: str)
                 await session.execute(update(accounting_accounts).where(accounting_accounts.c.id == account["id"]).values(**values))
         await ensure_accounting_settings(session, client_id)
         await session.flush()
-        return existing
+        return await many(
+            session,
+            select(accounting_accounts)
+            .where(accounting_accounts.c.client_id == client_id)
+            .order_by(accounting_accounts.c.code.asc()),
+        )
     for account in DEFAULT_NATIVE_ACCOUNTS:
         await session.execute(
             insert(accounting_accounts).values(
@@ -4091,6 +4233,260 @@ def serialize_aged_balances(rows: dict[str, dict]) -> list[dict]:
     return sorted(result, key=lambda item: str(item.get("contact_name") or "").lower())
 
 
+FIXED_ASSET_DEFAULT_CATEGORIES = [
+    ("Plant & Machinery", 60),
+    ("Motor Vehicles", 48),
+    ("Office Equipment", 36),
+    ("Computer Equipment", 36),
+    ("Furniture & Fixtures", 60),
+    ("Buildings", 300),
+    ("Leasehold Improvements", 120),
+]
+
+
+def default_fixed_asset_settings(client_id: str, now: Optional[str] = None) -> dict:
+    timestamp = now or utc_now_iso()
+    return {
+        "id": new_id(),
+        "client_id": client_id,
+        "default_depreciation_method": "straight_line",
+        "posting_frequency": "monthly",
+        "asset_number_prefix": "FA",
+        "next_asset_number": 1,
+        "capitalisation_threshold": "500.00",
+        "default_fixed_asset_account": "1500",
+        "default_accumulated_depreciation_account": "1590",
+        "default_depreciation_expense_account": "7000",
+        "default_disposal_account": "7010",
+        "created_at": timestamp,
+        "updated_at": timestamp,
+    }
+
+
+async def ensure_fixed_asset_settings(session: AsyncSession, client_id: str) -> dict:
+    existing = await one(session, select(accounting_fixed_asset_settings).where(accounting_fixed_asset_settings.c.client_id == client_id))
+    if existing:
+        return existing
+    row = default_fixed_asset_settings(client_id)
+    await session.execute(insert(accounting_fixed_asset_settings).values(**row))
+    return row
+
+
+async def ensure_fixed_asset_categories(session: AsyncSession, client_id: str, settings_row: Optional[dict] = None) -> list[dict]:
+    existing = await many(
+        session,
+        select(accounting_fixed_asset_categories)
+        .where(accounting_fixed_asset_categories.c.client_id == client_id)
+        .order_by(accounting_fixed_asset_categories.c.name.asc()),
+    )
+    if existing:
+        return existing
+    settings_row = settings_row or await ensure_fixed_asset_settings(session, client_id)
+    now = utc_now_iso()
+    for name, life_months in FIXED_ASSET_DEFAULT_CATEGORIES:
+        await session.execute(
+            insert(accounting_fixed_asset_categories).values(
+                id=new_id(),
+                client_id=client_id,
+                name=name,
+                description=f"Default category for {name.lower()}",
+                default_depreciation_method=settings_row.get("default_depreciation_method") or "straight_line",
+                default_useful_life_months=life_months,
+                default_residual_value="0.00",
+                fixed_asset_account=settings_row.get("default_fixed_asset_account") or "1500",
+                accumulated_depreciation_account=settings_row.get("default_accumulated_depreciation_account") or "1590",
+                depreciation_expense_account=settings_row.get("default_depreciation_expense_account") or "7000",
+                active=True,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    return await many(
+        session,
+        select(accounting_fixed_asset_categories)
+        .where(accounting_fixed_asset_categories.c.client_id == client_id)
+        .order_by(accounting_fixed_asset_categories.c.name.asc()),
+    )
+
+
+def serialize_fixed_asset(row: dict) -> dict:
+    item = dict(row)
+    item["purchase_cost"] = money_str(money(item.get("purchase_cost")))
+    item["residual_value"] = money_str(money(item.get("residual_value")))
+    item["accumulated_depreciation"] = money_str(money(item.get("accumulated_depreciation")))
+    item["net_book_value"] = money_str(money(item.get("net_book_value") or item.get("purchase_cost")))
+    item["disposal_proceeds"] = money_str(money(item.get("disposal_proceeds")))
+    return item
+
+
+def serialize_fixed_asset_category(row: dict) -> dict:
+    item = dict(row)
+    item["default_residual_value"] = money_str(money(item.get("default_residual_value")))
+    return item
+
+
+def serialize_fixed_asset_event(row: dict) -> dict:
+    item = dict(row)
+    item["amount"] = money_str(money(item.get("amount")))
+    return item
+
+
+def next_asset_code(settings_row: dict) -> str:
+    prefix = str(settings_row.get("asset_number_prefix") or "FA").strip() or "FA"
+    number = int(settings_row.get("next_asset_number") or 1)
+    return f"{prefix}-{number:05d}"
+
+
+def account_from_code(accounts: list[dict], code: str, label: str) -> dict:
+    account = next((a for a in accounts if str(a.get("code") or "") == str(code or "")), None)
+    if not account:
+        raise HTTPException(status_code=400, detail=f"{label} account {code or ''} is missing from the chart of accounts.")
+    return account
+
+
+def build_asset_schedule(asset: dict, months: int = 24) -> list[dict]:
+    if str(asset.get("status") or "active") != "active":
+        return []
+    purchase_cost = money(asset.get("purchase_cost"))
+    residual = money(asset.get("residual_value"))
+    accumulated = money(asset.get("accumulated_depreciation"))
+    life_months = max(1, int(asset.get("useful_life_months") or 36))
+    start_date = parse_date_or_today(asset.get("in_service_date") or asset.get("capitalisation_date") or asset.get("purchase_date"))
+    depreciable = max(Decimal("0.00"), purchase_cost - residual)
+    straight_charge = (depreciable / Decimal(life_months)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    current_nbv = money(asset.get("net_book_value"))
+    opening_nbv = max(residual, current_nbv if current_nbv else purchase_cost - accumulated)
+    ytd = Decimal("0.00")
+    schedule = []
+    cursor = date(start_date.year, start_date.month, 1)
+    for index in range(months):
+        period_start = add_months_to_date(cursor, index)
+        period_end = add_months_to_date(period_start, 1) - timedelta(days=1)
+        if str(asset.get("depreciation_method") or "straight_line") == "reducing_balance":
+            charge = (opening_nbv * Decimal("0.25") / Decimal("12")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            charge = min(charge, max(Decimal("0.00"), opening_nbv - residual))
+        else:
+            charge = min(straight_charge, max(Decimal("0.00"), purchase_cost - residual - accumulated - ytd))
+        closing = max(residual, opening_nbv - charge)
+        ytd += charge
+        schedule.append({
+            "asset_id": asset.get("id"),
+            "asset_code": asset.get("asset_code"),
+            "asset_name": asset.get("asset_name"),
+            "period_label": period_start.strftime("%b %Y"),
+            "period_start": period_start.isoformat(),
+            "period_end": period_end.isoformat(),
+            "opening_nbv": money_str(opening_nbv),
+            "charge": money_str(charge),
+            "ytd_depreciation": money_str(ytd),
+            "accumulated_depreciation": money_str(accumulated + ytd),
+            "closing_nbv": money_str(closing),
+            "status": "scheduled",
+        })
+        opening_nbv = closing
+        if charge <= Decimal("0.00"):
+            break
+    return schedule
+
+
+async def fixed_assets_workspace(session: AsyncSession, client_id: str, accounts: Optional[list[dict]] = None, ap: Optional[dict] = None) -> dict:
+    settings_row = await ensure_fixed_asset_settings(session, client_id)
+    categories = await ensure_fixed_asset_categories(session, client_id, settings_row)
+    assets = await many(
+        session,
+        select(accounting_fixed_assets)
+        .where(accounting_fixed_assets.c.client_id == client_id)
+        .order_by(accounting_fixed_assets.c.created_at.desc()),
+    )
+    events = await many(
+        session,
+        select(accounting_fixed_asset_events)
+        .where(accounting_fixed_asset_events.c.client_id == client_id)
+        .order_by(accounting_fixed_asset_events.c.created_at.desc())
+        .limit(100),
+    )
+    posted_depreciation = await many(
+        session,
+        select(accounting_fixed_asset_depreciation)
+        .where(accounting_fixed_asset_depreciation.c.client_id == client_id)
+        .order_by(accounting_fixed_asset_depreciation.c.period_start.desc(), accounting_fixed_asset_depreciation.c.created_at.desc())
+        .limit(200),
+    )
+    active_assets = [serialize_fixed_asset(a) for a in assets if str(a.get("status") or "active") == "active"]
+    disposed_assets = [serialize_fixed_asset(a) for a in assets if str(a.get("status") or "") in {"disposed", "scrapped", "written_off"}]
+    schedules = []
+    for asset in active_assets:
+        schedules.extend(build_asset_schedule(asset, 12))
+    today = datetime.now(timezone.utc).date()
+    current_month = today.strftime("%Y-%m")
+    total_cost = sum((money(a.get("purchase_cost")) for a in active_assets), Decimal("0.00"))
+    accumulated = sum((money(a.get("accumulated_depreciation")) for a in active_assets), Decimal("0.00"))
+    nbv = sum((money(a.get("net_book_value")) for a in active_assets), Decimal("0.00"))
+    added_this_year = len([a for a in assets if str(a.get("purchase_date") or "").startswith(str(today.year))])
+    depreciation_this_month = sum((money(r.get("charge")) for r in posted_depreciation if str(r.get("period_start") or "").startswith(current_month)), Decimal("0.00"))
+    category_totals: dict[str, dict] = {}
+    for asset in active_assets:
+        name = asset.get("category_name") or "Uncategorised"
+        row = category_totals.setdefault(name, {"category": name, "count": 0, "cost": Decimal("0.00"), "nbv": Decimal("0.00")})
+        row["count"] += 1
+        row["cost"] += money(asset.get("purchase_cost"))
+        row["nbv"] += money(asset.get("net_book_value"))
+    threshold = money(settings_row.get("capitalisation_threshold"))
+    existing_invoice_ids = {str(a.get("purchase_invoice_id") or "") for a in assets if a.get("purchase_invoice_id")}
+    suggestions = []
+    for invoice in (ap or {}).get("invoices", []):
+        if str(invoice.get("id") or "") in existing_invoice_ids:
+            continue
+        gross = money(invoice.get("gross_amount"))
+        net = money(invoice.get("net_amount"))
+        candidate = gross if gross > Decimal("0.00") else net
+        if candidate >= threshold:
+            suggestions.append({
+                "purchase_invoice_id": invoice.get("id"),
+                "supplier_id": invoice.get("supplier_id"),
+                "supplier_name": invoice.get("supplier_name"),
+                "asset_name": invoice.get("description") or invoice.get("invoice_number") or "Purchase invoice asset",
+                "purchase_date": invoice.get("invoice_date"),
+                "purchase_cost": money_str(net if net > Decimal("0.00") else candidate),
+                "reference": invoice.get("invoice_number") or invoice.get("reference"),
+                "confidence": 72,
+                "reason": f"Purchase is above the capitalisation threshold of {money_str(threshold)}.",
+            })
+    return {
+        "settings": dict(settings_row),
+        "categories": [serialize_fixed_asset_category(c) for c in categories],
+        "assets": [serialize_fixed_asset(a) for a in assets],
+        "events": [serialize_fixed_asset_event(e) for e in events],
+        "depreciation_schedule": schedules,
+        "posted_depreciation": [serialize_fixed_asset_event(r) if "event_type" in r else dict(r) for r in posted_depreciation],
+        "suggestions": suggestions[:20],
+        "dashboard": {
+            "total_asset_cost": money_str(total_cost),
+            "net_book_value": money_str(nbv),
+            "accumulated_depreciation": money_str(accumulated),
+            "assets_added_this_year": added_this_year,
+            "assets_disposed": len(disposed_assets),
+            "depreciation_this_month": money_str(depreciation_this_month),
+            "awaiting_depreciation": len([s for s in schedules if money(s.get("charge")) > Decimal("0.00")]),
+        },
+        "panels": {
+            "awaiting_depreciation": [s for s in schedules if money(s.get("charge")) > Decimal("0.00")][:8],
+            "recently_acquired": active_assets[:8],
+            "upcoming_disposals": [a for a in active_assets if "dispose" in str(a.get("notes") or "").lower()][:8],
+            "fully_depreciated": [a for a in active_assets if money(a.get("net_book_value")) <= money(a.get("residual_value"))][:8],
+        },
+        "reports": {
+            "asset_register": active_assets,
+            "depreciation_schedule": schedules,
+            "asset_additions": [serialize_fixed_asset(a) for a in assets if str(a.get("purchase_date") or "").startswith(str(today.year))],
+            "asset_disposals": disposed_assets,
+            "revaluations": [serialize_fixed_asset_event(e) for e in events if str(e.get("event_type") or "") == "revaluation"],
+            "nbv_summary": [{"category": row["category"], "count": row["count"], "cost": money_str(row["cost"]), "nbv": money_str(row["nbv"])} for row in category_totals.values()],
+            "category_analysis": [{"category": row["category"], "count": row["count"], "cost": money_str(row["cost"]), "nbv": money_str(row["nbv"])} for row in category_totals.values()],
+        },
+    }
+
+
 def build_ai_accounting_workspace(
     client_id: str,
     summary: dict,
@@ -4453,6 +4849,7 @@ async def get_native_accounting_workspace(
     reports_data = await native_accounting_reports(session, client_id)
     accounts_payable_data = await accounts_payable_workspace(session, client_id)
     accounts_receivable_data = await accounts_receivable_workspace(session, client_id)
+    fixed_assets_data = await fixed_assets_workspace(session, client_id, accounts, accounts_payable_data)
     ai_workspace_data = build_ai_accounting_workspace(
         client_id,
         summary,
@@ -4485,6 +4882,7 @@ async def get_native_accounting_workspace(
         "reports": reports_data,
         "accounts_payable": accounts_payable_data,
         "accounts_receivable": accounts_receivable_data,
+        "fixed_assets": fixed_assets_data,
         "ai_workspace": ai_workspace_data,
     }
 
@@ -6400,6 +6798,406 @@ async def create_native_vat_adjustment(
     await add_accounting_audit(session, client_id, user.get("id"), "vat_adjustment_created", "vat", adjustment_id, row)
     await session.commit()
     return serialize_vat_adjustment(row)
+
+
+async def require_fixed_asset(session: AsyncSession, client_id: str, asset_id: str) -> dict:
+    asset = await one(session, select(accounting_fixed_assets).where(accounting_fixed_assets.c.client_id == client_id, accounting_fixed_assets.c.id == asset_id))
+    if not asset:
+        raise HTTPException(status_code=404, detail="Fixed asset not found.")
+    return asset
+
+
+async def record_fixed_asset_event(
+    session: AsyncSession,
+    client_id: str,
+    asset_id: str,
+    event_type: str,
+    event_date: str,
+    user_id: Optional[str],
+    *,
+    from_value: Optional[Any] = None,
+    to_value: Optional[Any] = None,
+    amount: Any = "0.00",
+    notes: str = "",
+    journal_entry_id: Optional[str] = None,
+) -> dict:
+    row = {
+        "id": new_id(),
+        "client_id": client_id,
+        "asset_id": asset_id,
+        "event_type": event_type,
+        "event_date": event_date,
+        "from_value": json.dumps(from_value) if isinstance(from_value, (dict, list)) else (str(from_value) if from_value is not None else ""),
+        "to_value": json.dumps(to_value) if isinstance(to_value, (dict, list)) else (str(to_value) if to_value is not None else ""),
+        "amount": money_str(money(amount)),
+        "notes": notes,
+        "journal_entry_id": journal_entry_id,
+        "created_by": user_id,
+        "created_at": utc_now_iso(),
+    }
+    await session.execute(insert(accounting_fixed_asset_events).values(**row))
+    return row
+
+
+@api.post("/admin/accounting/clients/{client_id}/fixed-assets/categories")
+async def create_fixed_asset_category(
+    client_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before adding fixed asset categories.")
+    settings_row = await ensure_fixed_asset_settings(session, client_id)
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Category name is required.")
+    now = utc_now_iso()
+    row = {
+        "id": new_id(),
+        "client_id": client_id,
+        "name": name,
+        "description": str(payload.get("description") or ""),
+        "default_depreciation_method": str(payload.get("default_depreciation_method") or settings_row.get("default_depreciation_method") or "straight_line"),
+        "default_useful_life_months": int(payload.get("default_useful_life_months") or 36),
+        "default_residual_value": money_str(money(payload.get("default_residual_value"))),
+        "fixed_asset_account": str(payload.get("fixed_asset_account") or settings_row.get("default_fixed_asset_account") or "1500"),
+        "accumulated_depreciation_account": str(payload.get("accumulated_depreciation_account") or settings_row.get("default_accumulated_depreciation_account") or "1590"),
+        "depreciation_expense_account": str(payload.get("depreciation_expense_account") or settings_row.get("default_depreciation_expense_account") or "7000"),
+        "active": bool(payload.get("active", True)),
+        "created_at": now,
+        "updated_at": now,
+    }
+    await session.execute(insert(accounting_fixed_asset_categories).values(**row))
+    await add_accounting_audit(session, client_id, user.get("id"), "fixed_asset_category_created", "fixed_assets", row["id"], row)
+    await session.commit()
+    return serialize_fixed_asset_category(row)
+
+
+@api.put("/admin/accounting/clients/{client_id}/fixed-assets/categories/{category_id}")
+async def update_fixed_asset_category(
+    client_id: str,
+    category_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    category = await one(session, select(accounting_fixed_asset_categories).where(accounting_fixed_asset_categories.c.client_id == client_id, accounting_fixed_asset_categories.c.id == category_id))
+    if not category:
+        raise HTTPException(status_code=404, detail="Fixed asset category not found.")
+    allowed = {
+        "name",
+        "description",
+        "default_depreciation_method",
+        "default_useful_life_months",
+        "fixed_asset_account",
+        "accumulated_depreciation_account",
+        "depreciation_expense_account",
+        "active",
+    }
+    values = {key: payload.get(key) for key in allowed if key in payload}
+    if "default_residual_value" in payload:
+        values["default_residual_value"] = money_str(money(payload.get("default_residual_value")))
+    values["updated_at"] = utc_now_iso()
+    await session.execute(update(accounting_fixed_asset_categories).where(accounting_fixed_asset_categories.c.id == category_id).values(**values))
+    await add_accounting_audit(session, client_id, user.get("id"), "fixed_asset_category_updated", "fixed_assets", category_id, {"previous": serialize_fixed_asset_category(category), "changes": values})
+    await session.commit()
+    updated = await one(session, select(accounting_fixed_asset_categories).where(accounting_fixed_asset_categories.c.id == category_id))
+    return serialize_fixed_asset_category(updated)
+
+
+@api.post("/admin/accounting/clients/{client_id}/fixed-assets")
+async def create_fixed_asset(
+    client_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before adding fixed assets.")
+    settings_row = await ensure_fixed_asset_settings(session, client_id)
+    await ensure_fixed_asset_categories(session, client_id, settings_row)
+    accounts = await ensure_native_accounting_client(session, client_id)
+    asset_name = str(payload.get("asset_name") or payload.get("name") or "").strip()
+    if not asset_name:
+        raise HTTPException(status_code=400, detail="Asset name is required.")
+    category = None
+    category_id = str(payload.get("category_id") or "").strip()
+    if category_id:
+        category = await one(session, select(accounting_fixed_asset_categories).where(accounting_fixed_asset_categories.c.client_id == client_id, accounting_fixed_asset_categories.c.id == category_id))
+    purchase_cost = money(payload.get("purchase_cost"))
+    if purchase_cost <= 0:
+        raise HTTPException(status_code=400, detail="Purchase cost must be greater than zero.")
+    asset_code = str(payload.get("asset_code") or "").strip()
+    if not asset_code:
+        asset_code = next_asset_code(settings_row)
+        await session.execute(
+            update(accounting_fixed_asset_settings)
+            .where(accounting_fixed_asset_settings.c.client_id == client_id)
+            .values(next_asset_number=int(settings_row.get("next_asset_number") or 1) + 1, updated_at=utc_now_iso())
+        )
+    duplicate = await one(session, select(accounting_fixed_assets).where(accounting_fixed_assets.c.client_id == client_id, accounting_fixed_assets.c.asset_code == asset_code))
+    if duplicate:
+        raise HTTPException(status_code=400, detail="Asset code already exists.")
+    fixed_account = str(payload.get("fixed_asset_account") or (category or {}).get("fixed_asset_account") or settings_row.get("default_fixed_asset_account") or "1500")
+    accumulated_account = str(payload.get("accumulated_depreciation_account") or (category or {}).get("accumulated_depreciation_account") or settings_row.get("default_accumulated_depreciation_account") or "1590")
+    expense_account = str(payload.get("depreciation_expense_account") or (category or {}).get("depreciation_expense_account") or settings_row.get("default_depreciation_expense_account") or "7000")
+    account_from_code(accounts, fixed_account, "Fixed asset")
+    account_from_code(accounts, accumulated_account, "Accumulated depreciation")
+    account_from_code(accounts, expense_account, "Depreciation expense")
+    now = utc_now_iso()
+    row = {
+        "id": new_id(),
+        "client_id": client_id,
+        "asset_code": asset_code,
+        "asset_name": asset_name,
+        "description": str(payload.get("description") or ""),
+        "category_id": category_id,
+        "category_name": str((category or {}).get("name") or payload.get("category_name") or ""),
+        "location": str(payload.get("location") or ""),
+        "department": str(payload.get("department") or ""),
+        "serial_number": str(payload.get("serial_number") or ""),
+        "manufacturer": str(payload.get("manufacturer") or ""),
+        "model": str(payload.get("model") or ""),
+        "supplier_id": str(payload.get("supplier_id") or ""),
+        "supplier_name": str(payload.get("supplier_name") or ""),
+        "purchase_invoice_id": str(payload.get("purchase_invoice_id") or ""),
+        "purchase_date": parse_date_or_today(payload.get("purchase_date")).isoformat(),
+        "in_service_date": parse_date_or_today(payload.get("in_service_date") or payload.get("purchase_date")).isoformat(),
+        "capitalisation_date": parse_date_or_today(payload.get("capitalisation_date") or payload.get("purchase_date")).isoformat(),
+        "purchase_cost": money_str(purchase_cost),
+        "residual_value": money_str(money(payload.get("residual_value") if payload.get("residual_value") not in (None, "") else (category or {}).get("default_residual_value"))),
+        "useful_life_months": int(payload.get("useful_life_months") or (category or {}).get("default_useful_life_months") or 36),
+        "depreciation_method": str(payload.get("depreciation_method") or (category or {}).get("default_depreciation_method") or settings_row.get("default_depreciation_method") or "straight_line"),
+        "depreciation_frequency": str(payload.get("depreciation_frequency") or settings_row.get("posting_frequency") or "monthly"),
+        "fixed_asset_account": fixed_account,
+        "accumulated_depreciation_account": accumulated_account,
+        "depreciation_expense_account": expense_account,
+        "accumulated_depreciation": "0.00",
+        "net_book_value": money_str(purchase_cost),
+        "status": "active",
+        "disposal_proceeds": "0.00",
+        "created_from_submission_id": str(payload.get("created_from_submission_id") or payload.get("submission_id") or ""),
+        "notes": str(payload.get("notes") or ""),
+        "created_at": now,
+        "updated_at": now,
+    }
+    await session.execute(insert(accounting_fixed_assets).values(**row))
+    await record_fixed_asset_event(session, client_id, row["id"], "created", row["capitalisation_date"], user.get("id"), to_value=row, amount=purchase_cost, notes="Asset created")
+    await add_accounting_audit(session, client_id, user.get("id"), "fixed_asset_created", "fixed_assets", row["id"], row)
+    await session.commit()
+    return serialize_fixed_asset(row)
+
+
+@api.post("/admin/accounting/clients/{client_id}/fixed-assets/{asset_id}/depreciation/post")
+async def post_fixed_asset_depreciation(
+    client_id: str,
+    asset_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    asset = await require_fixed_asset(session, client_id, asset_id)
+    if str(asset.get("status") or "active") != "active":
+        raise HTTPException(status_code=400, detail="Only active assets can be depreciated.")
+    accounts = await ensure_native_accounting_client(session, client_id)
+    schedule = build_asset_schedule(asset, 1)
+    if not schedule:
+        raise HTTPException(status_code=400, detail="No depreciation is available for this asset.")
+    row = schedule[0]
+    charge = money(payload.get("charge") if payload.get("charge") not in (None, "") else row.get("charge"))
+    if charge <= 0:
+        raise HTTPException(status_code=400, detail="Depreciation charge must be greater than zero.")
+    expense_account = account_from_code(accounts, asset.get("depreciation_expense_account"), "Depreciation expense")
+    accumulated_account = account_from_code(accounts, asset.get("accumulated_depreciation_account"), "Accumulated depreciation")
+    period_start = str(payload.get("period_start") or row.get("period_start"))
+    period_end = str(payload.get("period_end") or row.get("period_end"))
+    journal = await post_native_journal(
+        session,
+        client_id,
+        "fixed_asset_depreciation",
+        asset_id,
+        period_end,
+        f"DEP {asset.get('asset_code')}",
+        f"Depreciation for {asset.get('asset_name')}",
+        [
+            {"account": expense_account, "debit": money_str(charge), "credit": "0.00", "description": f"Depreciation for {asset.get('asset_name')}"},
+            {"account": accumulated_account, "debit": "0.00", "credit": money_str(charge), "description": f"Accumulated depreciation for {asset.get('asset_name')}"},
+        ],
+        user.get("id"),
+    )
+    new_accumulated = money(asset.get("accumulated_depreciation")) + charge
+    new_nbv = max(money(asset.get("residual_value")), money(asset.get("purchase_cost")) - new_accumulated)
+    now = utc_now_iso()
+    depreciation_row = {
+        "id": new_id(),
+        "client_id": client_id,
+        "asset_id": asset_id,
+        "period_label": row.get("period_label"),
+        "period_start": period_start,
+        "period_end": period_end,
+        "opening_nbv": row.get("opening_nbv"),
+        "charge": money_str(charge),
+        "ytd_depreciation": row.get("ytd_depreciation"),
+        "accumulated_depreciation": money_str(new_accumulated),
+        "closing_nbv": money_str(new_nbv),
+        "status": "posted",
+        "journal_entry_id": journal.get("id"),
+        "posted_at": now,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await session.execute(insert(accounting_fixed_asset_depreciation).values(**depreciation_row))
+    await session.execute(update(accounting_fixed_assets).where(accounting_fixed_assets.c.id == asset_id).values(accumulated_depreciation=money_str(new_accumulated), net_book_value=money_str(new_nbv), updated_at=now))
+    await record_fixed_asset_event(session, client_id, asset_id, "depreciation_posted", period_end, user.get("id"), amount=charge, notes=depreciation_row["period_label"], journal_entry_id=journal.get("id"))
+    await add_accounting_audit(session, client_id, user.get("id"), "fixed_asset_depreciation_posted", "fixed_assets", asset_id, depreciation_row)
+    await session.commit()
+    return {"ok": True, "journal": journal, "depreciation": depreciation_row}
+
+
+@api.post("/admin/accounting/clients/{client_id}/fixed-assets/{asset_id}/dispose")
+async def dispose_fixed_asset(
+    client_id: str,
+    asset_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    asset = await require_fixed_asset(session, client_id, asset_id)
+    if str(asset.get("status") or "active") != "active":
+        raise HTTPException(status_code=400, detail="This asset is already disposed.")
+    accounts = await ensure_native_accounting_client(session, client_id)
+    settings_row = await ensure_fixed_asset_settings(session, client_id)
+    fixed_account = account_from_code(accounts, asset.get("fixed_asset_account"), "Fixed asset")
+    accumulated_account = account_from_code(accounts, asset.get("accumulated_depreciation_account"), "Accumulated depreciation")
+    disposal_account = account_from_code(accounts, payload.get("disposal_account") or settings_row.get("default_disposal_account"), "Disposal")
+    bank_account = account_from_code(accounts, payload.get("proceeds_account") or "1200", "Proceeds")
+    disposal_date = parse_date_or_today(payload.get("disposal_date")).isoformat()
+    cost = money(asset.get("purchase_cost"))
+    accumulated = money(asset.get("accumulated_depreciation"))
+    nbv = money(asset.get("net_book_value"))
+    proceeds = money(payload.get("disposal_proceeds"))
+    lines = [
+        {"account": accumulated_account, "debit": money_str(accumulated), "credit": "0.00", "description": f"Clear accumulated depreciation for {asset.get('asset_name')}"},
+        {"account": fixed_account, "debit": "0.00", "credit": money_str(cost), "description": f"Dispose {asset.get('asset_name')}"},
+    ]
+    if proceeds > 0:
+        lines.append({"account": bank_account, "debit": money_str(proceeds), "credit": "0.00", "description": f"Disposal proceeds for {asset.get('asset_name')}"})
+    gain_loss = proceeds - nbv
+    if gain_loss > 0:
+        lines.append({"account": disposal_account, "debit": "0.00", "credit": money_str(gain_loss), "description": "Gain on disposal"})
+    elif gain_loss < 0:
+        lines.append({"account": disposal_account, "debit": money_str(abs(gain_loss)), "credit": "0.00", "description": "Loss on disposal"})
+    journal = await post_native_journal(
+        session,
+        client_id,
+        "fixed_asset_disposal",
+        asset_id,
+        disposal_date,
+        f"DISP {asset.get('asset_code')}",
+        f"Disposal of {asset.get('asset_name')}",
+        lines,
+        user.get("id"),
+    )
+    status = str(payload.get("disposal_type") or "disposed").lower().replace("-", "_")
+    if status not in {"sale", "scrap", "write_off", "disposed"}:
+        status = "disposed"
+    next_status = {"sale": "disposed", "scrap": "scrapped", "write_off": "written_off", "disposed": "disposed"}[status]
+    await session.execute(
+        update(accounting_fixed_assets)
+        .where(accounting_fixed_assets.c.id == asset_id)
+        .values(status=next_status, disposal_date=disposal_date, disposal_proceeds=money_str(proceeds), net_book_value="0.00", updated_at=utc_now_iso())
+    )
+    await record_fixed_asset_event(session, client_id, asset_id, "disposal", disposal_date, user.get("id"), amount=gain_loss, notes=str(payload.get("notes") or ""), journal_entry_id=journal.get("id"))
+    await add_accounting_audit(session, client_id, user.get("id"), "fixed_asset_disposed", "fixed_assets", asset_id, {"proceeds": money_str(proceeds), "gain_loss": money_str(gain_loss), "journal": journal})
+    await session.commit()
+    return {"ok": True, "journal": journal, "gain_loss": money_str(gain_loss)}
+
+
+@api.post("/admin/accounting/clients/{client_id}/fixed-assets/{asset_id}/transfer")
+async def transfer_fixed_asset(
+    client_id: str,
+    asset_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    asset = await require_fixed_asset(session, client_id, asset_id)
+    transfer_date = parse_date_or_today(payload.get("transfer_date")).isoformat()
+    before = {"location": asset.get("location"), "department": asset.get("department")}
+    after = {"location": str(payload.get("location") or ""), "department": str(payload.get("department") or "")}
+    await session.execute(update(accounting_fixed_assets).where(accounting_fixed_assets.c.id == asset_id).values(**after, updated_at=utc_now_iso()))
+    await record_fixed_asset_event(session, client_id, asset_id, "transfer", transfer_date, user.get("id"), from_value=before, to_value=after, notes=str(payload.get("notes") or ""))
+    await add_accounting_audit(session, client_id, user.get("id"), "fixed_asset_transferred", "fixed_assets", asset_id, {"previous": before, "new": after})
+    await session.commit()
+    return {"ok": True}
+
+
+@api.post("/admin/accounting/clients/{client_id}/fixed-assets/{asset_id}/revalue")
+async def revalue_fixed_asset(
+    client_id: str,
+    asset_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    asset = await require_fixed_asset(session, client_id, asset_id)
+    accounts = await ensure_native_accounting_client(session, client_id)
+    settings_row = await ensure_fixed_asset_settings(session, client_id)
+    revaluation_date = parse_date_or_today(payload.get("revaluation_date")).isoformat()
+    new_value = money(payload.get("new_value"))
+    if new_value < 0:
+        raise HTTPException(status_code=400, detail="New value cannot be negative.")
+    current_nbv = money(asset.get("net_book_value"))
+    delta = new_value - current_nbv
+    if delta == 0:
+        raise HTTPException(status_code=400, detail="New value matches the current net book value.")
+    fixed_account = account_from_code(accounts, asset.get("fixed_asset_account"), "Fixed asset")
+    revaluation_account = account_from_code(accounts, payload.get("revaluation_account") or settings_row.get("default_disposal_account") or "7010", "Revaluation")
+    lines = [
+        {"account": fixed_account if delta > 0 else revaluation_account, "debit": money_str(abs(delta)), "credit": "0.00", "description": f"Revalue {asset.get('asset_name')}"},
+        {"account": revaluation_account if delta > 0 else fixed_account, "debit": "0.00", "credit": money_str(abs(delta)), "description": f"Revalue {asset.get('asset_name')}"},
+    ]
+    journal = await post_native_journal(session, client_id, "fixed_asset_revaluation", asset_id, revaluation_date, f"REVAL {asset.get('asset_code')}", f"Revaluation of {asset.get('asset_name')}", lines, user.get("id"))
+    await session.execute(update(accounting_fixed_assets).where(accounting_fixed_assets.c.id == asset_id).values(net_book_value=money_str(new_value), updated_at=utc_now_iso()))
+    await record_fixed_asset_event(session, client_id, asset_id, "revaluation", revaluation_date, user.get("id"), from_value=money_str(current_nbv), to_value=money_str(new_value), amount=delta, notes=str(payload.get("notes") or ""), journal_entry_id=journal.get("id"))
+    await add_accounting_audit(session, client_id, user.get("id"), "fixed_asset_revalued", "fixed_assets", asset_id, {"from": money_str(current_nbv), "to": money_str(new_value), "journal": journal})
+    await session.commit()
+    return {"ok": True, "journal": journal}
+
+
+@api.put("/admin/accounting/clients/{client_id}/fixed-assets/settings")
+async def update_fixed_asset_settings(
+    client_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before changing fixed asset settings.")
+    settings_row = await ensure_fixed_asset_settings(session, client_id)
+    allowed = {
+        "default_depreciation_method",
+        "posting_frequency",
+        "asset_number_prefix",
+        "next_asset_number",
+        "default_fixed_asset_account",
+        "default_accumulated_depreciation_account",
+        "default_depreciation_expense_account",
+        "default_disposal_account",
+    }
+    values = {key: payload.get(key) for key in allowed if key in payload}
+    if "capitalisation_threshold" in payload:
+        values["capitalisation_threshold"] = money_str(money(payload.get("capitalisation_threshold")))
+    values["updated_at"] = utc_now_iso()
+    await session.execute(update(accounting_fixed_asset_settings).where(accounting_fixed_asset_settings.c.client_id == client_id).values(**values))
+    await add_accounting_audit(session, client_id, user.get("id"), "fixed_asset_settings_updated", "fixed_assets", settings_row["id"], values)
+    await session.commit()
+    updated = await ensure_fixed_asset_settings(session, client_id)
+    return dict(updated)
 
 
 @api.post("/admin/accounting/clients/{client_id}/periods")
