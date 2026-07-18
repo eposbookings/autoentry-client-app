@@ -16,6 +16,11 @@ on:
         required: true
         type: boolean
         default: false
+      refresh_demo_account:
+        description: "Create or refresh the EPOS Accountancy Demo account on the VPS"
+        required: true
+        type: boolean
+        default: true
 
 concurrency:
   group: sync-vps-code
@@ -172,6 +177,11 @@ jobs:
 
             echo "Restarting lightweight web containers"
             docker compose up -d --force-recreate frontend nginx
+
+            if [ "${{ inputs.refresh_demo_account }}" = "true" ]; then
+              echo "Creating or refreshing EPOS Accountancy Demo account"
+              docker compose exec -T api python scripts/seed_epos_demo.py --scale full
+            fi
 
             echo "Health check"
             for attempt in $(seq 1 30); do

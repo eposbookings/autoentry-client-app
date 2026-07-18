@@ -21,7 +21,8 @@ import server
 
 
 DEMO_CLIENT_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, "epos-demo:client:epos-bookings-ltd"))
-DEMO_EMAIL = "demo@eposbookings.net"
+DEMO_BUSINESS_NAME = "EPOS Accountancy Demo account"
+DEMO_EMAIL = "demo.account@eposbookings.net"
 DEMO_PASSWORD = "DemoPass123!"
 DEMO_USER = "EPOS Demo Seeder"
 DEMO_NOW = datetime(2026, 7, 18, 9, 0, 0)
@@ -1149,7 +1150,7 @@ class DemoBuilder:
                     "review_status": status,
                     "reviewed_at": iso(DEMO_NOW) if status == "archive" else None,
                     "submitted_at": iso(DEMO_NOW - timedelta(minutes=idx)),
-                    "client_business_name": "EPOS BOOKINGS LTD",
+                    "client_business_name": DEMO_BUSINESS_NAME,
                     "client_first_name": "Devis",
                     "client_last_name": "Smits",
                 }
@@ -1326,7 +1327,7 @@ async def seed(scale: str):
         "role": "client",
         "first_name": "Devis",
         "last_name": "Smits",
-        "business_name": "EPOS BOOKINGS LTD",
+        "business_name": DEMO_BUSINESS_NAME,
         "client_type": "Limited company",
         "industry": "Software Development & Bookkeeping",
         "company_number": "12573813",
@@ -1552,7 +1553,7 @@ async def seed(scale: str):
         await session.commit()
 
     print(json.dumps({
-        "client": "EPOS BOOKINGS LTD",
+        "client": DEMO_BUSINESS_NAME,
         "client_id": DEMO_CLIENT_ID,
         "login_email": DEMO_EMAIL,
         "login_password": DEMO_PASSWORD,
@@ -1569,7 +1570,7 @@ async def seed(scale: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Seed the EPOS BOOKINGS LTD native accounting demo company.")
+    parser = argparse.ArgumentParser(description="Seed the EPOS Accountancy Demo account as a normal live client.")
     parser.add_argument("--scale", choices=["quick", "full"], default="full", help="Use quick for local smoke tests or full for pilot-scale demo data.")
     args = parser.parse_args()
     asyncio.run(seed(args.scale))
