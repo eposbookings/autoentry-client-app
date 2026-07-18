@@ -19,7 +19,6 @@ import os
 import re
 import smtplib
 import socket
-import sys
 import textwrap
 import uuid
 import zipfile
@@ -80,7 +79,6 @@ SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 FONTS_DIR = ROOT_DIR / "assets" / "fonts"
 FONT_BOLD_PATH = str(FONTS_DIR / "DejaVuSans-Bold.ttf")
 FONT_REGULAR_PATH = str(FONTS_DIR / "DejaVuSans.ttf")
-DEMO_CLIENT_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, "epos-demo:client:epos-bookings-ltd"))
 
 
 def load_font(bold: bool, size: int):
@@ -1659,42 +1657,6 @@ async def ensure_schema_columns(conn):
                 logger.info("Widened column %s.%s to TEXT", table.name, column.name)
 
 
-async def maybe_seed_demo_account():
-    if os.environ.get("EPOS_SKIP_DEMO_ACCOUNT", "").lower() in {"1", "true", "yes"}:
-        return
-
-    async with SessionLocal() as session:
-        result = await session.execute(select(users.c.id).where(users.c.id == DEMO_CLIENT_ID))
-        if result.scalar_one_or_none() is not None:
-            return
-
-    seed_script = ROOT_DIR / "scripts" / "seed_epos_demo.py"
-    if not seed_script.exists():
-        logger.warning("Demo seed script is missing: %s", seed_script)
-        return
-
-    seed_scale = os.environ.get("EPOS_DEMO_SEED_SCALE", "quick").lower().strip()
-    if seed_scale not in {"quick", "full"}:
-        seed_scale = "quick"
-
-    logger.info("EPOS demo account is missing; creating it in %s mode.", seed_scale)
-    process = await asyncio.create_subprocess_exec(
-        sys.executable,
-        str(seed_script),
-        "--scale",
-        seed_scale,
-        "--if-missing",
-        cwd=str(ROOT_DIR),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await process.communicate()
-    if process.returncode != 0:
-        logger.error("Demo account seed failed: %s", stderr.decode("utf-8", errors="replace")[:2000])
-        return
-    logger.info("Demo account seed completed: %s", stdout.decode("utf-8", errors="replace")[:1000])
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     for attempt in range(1, 31):
@@ -1737,7 +1699,6 @@ async def lifespan(app: FastAPI):
             await session.commit()
             logger.info("Admin password updated.")
 
-    app.state.demo_seed_task = asyncio.create_task(maybe_seed_demo_account())
     yield
     await engine.dispose()
 
