@@ -1162,6 +1162,53 @@ accounting_fixed_asset_events = Table(
     Column("created_at", String(64)),
 )
 
+accounting_year_end_settings = Table(
+    "accounting_year_end_settings",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, unique=True, index=True),
+    Column("retained_earnings_account", String(32), default="3200"),
+    Column("allow_period_reopen", Boolean, default=True),
+    Column("automatic_opening_balances", Boolean, default=True),
+    Column("year_end_approval_required", Boolean, default=False),
+    Column("checklist_requirements", Text),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_year_end_events = Table(
+    "accounting_year_end_events",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("event_type", String(64), nullable=False, index=True),
+    Column("financial_year_id", String(36), index=True),
+    Column("period_id", String(36), index=True),
+    Column("journal_entry_id", String(36), index=True),
+    Column("user_id", String(36)),
+    Column("reason", Text),
+    Column("payload_json", Text),
+    Column("created_at", String(64)),
+)
+
+accounting_opening_balances = Table(
+    "accounting_opening_balances",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("financial_year_id", String(36), nullable=False, index=True),
+    Column("source_financial_year_id", String(36), index=True),
+    Column("account_code", String(32), index=True),
+    Column("account_name", String(255)),
+    Column("category", String(64)),
+    Column("debit", String(64), default="0.00"),
+    Column("credit", String(64), default="0.00"),
+    Column("journal_entry_id", String(36)),
+    Column("status", String(32), default="draft", index=True),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("portal")
 
@@ -1243,6 +1290,9 @@ async def ensure_schema_columns(conn):
         accounting_fixed_assets,
         accounting_fixed_asset_depreciation,
         accounting_fixed_asset_events,
+        accounting_year_end_settings,
+        accounting_year_end_events,
+        accounting_opening_balances,
     ):
         existing_column_info = await conn.run_sync(
             lambda sync_conn, table_name=table.name: {
@@ -1479,6 +1529,7 @@ NATIVE_ACCOUNTING_MODULES = [
     {"key": "reports", "label": "Reports", "description": "Profit and loss, balance sheet, trial balance, and ledgers."},
     {"key": "settings", "label": "Settings", "description": "Accounting periods, defaults, VAT basis, and locks."},
     {"key": "fixed_assets", "label": "Fixed Assets", "description": "Asset register, depreciation, disposals, transfers, revaluations and reports."},
+    {"key": "year_end", "label": "Year End", "description": "Period locks, financial year close, opening balances and retained earnings."},
     {"key": "payroll", "label": "Payroll", "description": "Placeholder for payroll summaries and posting journals."},
 ]
 
@@ -3838,6 +3889,294 @@ async def native_account_balances(session: AsyncSession, client_id: str) -> dict
     return balances
 
 
+def serialize_year_end_settings(row: dict) -> dict:
+    item = dict(row)
+    item["checklist_requirements"] = parse_json_object(item.get("checklist_requirements")) or {
+        "no_draft_transactions": True,
+        "bank_reconciliations_complete": True,
+        "vat_periods_reviewed": True,
+        "trial_balance_reviewed": True,
+        "profit_and_loss_reviewed": True,
+    }
+    return item
+
+
+def serialize_year_end_event(row: dict) -> dict:
+    item = dict(row)
+    item["payload"] = parse_json_object(item.get("payload_json")) or {}
+    return item
+
+
+def serialize_opening_balance(row: dict) -> dict:
+    item = dict(row)
+    item["debit"] = money_str(money(item.get("debit")))
+    item["credit"] = money_str(money(item.get("credit")))
+    return item
+
+
+async def ensure_year_end_settings(session: AsyncSession, client_id: str) -> dict:
+    existing = await one(session, select(accounting_year_end_settings).where(accounting_year_end_settings.c.client_id == client_id))
+    if existing:
+        return existing
+    now = utc_now_iso()
+    accounting_defaults = await ensure_accounting_settings(session, client_id)
+    row = {
+        "id": new_id(),
+        "client_id": client_id,
+        "retained_earnings_account": accounting_defaults.get("default_retained_earnings_account") or "3200",
+        "allow_period_reopen": True,
+        "automatic_opening_balances": True,
+        "year_end_approval_required": False,
+        "checklist_requirements": json.dumps({
+            "no_draft_transactions": True,
+            "bank_reconciliations_complete": True,
+            "vat_periods_reviewed": True,
+            "trial_balance_reviewed": True,
+            "profit_and_loss_reviewed": True,
+        }),
+        "created_at": now,
+        "updated_at": now,
+    }
+    await session.execute(insert(accounting_year_end_settings).values(**row))
+    await session.flush()
+    return row
+
+
+async def record_year_end_event(
+    session: AsyncSession,
+    client_id: str,
+    event_type: str,
+    user_id: Optional[str],
+    reason: str = "",
+    financial_year_id: Optional[str] = None,
+    period_id: Optional[str] = None,
+    journal_entry_id: Optional[str] = None,
+    payload: Optional[dict] = None,
+) -> dict:
+    row = {
+        "id": new_id(),
+        "client_id": client_id,
+        "event_type": event_type,
+        "financial_year_id": financial_year_id,
+        "period_id": period_id,
+        "journal_entry_id": journal_entry_id,
+        "user_id": user_id,
+        "reason": reason,
+        "payload_json": json.dumps(payload or {}),
+        "created_at": utc_now_iso(),
+    }
+    await session.execute(insert(accounting_year_end_events).values(**row))
+    await add_accounting_audit(session, client_id, user_id, event_type, "year_end", row["id"], {**(payload or {}), "reason": reason})
+    return row
+
+
+def period_contains_date(period: dict, value: str) -> bool:
+    entry_date = str(value or "")[:10]
+    return bool(entry_date and str(period.get("period_start") or "") <= entry_date <= str(period.get("period_end") or ""))
+
+
+def financial_year_contains_date(year: dict, value: str) -> bool:
+    entry_date = str(value or "")[:10]
+    return bool(entry_date and str(year.get("start_date") or "") <= entry_date <= str(year.get("end_date") or ""))
+
+
+def account_balance_direction(account: dict, balance: Decimal) -> tuple[Decimal, Decimal]:
+    if balance >= Decimal("0.00"):
+        return balance, Decimal("0.00")
+    return Decimal("0.00"), -balance
+
+
+async def account_balances_for_financial_year(session: AsyncSession, client_id: str, year: dict) -> dict[str, Decimal]:
+    entries = await many(
+        session,
+        select(accounting_journal_entries).where(
+            accounting_journal_entries.c.client_id == client_id,
+            accounting_journal_entries.c.status == "posted",
+            accounting_journal_entries.c.entry_date >= str(year.get("start_date") or ""),
+            accounting_journal_entries.c.entry_date <= str(year.get("end_date") or ""),
+        ),
+    )
+    entry_ids = [str(entry.get("id")) for entry in entries]
+    if not entry_ids:
+        return {}
+    lines = await many(
+        session,
+        select(accounting_journal_lines).where(
+            accounting_journal_lines.c.client_id == client_id,
+            accounting_journal_lines.c.entry_id.in_(entry_ids),
+        ),
+    )
+    balances: dict[str, Decimal] = {}
+    for line in lines:
+        code = str(line.get("account_code") or "")
+        if not code:
+            continue
+        balances[code] = balances.get(code, Decimal("0.00")) + money(line.get("debit")) - money(line.get("credit"))
+    return balances
+
+
+async def year_end_trial_balance(session: AsyncSession, client_id: str, year: dict, accounts: list[dict]) -> list[dict]:
+    balances = await account_balances_for_financial_year(session, client_id, year)
+    rows = []
+    for account in accounts:
+        balance = balances.get(str(account.get("code") or ""), Decimal("0.00"))
+        if balance == Decimal("0.00"):
+            continue
+        debit, credit = account_balance_direction(account, balance)
+        rows.append({
+            "code": account.get("code"),
+            "name": account.get("name"),
+            "category": account.get("category"),
+            "debit": money_str(debit),
+            "credit": money_str(credit),
+        })
+    return rows
+
+
+def year_end_profit_and_loss(accounts: list[dict], balances: dict[str, Decimal]) -> dict:
+    income = Decimal("0.00")
+    expense = Decimal("0.00")
+    rows = []
+    for account in accounts:
+        code = str(account.get("code") or "")
+        balance = balances.get(code, Decimal("0.00"))
+        category = str(account.get("category") or "")
+        if category == "Income":
+            amount = -balance
+            income += amount
+        elif category == "Expense":
+            amount = balance
+            expense += amount
+        else:
+            continue
+        if amount != Decimal("0.00"):
+            rows.append({"code": code, "name": account.get("name"), "category": category, "amount": money_str(amount)})
+    return {"income": money_str(income), "expenses": money_str(expense), "profit": money_str(income - expense), "rows": rows}
+
+
+async def build_opening_balance_preview(session: AsyncSession, client_id: str, source_year: dict, target_year: Optional[dict], accounts: list[dict]) -> list[dict]:
+    if not target_year:
+        return []
+    balances = await native_account_balances(session, client_id)
+    rows = []
+    for account in accounts:
+        category = str(account.get("category") or "")
+        if category not in {"Asset", "Liability", "Equity"}:
+            continue
+        balance = balances.get(str(account.get("code") or ""), Decimal("0.00"))
+        if balance == Decimal("0.00"):
+            continue
+        debit, credit = account_balance_direction(account, balance)
+        rows.append({
+            "account_code": account.get("code"),
+            "account_name": account.get("name"),
+            "category": category,
+            "debit": money_str(debit),
+            "credit": money_str(credit),
+            "source_financial_year_id": source_year.get("id"),
+            "financial_year_id": target_year.get("id"),
+            "status": "preview",
+        })
+    return rows
+
+
+async def year_end_workspace(session: AsyncSession, client_id: str, accounts: list[dict], periods: list[dict], financial_years: list[dict]) -> dict:
+    settings_row = await ensure_year_end_settings(session, client_id)
+    today = datetime.now(timezone.utc).date().isoformat()
+    ordered_years = sorted(financial_years, key=lambda row: str(row.get("start_date") or ""), reverse=True)
+    current_year = next((year for year in ordered_years if str(year.get("start_date") or "") <= today <= str(year.get("end_date") or "")), None) or (ordered_years[0] if ordered_years else None)
+    last_closed = next((year for year in ordered_years if str(year.get("status") or "") == "closed"), None)
+    period_counts = await accounting_period_transaction_counts(session, client_id)
+    period_rows = []
+    for period in periods:
+        item = serialize_period(period)
+        item["transactions_posted"] = period_counts.get(str(period.get("id")), 0)
+        period_rows.append(item)
+    draft_journals = await many(session, select(accounting_journal_entries).where(accounting_journal_entries.c.client_id == client_id, accounting_journal_entries.c.status == "draft"))
+    unreconciled_bank = await count_rows(session, accounting_bank_transactions, accounting_bank_transactions.c.client_id == client_id, accounting_bank_transactions.c.status != "reconciled", accounting_bank_transactions.c.ignored == False)  # noqa: E712
+    open_vat_periods = await count_rows(session, accounting_vat_periods, accounting_vat_periods.c.client_id == client_id, accounting_vat_periods.c.status == "open")
+    trial_balance = await year_end_trial_balance(session, client_id, current_year, accounts) if current_year else []
+    balances = await account_balances_for_financial_year(session, client_id, current_year) if current_year else {}
+    profit_loss = year_end_profit_and_loss(accounts, balances)
+    next_year = None
+    if current_year:
+        next_year = next((year for year in financial_years if str(year.get("start_date") or "") > str(current_year.get("end_date") or "")), None)
+    opening_preview = await build_opening_balance_preview(session, client_id, current_year, next_year, accounts) if current_year else []
+    opening_rows = await many(session, select(accounting_opening_balances).where(accounting_opening_balances.c.client_id == client_id).order_by(accounting_opening_balances.c.created_at.desc()))
+    events = await many(session, select(accounting_year_end_events).where(accounting_year_end_events.c.client_id == client_id).order_by(accounting_year_end_events.c.created_at.desc()).limit(100))
+    closing_journals = await many(
+        session,
+        select(accounting_journal_entries).where(
+            accounting_journal_entries.c.client_id == client_id,
+            accounting_journal_entries.c.source_type.in_(["year_end_close", "year_end_adjustment", "opening_balance"]),
+        ).order_by(accounting_journal_entries.c.entry_date.desc(), accounting_journal_entries.c.created_at.desc()),
+    )
+    validation_errors = []
+    warnings = []
+    if draft_journals:
+        validation_errors.append(f"{len(draft_journals)} draft journal(s) must be posted or voided before year end close.")
+    if unreconciled_bank:
+        validation_errors.append(f"{unreconciled_bank} bank transaction(s) are still unreconciled.")
+    if open_vat_periods:
+        warnings.append(f"{open_vat_periods} VAT period(s) are still open. This is a warning, not a blocker.")
+    outstanding_tasks = len(validation_errors) + len(warnings)
+    return {
+        "settings": serialize_year_end_settings(settings_row),
+        "dashboard": {
+            "current_financial_year": current_year.get("name") if current_year else "-",
+            "open_periods": len([p for p in period_rows if p.get("status") == "open"]),
+            "locked_periods": len([p for p in period_rows if p.get("status") == "locked"]),
+            "closed_years": len([y for y in financial_years if y.get("status") == "closed"]),
+            "outstanding_tasks": outstanding_tasks,
+            "last_year_closed": last_closed.get("name") if last_closed else "-",
+        },
+        "current_year": serialize_financial_year(current_year) if current_year else None,
+        "next_year": serialize_financial_year(next_year) if next_year else None,
+        "financial_years": [serialize_financial_year(y) for y in financial_years],
+        "periods": period_rows,
+        "checklist": {
+            "errors": validation_errors,
+            "warnings": warnings,
+            "items": [
+                {"label": "No draft transactions remain", "complete": not draft_journals, "count": len(draft_journals)},
+                {"label": "Bank reconciliations complete", "complete": unreconciled_bank == 0, "count": unreconciled_bank},
+                {"label": "VAT periods reviewed", "complete": open_vat_periods == 0, "count": open_vat_periods, "warning_only": True},
+                {"label": "Trial Balance reviewed", "complete": bool(trial_balance) or not current_year},
+                {"label": "Profit and Loss reviewed", "complete": True},
+            ],
+        },
+        "trial_balance": trial_balance,
+        "profit_and_loss": profit_loss,
+        "opening_balance_preview": opening_preview,
+        "opening_balances": [serialize_opening_balance(row) for row in opening_rows],
+        "closing_journals": closing_journals,
+        "retained_earnings": {
+            "account_code": settings_row.get("retained_earnings_account") or "3200",
+            "current_year_profit": profit_loss.get("profit"),
+            "automatic_transfer": True,
+        },
+        "lock_history": [serialize_year_end_event(e) for e in events],
+        "reports": {
+            "year_end_checklist": [
+                {"item": row["label"], "status": "Complete" if row.get("complete") else "Open", "count": row.get("count", 0)}
+                for row in [
+                    {"label": "Draft transactions", "complete": not draft_journals, "count": len(draft_journals)},
+                    {"label": "Unreconciled bank transactions", "complete": unreconciled_bank == 0, "count": unreconciled_bank},
+                    {"label": "Open VAT periods", "complete": open_vat_periods == 0, "count": open_vat_periods},
+                ]
+            ],
+            "closing_journal_report": closing_journals,
+            "opening_balance_report": opening_preview,
+            "period_lock_report": [serialize_year_end_event(e) for e in events if "period" in str(e.get("event_type") or "")],
+            "financial_year_summary": [serialize_financial_year(y) for y in financial_years],
+        },
+        "ai_alerts": [
+            {"module": "Year End", "type": "Validation", "detail": item, "target_tab": "Financial Year Close"}
+            for item in validation_errors + warnings
+        ],
+    }
+
+
 async def native_accounting_reports(session: AsyncSession, client_id: str) -> dict:
     accounts = await many(session, select(accounting_accounts).where(accounting_accounts.c.client_id == client_id))
     account_by_code = {str(account.get("code") or ""): account for account in accounts}
@@ -4850,6 +5189,7 @@ async def get_native_accounting_workspace(
     accounts_payable_data = await accounts_payable_workspace(session, client_id)
     accounts_receivable_data = await accounts_receivable_workspace(session, client_id)
     fixed_assets_data = await fixed_assets_workspace(session, client_id, accounts, accounts_payable_data)
+    year_end_data = await year_end_workspace(session, client_id, accounts, periods, financial_years)
     ai_workspace_data = build_ai_accounting_workspace(
         client_id,
         summary,
@@ -4864,6 +5204,7 @@ async def get_native_accounting_workspace(
         vat_engine_data,
         reports_data,
     )
+    ai_workspace_data["year_end"] = year_end_data.get("ai_alerts", [])
     return {
         "client": serialize_user(client),
         "modules": NATIVE_ACCOUNTING_MODULES,
@@ -4883,6 +5224,7 @@ async def get_native_accounting_workspace(
         "accounts_payable": accounts_payable_data,
         "accounts_receivable": accounts_receivable_data,
         "fixed_assets": fixed_assets_data,
+        "year_end": year_end_data,
         "ai_workspace": ai_workspace_data,
     }
 
@@ -7354,6 +7696,273 @@ async def update_native_accounting_settings(
     await session.commit()
     updated_row = await ensure_accounting_settings(session, client_id)
     return serialize_accounting_settings(updated_row)
+
+
+async def ensure_next_financial_year(session: AsyncSession, client_id: str, source_year: dict) -> dict:
+    source_end = parse_iso_date(str(source_year.get("end_date") or ""), "Financial year end")
+    next_start = source_end + timedelta(days=1)
+    existing = await one(
+        session,
+        select(accounting_financial_years).where(
+            accounting_financial_years.c.client_id == client_id,
+            accounting_financial_years.c.start_date == next_start.isoformat(),
+        ),
+    )
+    if existing:
+        return existing
+    next_end = add_months_to_date(next_start, 12) - timedelta(days=1)
+    now = utc_now_iso()
+    year_id = new_id()
+    year_row = {
+        "id": year_id,
+        "client_id": client_id,
+        "name": f"FY {next_start.year}/{str(next_end.year)[-2:]}",
+        "start_date": next_start.isoformat(),
+        "end_date": next_end.isoformat(),
+        "status": "open",
+        "created_at": now,
+        "updated_at": now,
+    }
+    await session.execute(insert(accounting_financial_years).values(**year_row))
+    period_start = next_start
+    period_number = 1
+    while period_start <= next_end:
+        next_month_start = add_months_to_date(period_start, 1)
+        period_end = min(next_month_start - timedelta(days=1), next_end)
+        await session.execute(
+            insert(accounting_periods).values(
+                id=new_id(),
+                client_id=client_id,
+                financial_year_id=year_id,
+                period_name=f"P{period_number:02d}",
+                period_number=period_number,
+                period_start=period_start.isoformat(),
+                period_end=period_end.isoformat(),
+                status="open",
+                transactions_posted=0,
+                notes=year_row["name"],
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        period_start = period_end + timedelta(days=1)
+        period_number += 1
+    return year_row
+
+
+def year_end_closing_lines(accounts: list[dict], balances: dict[str, Decimal], retained_account: dict) -> list[dict]:
+    lines: list[dict] = []
+    retained_debit = Decimal("0.00")
+    retained_credit = Decimal("0.00")
+    for account in accounts:
+        category = str(account.get("category") or "")
+        if category not in {"Income", "Expense"}:
+            continue
+        balance = balances.get(str(account.get("code") or ""), Decimal("0.00"))
+        if balance == Decimal("0.00"):
+            continue
+        if balance > Decimal("0.00"):
+            lines.append({"account": account, "debit": "0.00", "credit": money_str(balance), "description": "Year-end close"})
+            retained_debit += balance
+        else:
+            amount = -balance
+            lines.append({"account": account, "debit": money_str(amount), "credit": "0.00", "description": "Year-end close"})
+            retained_credit += amount
+    if retained_debit:
+        lines.append({"account": retained_account, "debit": money_str(retained_debit), "credit": "0.00", "description": "Transfer profit/loss to retained earnings"})
+    if retained_credit:
+        lines.append({"account": retained_account, "debit": "0.00", "credit": money_str(retained_credit), "description": "Transfer profit/loss to retained earnings"})
+    return lines
+
+
+def opening_balance_journal_lines(accounts: list[dict], balances: dict[str, Decimal]) -> list[dict]:
+    lines: list[dict] = []
+    for account in accounts:
+        category = str(account.get("category") or "")
+        if category not in {"Asset", "Liability", "Equity"}:
+            continue
+        balance = balances.get(str(account.get("code") or ""), Decimal("0.00"))
+        if balance == Decimal("0.00"):
+            continue
+        debit, credit = account_balance_direction(account, balance)
+        lines.append({"account": account, "debit": money_str(debit), "credit": money_str(credit), "description": "Opening balance"})
+    return lines
+
+
+@api.put("/admin/accounting/clients/{client_id}/year-end/settings")
+async def update_year_end_settings(
+    client_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before saving year-end settings.")
+    existing = await ensure_year_end_settings(session, client_id)
+    values = {
+        "retained_earnings_account": str(payload.get("retained_earnings_account", existing.get("retained_earnings_account") or "3200") or "3200").strip(),
+        "allow_period_reopen": bool(payload.get("allow_period_reopen", existing.get("allow_period_reopen", True))),
+        "automatic_opening_balances": bool(payload.get("automatic_opening_balances", existing.get("automatic_opening_balances", True))),
+        "year_end_approval_required": bool(payload.get("year_end_approval_required", existing.get("year_end_approval_required", False))),
+        "updated_at": utc_now_iso(),
+    }
+    if "checklist_requirements" in payload:
+        values["checklist_requirements"] = json.dumps(payload.get("checklist_requirements") or {})
+    await session.execute(update(accounting_year_end_settings).where(accounting_year_end_settings.c.client_id == client_id).values(**values))
+    await record_year_end_event(session, client_id, "year_end_settings_updated", user.get("id"), payload=values)
+    await session.commit()
+    row = await ensure_year_end_settings(session, client_id)
+    return serialize_year_end_settings(row)
+
+
+@api.post("/admin/accounting/clients/{client_id}/year-end/periods/{period_id}/{action}")
+async def update_year_end_period_status(
+    client_id: str,
+    period_id: str,
+    action: str,
+    payload: dict | None = None,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before changing periods.")
+    period = await one(session, select(accounting_periods).where(accounting_periods.c.client_id == client_id, accounting_periods.c.id == period_id))
+    if not period:
+        raise HTTPException(status_code=404, detail="Accounting period not found.")
+    settings_row = await ensure_year_end_settings(session, client_id)
+    status_by_action = {"lock": "locked", "close": "closed", "reopen": "open", "unlock": "open"}
+    status = status_by_action.get(action)
+    if not status:
+        raise HTTPException(status_code=400, detail="Action must be lock, close, unlock, or reopen.")
+    if action in {"reopen", "unlock"} and not bool(settings_row.get("allow_period_reopen", True)):
+        raise HTTPException(status_code=403, detail="Period reopening is disabled in Year End settings.")
+    reason = str((payload or {}).get("reason") or "").strip()
+    await session.execute(update(accounting_periods).where(accounting_periods.c.id == period_id).values(status=status, updated_at=utc_now_iso()))
+    event_type = {"lock": "period_locked", "close": "period_closed", "reopen": "period_reopened", "unlock": "period_unlocked"}[action]
+    await record_year_end_event(session, client_id, event_type, user.get("id"), reason=reason, period_id=period_id, financial_year_id=period.get("financial_year_id"), payload={"previous_status": period.get("status"), "status": status})
+    await session.commit()
+    return {"ok": True, "status": status}
+
+
+@api.post("/admin/accounting/clients/{client_id}/year-end/journals")
+async def post_year_end_adjustment_journal(
+    client_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before posting year-end journals.")
+    accounts = await many(session, select(accounting_accounts).where(accounting_accounts.c.client_id == client_id))
+    entry_date = parse_date_or_today(payload.get("entry_date")).isoformat()
+    lines = []
+    for line in payload.get("lines") or []:
+        account = find_native_account(accounts, line.get("account_code") or line.get("account"), str(line.get("account_code") or ""))
+        lines.append({"account": account, "debit": money_str(money(line.get("debit"))), "credit": money_str(money(line.get("credit"))), "description": str(line.get("description") or "Year-end adjustment")})
+    journal = await post_native_journal(session, client_id, "year_end_adjustment", new_id(), entry_date, str(payload.get("reference") or "YE-ADJ"), str(payload.get("description") or "Year-end adjustment"), lines, user.get("id"))
+    await record_year_end_event(session, client_id, "year_end_adjustment_posted", user.get("id"), reason=str(payload.get("reason") or ""), journal_entry_id=journal["id"], payload=journal)
+    await session.commit()
+    return {"ok": True, "journal": journal}
+
+
+@api.post("/admin/accounting/clients/{client_id}/year-end/financial-years/{year_id}/close")
+async def close_financial_year(
+    client_id: str,
+    year_id: str,
+    payload: dict | None = None,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before closing years.")
+    year = await one(session, select(accounting_financial_years).where(accounting_financial_years.c.client_id == client_id, accounting_financial_years.c.id == year_id))
+    if not year:
+        raise HTTPException(status_code=404, detail="Financial year not found.")
+    if year.get("status") == "closed":
+        raise HTTPException(status_code=400, detail="This financial year is already closed.")
+    settings_row = await ensure_year_end_settings(session, client_id)
+    accounts = await many(session, select(accounting_accounts).where(accounting_accounts.c.client_id == client_id).order_by(accounting_accounts.c.code.asc()))
+    periods = await many(session, select(accounting_periods).where(accounting_periods.c.client_id == client_id).order_by(accounting_periods.c.period_start.asc()))
+    years = await many(session, select(accounting_financial_years).where(accounting_financial_years.c.client_id == client_id).order_by(accounting_financial_years.c.start_date.desc()))
+    workspace = await year_end_workspace(session, client_id, accounts, periods, years)
+    errors = workspace.get("checklist", {}).get("errors") or []
+    if errors:
+        raise HTTPException(status_code=400, detail="Year end cannot close yet: " + " ".join(errors))
+    retained_account = find_native_account(accounts, settings_row.get("retained_earnings_account"), "3200")
+    balances = await account_balances_for_financial_year(session, client_id, year)
+    closing_lines = year_end_closing_lines(accounts, balances, retained_account)
+    closing_journal = None
+    if closing_lines:
+        closing_journal = await post_native_journal(session, client_id, "year_end_close", year_id, str(year.get("end_date")), f"YE-CLOSE-{year.get('name')}", f"Close {year.get('name')} to retained earnings", closing_lines, user.get("id"))
+    await session.execute(update(accounting_periods).where(accounting_periods.c.client_id == client_id, accounting_periods.c.financial_year_id == year_id).values(status="closed", updated_at=utc_now_iso()))
+    await session.execute(update(accounting_financial_years).where(accounting_financial_years.c.id == year_id).values(status="closed", updated_at=utc_now_iso()))
+    next_year = await ensure_next_financial_year(session, client_id, year)
+    opening_journal = None
+    if bool(settings_row.get("automatic_opening_balances", True)):
+        all_balances = await native_account_balances(session, client_id)
+        opening_lines = opening_balance_journal_lines(accounts, all_balances)
+        if opening_lines:
+            opening_journal = await post_native_journal(session, client_id, "opening_balance", next_year["id"], str(next_year.get("start_date")), f"OPEN-{next_year.get('name')}", f"Opening balances for {next_year.get('name')}", opening_lines, user.get("id"))
+            now = utc_now_iso()
+            for line in opening_lines:
+                account = line["account"]
+                await session.execute(
+                    insert(accounting_opening_balances).values(
+                        id=new_id(),
+                        client_id=client_id,
+                        financial_year_id=next_year["id"],
+                        source_financial_year_id=year_id,
+                        account_code=account.get("code"),
+                        account_name=account.get("name"),
+                        category=account.get("category"),
+                        debit=money_str(money(line.get("debit"))),
+                        credit=money_str(money(line.get("credit"))),
+                        journal_entry_id=opening_journal["id"],
+                        status="posted",
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+    await record_year_end_event(
+        session,
+        client_id,
+        "financial_year_closed",
+        user.get("id"),
+        reason=str((payload or {}).get("reason") or ""),
+        financial_year_id=year_id,
+        journal_entry_id=(closing_journal or {}).get("id"),
+        payload={"closing_journal": closing_journal, "opening_journal": opening_journal, "next_year_id": next_year.get("id")},
+    )
+    await session.commit()
+    return {"ok": True, "closing_journal": closing_journal, "opening_journal": opening_journal, "next_year": serialize_financial_year(next_year)}
+
+
+@api.post("/admin/accounting/clients/{client_id}/year-end/financial-years/{year_id}/reopen")
+async def reopen_financial_year(
+    client_id: str,
+    year_id: str,
+    payload: dict | None = None,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before reopening years.")
+    settings_row = await ensure_year_end_settings(session, client_id)
+    if not bool(settings_row.get("allow_period_reopen", True)):
+        raise HTTPException(status_code=403, detail="Year reopening is disabled in Year End settings.")
+    year = await one(session, select(accounting_financial_years).where(accounting_financial_years.c.client_id == client_id, accounting_financial_years.c.id == year_id))
+    if not year:
+        raise HTTPException(status_code=404, detail="Financial year not found.")
+    await session.execute(update(accounting_financial_years).where(accounting_financial_years.c.id == year_id).values(status="open", updated_at=utc_now_iso()))
+    await session.execute(update(accounting_periods).where(accounting_periods.c.client_id == client_id, accounting_periods.c.financial_year_id == year_id).values(status="open", updated_at=utc_now_iso()))
+    await record_year_end_event(session, client_id, "financial_year_reopened", user.get("id"), reason=str((payload or {}).get("reason") or ""), financial_year_id=year_id, payload={"previous_status": year.get("status")})
+    await session.commit()
+    return {"ok": True}
 
 
 @api.get("/admin/companies-house/search")

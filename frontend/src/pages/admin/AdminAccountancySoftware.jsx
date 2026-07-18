@@ -11,6 +11,7 @@ import {
   Banknote,
   BookOpen,
   Building2,
+  CalendarCheck,
   CheckCircle2,
   ClipboardCheck,
   FileBarChart,
@@ -38,6 +39,7 @@ const MODULES = [
   { key: "banking", label: "Banking", icon: Banknote },
   { key: "vat", label: "VAT", icon: ShieldCheck },
   { key: "fixed_assets", label: "Fixed Assets", icon: Building2 },
+  { key: "year_end", label: "Year End", icon: CalendarCheck },
   { key: "gl", label: "General ledger", icon: Landmark },
   { key: "coa", label: "Chart of accounts", icon: BookOpen },
   { key: "audit", label: "Audit trail", icon: ShieldCheck },
@@ -115,6 +117,13 @@ const MODULE_DETAILS = {
     statLabel: "Net book value",
     stat: (workspace) => formatMoney(workspace?.fixed_assets?.dashboard?.net_book_value || 0),
     tabs: ["Dashboard", "Asset Register", "Asset Categories", "Depreciation", "Disposals", "Transfers", "Revaluations", "Reports", "Settings"],
+  },
+  year_end: {
+    title: "Year End",
+    manage: ["Period Close", "Financial Year Close", "Opening Balances", "Closing Journals", "Retained Earnings"],
+    statLabel: "Open tasks",
+    stat: (workspace) => workspace?.year_end?.dashboard?.outstanding_tasks || 0,
+    tabs: ["Dashboard", "Period Close", "Financial Year Close", "Opening Balances", "Closing Journals", "Retained Earnings", "Lock History", "Reports", "Settings"],
   },
   gl: {
     title: "General Ledger",
@@ -687,6 +696,10 @@ function ModuleWorkspace(props) {
 
     if (module === "fixed_assets") {
       return <FixedAssetsWorkspace workspace={workspace} tab={moduleTab} reloadWorkspace={reloadWorkspace} busy={busy} />;
+    }
+
+    if (module === "year_end") {
+      return <YearEndWorkspace workspace={workspace} tab={moduleTab} reloadWorkspace={reloadWorkspace} busy={busy} />;
     }
 
     if (module === "gl") {
@@ -2321,6 +2334,309 @@ function SupplierSelect({ suppliers, value, onChange }) {
       </select>
     </div>
   );
+}
+
+function YearEndWorkspace({ workspace, tab, reloadWorkspace, busy }) {
+  const clientId = workspace?.client?.id;
+  const data = workspace?.year_end || {};
+  const dashboard = data.dashboard || {};
+  const checklist = data.checklist || {};
+  const settings = useMemo(() => data.settings || {}, [data.settings]);
+  const accounts = Array.isArray(workspace?.accounts) ? workspace.accounts : [];
+  const periods = Array.isArray(data.periods) ? data.periods : [];
+  const years = Array.isArray(data.financial_years) ? data.financial_years : [];
+  const openingPreview = Array.isArray(data.opening_balance_preview) ? data.opening_balance_preview : [];
+  const openingBalances = Array.isArray(data.opening_balances) ? data.opening_balances : [];
+  const closingJournals = Array.isArray(data.closing_journals) ? data.closing_journals : [];
+  const history = Array.isArray(data.lock_history) ? data.lock_history : [];
+  const reports = data.reports || {};
+  const [saving, setSaving] = useState(false);
+  const [periodReason, setPeriodReason] = useState("");
+  const [closeReason, setCloseReason] = useState("");
+  const [settingsForm, setSettingsForm] = useState(settings);
+  const [journalForm, setJournalForm] = useState({
+    entry_date: "",
+    reference: "YE-ADJ",
+    description: "Year-end adjustment",
+    reason: "",
+    lines: [
+      { account_code: "", debit: "", credit: "", description: "" },
+      { account_code: "", debit: "", credit: "", description: "" },
+    ],
+  });
+
+  useEffect(() => {
+    setSettingsForm(settings || {});
+  }, [settings]);
+
+  async function runAction(label, fn) {
+    setSaving(true);
+    try {
+      await fn();
+      toast.success(label);
+      await reloadWorkspace?.();
+    } catch (e) {
+      toast.error(formatApiError(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function periodAction(period, action) {
+    return runAction(`Period ${action} complete`, () => api.post(`/admin/accounting/clients/${clientId}/year-end/periods/${period.id}/${action}`, { reason: periodReason }));
+  }
+
+  function closeYear(year) {
+    if (!year?.id) return;
+    return runAction("Financial year closed", () => api.post(`/admin/accounting/clients/${clientId}/year-end/financial-years/${year.id}/close`, { reason: closeReason }));
+  }
+
+  function reopenYear(year) {
+    if (!year?.id) return;
+    return runAction("Financial year reopened", () => api.post(`/admin/accounting/clients/${clientId}/year-end/financial-years/${year.id}/reopen`, { reason: closeReason }));
+  }
+
+  function saveSettings(e) {
+    e.preventDefault();
+    return runAction("Year-end settings saved", () => api.put(`/admin/accounting/clients/${clientId}/year-end/settings`, settingsForm));
+  }
+
+  function postAdjustment(e) {
+    e.preventDefault();
+    const lines = journalForm.lines.filter((line) => line.account_code && (line.debit || line.credit));
+    return runAction("Year-end adjustment posted", () => api.post(`/admin/accounting/clients/${clientId}/year-end/journals`, { ...journalForm, lines }));
+  }
+
+  const currentYear = data.current_year || years[0] || null;
+  const checklistItems = Array.isArray(checklist.items) ? checklist.items : [];
+  const errors = Array.isArray(checklist.errors) ? checklist.errors : [];
+  const warnings = Array.isArray(checklist.warnings) ? checklist.warnings : [];
+
+  if (tab === "Dashboard") {
+    return (
+      <div className="space-y-4">
+        <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+          <SummaryCard label="Current year" value={dashboard.current_financial_year || "-"} tone="blue" />
+          <SummaryCard label="Open periods" value={dashboard.open_periods || 0} tone="emerald" />
+          <SummaryCard label="Locked periods" value={dashboard.locked_periods || 0} tone="amber" />
+          <SummaryCard label="Closed years" value={dashboard.closed_years || 0} tone="stone" />
+          <SummaryCard label="Open tasks" value={dashboard.outstanding_tasks || 0} tone={dashboard.outstanding_tasks ? "amber" : "emerald"} />
+          <SummaryCard label="Last closed" value={dashboard.last_year_closed || "-"} tone="stone" />
+        </div>
+        <div className="grid gap-4 xl:grid-cols-2">
+          <Panel title="Year-end checklist">
+            <div className="space-y-2">
+              {checklistItems.map((item) => (
+                <div key={item.label} className="flex items-center justify-between rounded-md border border-stone-100 bg-stone-50 px-3 py-2 text-sm">
+                  <span>{item.label}</span>
+                  <Badge className={item.complete ? "bg-emerald-100 text-emerald-900" : item.warning_only ? "bg-amber-100 text-amber-900" : "bg-red-100 text-red-900"}>
+                    {item.complete ? "Complete" : item.warning_only ? "Warning" : "Open"}
+                  </Badge>
+                </div>
+              ))}
+              {!checklistItems.length && <p className="py-6 text-center text-sm text-stone-500">No year-end checks configured yet.</p>}
+            </div>
+          </Panel>
+          <Panel title="Pending adjustments and warnings">
+            {[...errors, ...warnings].length === 0 ? (
+              <p className="py-8 text-center text-sm text-stone-500">No blockers or warnings for the current year.</p>
+            ) : (
+              <div className="space-y-2">
+                {errors.map((item) => <div key={item} className="rounded-md border border-red-100 bg-red-50 px-3 py-2 text-sm text-red-800">{item}</div>)}
+                {warnings.map((item) => <div key={item} className="rounded-md border border-amber-100 bg-amber-50 px-3 py-2 text-sm text-amber-800">{item}</div>)}
+              </div>
+            )}
+          </Panel>
+        </div>
+      </div>
+    );
+  }
+
+  if (tab === "Period Close") {
+    return (
+      <Panel title="Period close">
+        <div className="mb-3 grid gap-2 md:grid-cols-[1fr_auto]">
+          <Input value={periodReason} onChange={(e) => setPeriodReason(e.target.value)} placeholder="Reason for lock, close, or reopen" />
+          <Button type="button" variant="outline" onClick={() => reloadWorkspace?.()} disabled={busy || saving}><RefreshCw className="mr-2 h-4 w-4" />Refresh</Button>
+        </div>
+        <div className="overflow-auto">
+          <table className="min-w-full text-left text-sm">
+            <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
+              <tr>
+                <th className="px-3 py-2">Period</th>
+                <th className="px-3 py-2">Start</th>
+                <th className="px-3 py-2">End</th>
+                <th className="px-3 py-2">Status</th>
+                <th className="px-3 py-2">Transactions</th>
+                <th className="px-3 py-2">Last updated</th>
+                <th className="px-3 py-2 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {periods.map((period) => (
+                <tr key={period.id} className="border-t border-stone-100">
+                  <td className="px-3 py-2 font-medium">{period.period_name}</td>
+                  <td className="px-3 py-2">{formatDate(period.period_start)}</td>
+                  <td className="px-3 py-2">{formatDate(period.period_end)}</td>
+                  <td className="px-3 py-2"><Badge variant="outline">{period.status}</Badge></td>
+                  <td className="px-3 py-2">{period.transactions_posted || 0}</td>
+                  <td className="px-3 py-2">{formatDateTime(period.updated_at)}</td>
+                  <td className="px-3 py-2">
+                    <div className="flex justify-end gap-2">
+                      {period.status === "open" && <Button size="sm" variant="outline" onClick={() => periodAction(period, "lock")} disabled={saving}>Lock</Button>}
+                      {period.status !== "closed" && <Button size="sm" onClick={() => periodAction(period, "close")} disabled={saving}>Close</Button>}
+                      {period.status !== "open" && <Button size="sm" variant="outline" onClick={() => periodAction(period, "reopen")} disabled={saving}>Reopen</Button>}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+    );
+  }
+
+  if (tab === "Financial Year Close") {
+    return (
+      <div className="grid gap-4 xl:grid-cols-[1fr_1fr]">
+        <Panel title="Guided close">
+          <div className="space-y-3">
+            <Info label="Financial year" value={currentYear?.name} />
+            <div className="grid gap-2 md:grid-cols-2">
+              <Info label="Start date" value={formatDate(currentYear?.start_date)} />
+              <Info label="End date" value={formatDate(currentYear?.end_date)} />
+            </div>
+            <Input value={closeReason} onChange={(e) => setCloseReason(e.target.value)} placeholder="Close reason or approval note" />
+            <div className="space-y-2">
+              {checklistItems.map((item) => (
+                <div key={item.label} className="flex items-center justify-between rounded-md bg-stone-50 px-3 py-2 text-sm">
+                  <span>{item.label}</span>
+                  <Badge className={item.complete ? "bg-emerald-100 text-emerald-900" : "bg-amber-100 text-amber-900"}>{item.complete ? "Ready" : "Review"}</Badge>
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <Button onClick={() => closeYear(currentYear)} disabled={saving || errors.length > 0 || !currentYear}>Close financial year</Button>
+              <Button variant="outline" onClick={() => reopenYear(currentYear)} disabled={saving || !currentYear}>Reopen</Button>
+            </div>
+            {errors.length > 0 && <p className="text-sm text-red-700">Resolve blocker checks before closing.</p>}
+          </div>
+        </Panel>
+        <Panel title="Review balances">
+          <div className="grid gap-3 md:grid-cols-3">
+            <SummaryCard label="Income" value={formatMoney(data.profit_and_loss?.income)} tone="emerald" />
+            <SummaryCard label="Expenses" value={formatMoney(data.profit_and_loss?.expenses)} tone="amber" />
+            <SummaryCard label="Profit/loss" value={formatMoney(data.profit_and_loss?.profit)} tone="blue" />
+          </div>
+          <div className="mt-3">
+            <ReportTable rows={data.trial_balance || []} columns={[["code", "Code"], ["name", "Account"], ["category", "Category"], ["debit", "Debit", "money"], ["credit", "Credit", "money"]]} empty="No trial balance rows for this year." compact />
+          </div>
+        </Panel>
+      </div>
+    );
+  }
+
+  if (tab === "Opening Balances") {
+    return (
+      <div className="space-y-4">
+        <Panel title="Opening balance preview">
+          <ReportTable rows={openingPreview} columns={[["account_code", "Code"], ["account_name", "Account"], ["category", "Category"], ["debit", "Debit", "money"], ["credit", "Credit", "money"]]} empty="No opening balance preview yet." compact />
+        </Panel>
+        <Panel title="Generated opening balances">
+          <ReportTable rows={openingBalances} columns={[["account_code", "Code"], ["account_name", "Account"], ["debit", "Debit", "money"], ["credit", "Credit", "money"], ["status", "Status"], ["created_at", "Created"]]} empty="No opening balances generated yet." compact />
+        </Panel>
+      </div>
+    );
+  }
+
+  if (tab === "Closing Journals") {
+    return (
+      <div className="grid gap-4 xl:grid-cols-[1fr_1fr]">
+        <Panel title="Closing journals">
+          <ReportTable rows={closingJournals} columns={[["entry_date", "Date", "date"], ["reference", "Reference"], ["description", "Description"], ["total_debit", "Debit", "money"], ["total_credit", "Credit", "money"], ["status", "Status"]]} empty="No year-end journals posted yet." compact />
+        </Panel>
+        <Panel title="Manual adjustment journal">
+          <form className="space-y-3" onSubmit={postAdjustment}>
+            <div className="grid gap-2 md:grid-cols-3">
+              <Field label="Entry date" type="date" value={journalForm.entry_date} onChange={(value) => setJournalForm((current) => ({ ...current, entry_date: value }))} />
+              <Field label="Reference" value={journalForm.reference} onChange={(value) => setJournalForm((current) => ({ ...current, reference: value }))} />
+              <Field label="Reason" value={journalForm.reason} onChange={(value) => setJournalForm((current) => ({ ...current, reason: value }))} />
+            </div>
+            {journalForm.lines.map((line, index) => (
+              <div key={index} className="grid gap-2 md:grid-cols-[1.4fr_0.7fr_0.7fr_1fr]">
+                <AccountCodeSelect accounts={accounts} value={line.account_code} onChange={(value) => setJournalForm((current) => ({ ...current, lines: current.lines.map((row, i) => i === index ? { ...row, account_code: value } : row) }))} label={`Line ${index + 1} account`} />
+                <Field label="Debit" value={line.debit} onChange={(value) => setJournalForm((current) => ({ ...current, lines: current.lines.map((row, i) => i === index ? { ...row, debit: value } : row) }))} />
+                <Field label="Credit" value={line.credit} onChange={(value) => setJournalForm((current) => ({ ...current, lines: current.lines.map((row, i) => i === index ? { ...row, credit: value } : row) }))} />
+                <Field label="Description" value={line.description} onChange={(value) => setJournalForm((current) => ({ ...current, lines: current.lines.map((row, i) => i === index ? { ...row, description: value } : row) }))} />
+              </div>
+            ))}
+            <Button type="button" variant="outline" onClick={() => setJournalForm((current) => ({ ...current, lines: [...current.lines, { account_code: "", debit: "", credit: "", description: "" }] }))}>Add line</Button>
+            <Button type="submit" disabled={saving}>Post adjustment</Button>
+          </form>
+        </Panel>
+      </div>
+    );
+  }
+
+  if (tab === "Retained Earnings") {
+    return (
+      <Panel title="Retained earnings transfer">
+        <div className="grid gap-3 md:grid-cols-3">
+          <SummaryCard label="Retained earnings account" value={data.retained_earnings?.account_code || settings.retained_earnings_account || "3200"} tone="blue" />
+          <SummaryCard label="Current year profit/loss" value={formatMoney(data.retained_earnings?.current_year_profit)} tone="emerald" />
+          <SummaryCard label="Automatic transfer" value={data.retained_earnings?.automatic_transfer ? "On" : "Off"} tone="stone" />
+        </div>
+        <div className="mt-4">
+          <ReportTable rows={data.profit_and_loss?.rows || []} columns={[["code", "Code"], ["name", "Account"], ["category", "Category"], ["amount", "Amount", "money"]]} empty="No income or expense balances for the selected year." compact />
+        </div>
+      </Panel>
+    );
+  }
+
+  if (tab === "Lock History") {
+    return (
+      <Panel title="Lock history">
+        <ReportTable rows={history} columns={[["created_at", "Date"], ["event_type", "Action"], ["reason", "Reason"], ["financial_year_id", "Year"], ["period_id", "Period"], ["journal_entry_id", "Journal"]]} empty="No lock or close history yet." compact />
+      </Panel>
+    );
+  }
+
+  if (tab === "Reports") {
+    return (
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Panel title="Year-end checklist"><ReportTable rows={reports.year_end_checklist || []} columns={[["item", "Item"], ["status", "Status"], ["count", "Count"]]} compact /></Panel>
+        <Panel title="Period lock report"><ReportTable rows={reports.period_lock_report || []} columns={[["created_at", "Date"], ["event_type", "Action"], ["reason", "Reason"]]} compact /></Panel>
+        <Panel title="Opening balance report"><ReportTable rows={reports.opening_balance_report || []} columns={[["account_code", "Code"], ["account_name", "Account"], ["debit", "Debit", "money"], ["credit", "Credit", "money"]]} compact /></Panel>
+        <Panel title="Financial year summary"><ReportTable rows={reports.financial_year_summary || []} columns={[["name", "Year"], ["start_date", "Start", "date"], ["end_date", "End", "date"], ["status", "Status"]]} compact /></Panel>
+      </div>
+    );
+  }
+
+  if (tab === "Settings") {
+    return (
+      <Panel title="Year-end settings">
+        <form className="space-y-4" onSubmit={saveSettings}>
+          <AccountCodeSelect accounts={accounts} value={settingsForm.retained_earnings_account || "3200"} onChange={(value) => setSettingsForm((current) => ({ ...current, retained_earnings_account: value }))} label="Retained earnings account" />
+          <div className="grid gap-3 md:grid-cols-3">
+            {[
+              ["allow_period_reopen", "Allow period reopen"],
+              ["automatic_opening_balances", "Automatic opening balances"],
+              ["year_end_approval_required", "Year-end approval required"],
+            ].map(([key, label]) => (
+              <label key={key} className="flex items-start gap-2 rounded-md border border-stone-200 bg-stone-50 p-3 text-sm">
+                <input type="checkbox" checked={!!settingsForm[key]} onChange={(e) => setSettingsForm((current) => ({ ...current, [key]: e.target.checked }))} />
+                <span>{label}</span>
+              </label>
+            ))}
+          </div>
+          <Button type="submit" disabled={saving}>Save year-end settings</Button>
+        </form>
+      </Panel>
+    );
+  }
+
+  return <PlaceholderModulePanel title={tab} moduleTitle="Year End" />;
 }
 
 function FixedAssetsWorkspace({ workspace, tab, reloadWorkspace, busy }) {
