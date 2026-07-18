@@ -37,6 +37,7 @@ const MODULES = [
   { key: "receivables", label: "Receivables", icon: WalletCards },
   { key: "banking", label: "Banking", icon: Banknote },
   { key: "vat", label: "VAT", icon: ShieldCheck },
+  { key: "fixed_assets", label: "Fixed Assets", icon: Building2 },
   { key: "gl", label: "General ledger", icon: Landmark },
   { key: "coa", label: "Chart of accounts", icon: BookOpen },
   { key: "audit", label: "Audit trail", icon: ShieldCheck },
@@ -107,6 +108,13 @@ const MODULE_DETAILS = {
     statLabel: "Net VAT due",
     stat: (workspace) => formatMoney(workspace?.vat_engine?.dashboard?.net_vat_due || 0),
     tabs: ["Dashboard", "VAT Returns", "VAT Transactions", "VAT Codes", "VAT Periods", "Adjustments", "Reports", "Settings"],
+  },
+  fixed_assets: {
+    title: "Fixed Assets",
+    manage: ["Asset Register", "Categories", "Depreciation", "Disposals", "Transfers", "Revaluations"],
+    statLabel: "Net book value",
+    stat: (workspace) => formatMoney(workspace?.fixed_assets?.dashboard?.net_book_value || 0),
+    tabs: ["Dashboard", "Asset Register", "Asset Categories", "Depreciation", "Disposals", "Transfers", "Revaluations", "Reports", "Settings"],
   },
   gl: {
     title: "General Ledger",
@@ -675,6 +683,10 @@ function ModuleWorkspace(props) {
 
     if (module === "vat") {
       return <VatEngineWorkspace workspace={workspace} tab={moduleTab} reloadWorkspace={reloadWorkspace} busy={busy} />;
+    }
+
+    if (module === "fixed_assets") {
+      return <FixedAssetsWorkspace workspace={workspace} tab={moduleTab} reloadWorkspace={reloadWorkspace} busy={busy} />;
     }
 
     if (module === "gl") {
@@ -1394,17 +1406,6 @@ function BankAccountSelect({ bankAccounts = [], value, onChange, label = "Bank a
       <select value={value || ""} onChange={(e) => onChange(e.target.value)} className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm">
         <option value="">Select bank account</option>
         {bankAccounts.map((account) => <option key={account.id} value={account.id}>{account.account_name} - {account.nominal_account_code}</option>)}
-      </select>
-    </div>
-  );
-}
-
-function SelectField({ label, value, onChange, options = [] }) {
-  return (
-    <div>
-      <Label className="text-xs font-semibold text-stone-600">{label}</Label>
-      <select value={value || ""} onChange={(e) => onChange(e.target.value)} className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm">
-        {options.map((option) => <option key={option} value={option}>{option || "Any"}</option>)}
       </select>
     </div>
   );
@@ -2310,24 +2311,371 @@ function ApRegister({ title, rows, numberKey, dateKey, amountKey, empty, actions
 }
 
 function SupplierSelect({ suppliers, value, onChange }) {
+  const supplierRows = Array.isArray(suppliers) ? suppliers : [];
   return (
     <div>
       <Label className="text-xs font-semibold text-stone-600">Supplier</Label>
       <select value={value || ""} onChange={(e) => onChange(e.target.value)} className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm">
         <option value="">Select supplier</option>
-        {suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}
+        {supplierRows.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}
       </select>
     </div>
   );
 }
 
+function FixedAssetsWorkspace({ workspace, tab, reloadWorkspace, busy }) {
+  const clientId = workspace?.client?.id;
+  const fixedAssets = workspace?.fixed_assets || {};
+  const accounts = Array.isArray(workspace?.accounts) ? workspace.accounts : [];
+  const ap = workspace?.accounts_payable || {};
+  const suppliers = Array.isArray(ap.suppliers) ? ap.suppliers : [];
+  const categories = Array.isArray(fixedAssets.categories) ? fixedAssets.categories : [];
+  const assets = Array.isArray(fixedAssets.assets) ? fixedAssets.assets : [];
+  const activeAssets = assets.filter((asset) => (asset.status || "active") === "active");
+  const events = Array.isArray(fixedAssets.events) ? fixedAssets.events : [];
+  const schedule = Array.isArray(fixedAssets.depreciation_schedule) ? fixedAssets.depreciation_schedule : [];
+  const reports = fixedAssets.reports || {};
+  const dashboard = fixedAssets.dashboard || {};
+  const panels = fixedAssets.panels || {};
+  const settings = fixedAssets.settings || {};
+  const [saving, setSaving] = useState(false);
+  const [categoryForm, setCategoryForm] = useState({ name: "", description: "", default_useful_life_months: 36, default_depreciation_method: "straight_line", default_residual_value: "0.00", fixed_asset_account: settings.default_fixed_asset_account || "1500", accumulated_depreciation_account: settings.default_accumulated_depreciation_account || "1590", depreciation_expense_account: settings.default_depreciation_expense_account || "7000", active: true });
+  const [assetForm, setAssetForm] = useState({ asset_name: "", description: "", category_id: "", location: "", department: "", supplier_id: "", supplier_name: "", purchase_date: "", in_service_date: "", purchase_cost: "", residual_value: "0.00", useful_life_months: 36, depreciation_method: "straight_line", fixed_asset_account: settings.default_fixed_asset_account || "1500", accumulated_depreciation_account: settings.default_accumulated_depreciation_account || "1590", depreciation_expense_account: settings.default_depreciation_expense_account || "7000", notes: "" });
+  const [actionForm, setActionForm] = useState({ asset_id: "", date: "", amount: "", location: "", department: "", notes: "", disposal_type: "sale" });
+  const [settingsForm, setSettingsForm] = useState(settings);
+
+  useEffect(() => {
+    setSettingsForm(fixedAssets.settings || {});
+  }, [fixedAssets.settings]);
+
+  function selectedAsset() {
+    return activeAssets.find((asset) => asset.id === actionForm.asset_id) || activeAssets[0] || null;
+  }
+
+  function applyCategory(categoryId) {
+    const category = categories.find((item) => item.id === categoryId);
+    setAssetForm((current) => ({
+      ...current,
+      category_id: categoryId,
+      useful_life_months: category?.default_useful_life_months || current.useful_life_months,
+      depreciation_method: category?.default_depreciation_method || current.depreciation_method,
+      residual_value: category?.default_residual_value || current.residual_value,
+      fixed_asset_account: category?.fixed_asset_account || current.fixed_asset_account,
+      accumulated_depreciation_account: category?.accumulated_depreciation_account || current.accumulated_depreciation_account,
+      depreciation_expense_account: category?.depreciation_expense_account || current.depreciation_expense_account,
+    }));
+  }
+
+  function applySupplier(supplierId) {
+    const supplier = suppliers.find((item) => item.id === supplierId);
+    setAssetForm((current) => ({ ...current, supplier_id: supplierId, supplier_name: supplier?.name || "" }));
+  }
+
+  function applySuggestion(suggestion) {
+    setAssetForm((current) => ({
+      ...current,
+      asset_name: suggestion.asset_name || current.asset_name,
+      description: suggestion.asset_name || current.description,
+      supplier_id: suggestion.supplier_id || current.supplier_id,
+      supplier_name: suggestion.supplier_name || current.supplier_name,
+      purchase_date: suggestion.purchase_date || current.purchase_date,
+      in_service_date: suggestion.purchase_date || current.in_service_date,
+      purchase_cost: suggestion.purchase_cost || current.purchase_cost,
+      purchase_invoice_id: suggestion.purchase_invoice_id || "",
+      notes: suggestion.reason || current.notes,
+    }));
+    toast.success("Asset suggestion copied into the register form");
+  }
+
+  async function submitCategory(e) {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await api.post(`/admin/accounting/clients/${clientId}/fixed-assets/categories`, categoryForm);
+      toast.success("Asset category saved");
+      setCategoryForm((current) => ({ ...current, name: "", description: "" }));
+      await reloadWorkspace?.();
+    } catch (e) {
+      toast.error(formatApiError(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function submitAsset(e) {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await api.post(`/admin/accounting/clients/${clientId}/fixed-assets`, assetForm);
+      toast.success("Fixed asset created");
+      setAssetForm((current) => ({ ...current, asset_name: "", description: "", purchase_cost: "", notes: "" }));
+      await reloadWorkspace?.();
+    } catch (e) {
+      toast.error(formatApiError(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function postAssetAction(endpoint, payload, message) {
+    const asset = selectedAsset();
+    if (!asset) {
+      toast.error("Select an active asset first");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.post(`/admin/accounting/clients/${clientId}/fixed-assets/${asset.id}/${endpoint}`, payload);
+      toast.success(message);
+      await reloadWorkspace?.();
+    } catch (e) {
+      toast.error(formatApiError(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveSettings(e) {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await api.put(`/admin/accounting/clients/${clientId}/fixed-assets/settings`, settingsForm);
+      toast.success("Fixed asset settings saved");
+      await reloadWorkspace?.();
+    } catch (e) {
+      toast.error(formatApiError(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const actionAsset = selectedAsset();
+
+  if (tab === "Dashboard") {
+    return (
+      <div className="space-y-4">
+        <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+          <SummaryCard label="Total asset cost" value={formatMoney(dashboard.total_asset_cost)} tone="blue" />
+          <SummaryCard label="Net book value" value={formatMoney(dashboard.net_book_value)} tone="emerald" />
+          <SummaryCard label="Accum. depreciation" value={formatMoney(dashboard.accumulated_depreciation)} tone="amber" />
+          <SummaryCard label="Added this year" value={dashboard.assets_added_this_year || 0} tone="stone" />
+          <SummaryCard label="Disposed" value={dashboard.assets_disposed || 0} tone="stone" />
+          <SummaryCard label="Depreciation this month" value={formatMoney(dashboard.depreciation_this_month)} tone="blue" />
+        </div>
+        <div className="grid gap-4 xl:grid-cols-2">
+          <Panel title="Assets awaiting depreciation">
+            <ReportTable rows={panels.awaiting_depreciation || []} columns={[["asset_code", "Asset"], ["asset_name", "Name"], ["period_label", "Period"], ["charge", "Charge", "money"]]} empty="No scheduled depreciation due." compact />
+          </Panel>
+          <Panel title="AI capitalisation suggestions">
+            {(fixedAssets.suggestions || []).length === 0 ? <p className="py-8 text-center text-sm text-stone-500">No purchase invoices currently look like capital assets.</p> : (
+              <div className="space-y-2">
+                {(fixedAssets.suggestions || []).map((item) => (
+                  <div key={item.purchase_invoice_id || item.reference} className="flex items-center justify-between gap-3 rounded-md border border-stone-100 p-3 text-sm">
+                    <div>
+                      <strong>{item.asset_name}</strong>
+                      <p className="text-stone-500">{item.supplier_name || "Unknown supplier"} · {formatMoney(item.purchase_cost)} · confidence {item.confidence}%</p>
+                    </div>
+                    <Button type="button" variant="outline" onClick={() => applySuggestion(item)}>Use</Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Panel>
+        </div>
+        <Panel title="Recently acquired assets">
+          <ReportTable rows={panels.recently_acquired || []} columns={[["asset_code", "Asset ID"], ["asset_name", "Asset"], ["category_name", "Category"], ["purchase_date", "Purchase date", "date"], ["purchase_cost", "Cost", "money"], ["net_book_value", "NBV", "money"]]} empty="No fixed assets yet." />
+        </Panel>
+      </div>
+    );
+  }
+
+  if (tab === "Asset Register") {
+    return (
+      <div className="grid gap-4 xl:grid-cols-[420px_1fr]">
+        <Panel title="Create asset">
+          <form onSubmit={submitAsset} className="space-y-3">
+            <Field label="Asset name" value={assetForm.asset_name} onChange={(value) => setAssetForm((current) => ({ ...current, asset_name: value }))} />
+            <Field label="Description" value={assetForm.description} onChange={(value) => setAssetForm((current) => ({ ...current, description: value }))} />
+            <div className="grid gap-3 md:grid-cols-2">
+              <SelectField label="Category" value={assetForm.category_id} onChange={applyCategory} options={categories.filter((c) => c.active).map((c) => [c.id, c.name])} />
+              <SupplierSelect suppliers={suppliers} value={assetForm.supplier_id} onChange={applySupplier} />
+              <Field label="Purchase date" type="date" value={assetForm.purchase_date} onChange={(value) => setAssetForm((current) => ({ ...current, purchase_date: value }))} />
+              <Field label="In service date" type="date" value={assetForm.in_service_date} onChange={(value) => setAssetForm((current) => ({ ...current, in_service_date: value }))} />
+              <Field label="Purchase cost" value={assetForm.purchase_cost} onChange={(value) => setAssetForm((current) => ({ ...current, purchase_cost: value }))} />
+              <Field label="Residual value" value={assetForm.residual_value} onChange={(value) => setAssetForm((current) => ({ ...current, residual_value: value }))} />
+              <Field label="Useful life months" type="number" value={assetForm.useful_life_months} onChange={(value) => setAssetForm((current) => ({ ...current, useful_life_months: value }))} />
+              <SelectField label="Method" value={assetForm.depreciation_method} onChange={(value) => setAssetForm((current) => ({ ...current, depreciation_method: value }))} options={[["straight_line", "Straight line"], ["reducing_balance", "Reducing balance"]]} />
+              <Field label="Location" value={assetForm.location} onChange={(value) => setAssetForm((current) => ({ ...current, location: value }))} />
+              <Field label="Department" value={assetForm.department} onChange={(value) => setAssetForm((current) => ({ ...current, department: value }))} />
+            </div>
+            <AccountCodeSelect label="Fixed asset account" accounts={accounts} value={assetForm.fixed_asset_account} onChange={(value) => setAssetForm((current) => ({ ...current, fixed_asset_account: value }))} />
+            <AccountCodeSelect label="Accumulated depreciation account" accounts={accounts} value={assetForm.accumulated_depreciation_account} onChange={(value) => setAssetForm((current) => ({ ...current, accumulated_depreciation_account: value }))} />
+            <AccountCodeSelect label="Depreciation expense account" accounts={accounts} value={assetForm.depreciation_expense_account} onChange={(value) => setAssetForm((current) => ({ ...current, depreciation_expense_account: value }))} />
+            <Button type="submit" disabled={saving || busy}>Create asset</Button>
+          </form>
+        </Panel>
+        <Panel title="Asset register">
+          <ReportTable rows={assets} columns={[["asset_code", "Asset ID"], ["asset_name", "Asset"], ["category_name", "Category"], ["location", "Location"], ["purchase_date", "Purchase", "date"], ["purchase_cost", "Cost", "money"], ["accumulated_depreciation", "Depreciation", "money"], ["net_book_value", "NBV", "money"], ["status", "Status"]]} empty="No assets created yet." />
+        </Panel>
+      </div>
+    );
+  }
+
+  if (tab === "Asset Categories") {
+    return (
+      <div className="grid gap-4 xl:grid-cols-[420px_1fr]">
+        <Panel title="Add category">
+          <form onSubmit={submitCategory} className="space-y-3">
+            <Field label="Category name" value={categoryForm.name} onChange={(value) => setCategoryForm((current) => ({ ...current, name: value }))} />
+            <Field label="Description" value={categoryForm.description} onChange={(value) => setCategoryForm((current) => ({ ...current, description: value }))} />
+            <div className="grid gap-3 md:grid-cols-2">
+              <SelectField label="Default method" value={categoryForm.default_depreciation_method} onChange={(value) => setCategoryForm((current) => ({ ...current, default_depreciation_method: value }))} options={[["straight_line", "Straight line"], ["reducing_balance", "Reducing balance"]]} />
+              <Field label="Useful life months" type="number" value={categoryForm.default_useful_life_months} onChange={(value) => setCategoryForm((current) => ({ ...current, default_useful_life_months: value }))} />
+              <Field label="Residual value" value={categoryForm.default_residual_value} onChange={(value) => setCategoryForm((current) => ({ ...current, default_residual_value: value }))} />
+            </div>
+            <AccountCodeSelect label="Fixed asset account" accounts={accounts} value={categoryForm.fixed_asset_account} onChange={(value) => setCategoryForm((current) => ({ ...current, fixed_asset_account: value }))} />
+            <AccountCodeSelect label="Accumulated depreciation account" accounts={accounts} value={categoryForm.accumulated_depreciation_account} onChange={(value) => setCategoryForm((current) => ({ ...current, accumulated_depreciation_account: value }))} />
+            <AccountCodeSelect label="Depreciation expense account" accounts={accounts} value={categoryForm.depreciation_expense_account} onChange={(value) => setCategoryForm((current) => ({ ...current, depreciation_expense_account: value }))} />
+            <Button type="submit" disabled={saving || busy}>Save category</Button>
+          </form>
+        </Panel>
+        <Panel title="Categories">
+          <ReportTable rows={categories} columns={[["name", "Category"], ["default_depreciation_method", "Method"], ["default_useful_life_months", "Life months"], ["fixed_asset_account", "Asset account"], ["accumulated_depreciation_account", "Accumulated"], ["depreciation_expense_account", "Expense"], ["active", "Active"]]} empty="No categories configured." />
+        </Panel>
+      </div>
+    );
+  }
+
+  if (tab === "Depreciation") {
+    return (
+      <div className="space-y-4">
+        <AssetActionPanel title="Post depreciation" assets={activeAssets} actionForm={actionForm} setActionForm={setActionForm}>
+          <Button type="button" disabled={saving || !actionAsset} onClick={() => postAssetAction("depreciation/post", { charge: actionForm.amount }, "Depreciation journal posted")}>Post next depreciation</Button>
+        </AssetActionPanel>
+        <Panel title="Depreciation schedule">
+          <ReportTable rows={schedule} columns={[["asset_code", "Asset"], ["asset_name", "Name"], ["period_label", "Period"], ["opening_nbv", "Opening NBV", "money"], ["charge", "Charge", "money"], ["accumulated_depreciation", "Accumulated", "money"], ["closing_nbv", "Closing NBV", "money"], ["status", "Status"]]} empty="No depreciation schedule yet." />
+        </Panel>
+      </div>
+    );
+  }
+
+  if (tab === "Disposals") {
+    return (
+      <div className="space-y-4">
+        <AssetActionPanel title="Dispose asset" assets={activeAssets} actionForm={actionForm} setActionForm={setActionForm}>
+          <div className="grid gap-3 md:grid-cols-3">
+            <SelectField label="Disposal type" value={actionForm.disposal_type} onChange={(value) => setActionForm((current) => ({ ...current, disposal_type: value }))} options={[["sale", "Sale"], ["scrap", "Scrap"], ["write_off", "Write-off"]]} />
+            <Field label="Disposal date" type="date" value={actionForm.date} onChange={(value) => setActionForm((current) => ({ ...current, date: value }))} />
+            <Field label="Proceeds" value={actionForm.amount} onChange={(value) => setActionForm((current) => ({ ...current, amount: value }))} />
+          </div>
+          <Button type="button" disabled={saving || !actionAsset} onClick={() => postAssetAction("dispose", { disposal_type: actionForm.disposal_type, disposal_date: actionForm.date, disposal_proceeds: actionForm.amount, notes: actionForm.notes }, "Asset disposed")}>Dispose asset</Button>
+        </AssetActionPanel>
+        <ReportTable rows={reports.asset_disposals || []} columns={[["asset_code", "Asset"], ["asset_name", "Name"], ["disposal_date", "Date", "date"], ["disposal_proceeds", "Proceeds", "money"], ["status", "Status"]]} empty="No disposals yet." />
+      </div>
+    );
+  }
+
+  if (tab === "Transfers") {
+    return (
+      <div className="space-y-4">
+        <AssetActionPanel title="Transfer asset" assets={activeAssets} actionForm={actionForm} setActionForm={setActionForm}>
+          <div className="grid gap-3 md:grid-cols-3">
+            <Field label="Transfer date" type="date" value={actionForm.date} onChange={(value) => setActionForm((current) => ({ ...current, date: value }))} />
+            <Field label="New location" value={actionForm.location} onChange={(value) => setActionForm((current) => ({ ...current, location: value }))} />
+            <Field label="New department" value={actionForm.department} onChange={(value) => setActionForm((current) => ({ ...current, department: value }))} />
+          </div>
+          <Button type="button" disabled={saving || !actionAsset} onClick={() => postAssetAction("transfer", { transfer_date: actionForm.date, location: actionForm.location, department: actionForm.department, notes: actionForm.notes }, "Asset transfer recorded")}>Record transfer</Button>
+        </AssetActionPanel>
+        <ReportTable rows={events.filter((event) => event.event_type === "transfer")} columns={[["event_date", "Date", "date"], ["asset_id", "Asset"], ["from_value", "From"], ["to_value", "To"], ["notes", "Notes"]]} empty="No transfers recorded." />
+      </div>
+    );
+  }
+
+  if (tab === "Revaluations") {
+    return (
+      <div className="space-y-4">
+        <AssetActionPanel title="Revalue asset" assets={activeAssets} actionForm={actionForm} setActionForm={setActionForm}>
+          <div className="grid gap-3 md:grid-cols-2">
+            <Field label="Revaluation date" type="date" value={actionForm.date} onChange={(value) => setActionForm((current) => ({ ...current, date: value }))} />
+            <Field label="New value" value={actionForm.amount} onChange={(value) => setActionForm((current) => ({ ...current, amount: value }))} />
+          </div>
+          <Button type="button" disabled={saving || !actionAsset} onClick={() => postAssetAction("revalue", { revaluation_date: actionForm.date, new_value: actionForm.amount, notes: actionForm.notes }, "Asset revaluation posted")}>Post revaluation</Button>
+        </AssetActionPanel>
+        <ReportTable rows={reports.revaluations || []} columns={[["event_date", "Date", "date"], ["asset_id", "Asset"], ["from_value", "From"], ["to_value", "To"], ["amount", "Movement", "money"], ["notes", "Notes"]]} empty="No revaluations posted." />
+      </div>
+    );
+  }
+
+  if (tab === "Reports") {
+    return (
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Panel title="Net book value summary"><ReportTable rows={reports.nbv_summary || []} columns={[["category", "Category"], ["count", "Assets"], ["cost", "Cost", "money"], ["nbv", "NBV", "money"]]} empty="No asset summary yet." /></Panel>
+        <Panel title="Category analysis"><ReportTable rows={reports.category_analysis || []} columns={[["category", "Category"], ["count", "Assets"], ["cost", "Cost", "money"], ["nbv", "NBV", "money"]]} empty="No category analysis yet." /></Panel>
+        <Panel title="Asset additions"><ReportTable rows={reports.asset_additions || []} columns={[["asset_code", "Asset"], ["asset_name", "Name"], ["purchase_date", "Date", "date"], ["purchase_cost", "Cost", "money"]]} empty="No additions this year." /></Panel>
+        <Panel title="Depreciation schedule"><ReportTable rows={reports.depreciation_schedule || []} columns={[["asset_code", "Asset"], ["period_label", "Period"], ["charge", "Charge", "money"], ["closing_nbv", "Closing NBV", "money"]]} empty="No schedule yet." /></Panel>
+      </div>
+    );
+  }
+
+  if (tab === "Settings") {
+    return (
+      <Panel title="Fixed asset settings">
+        <form onSubmit={saveSettings} className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          <SelectField label="Default depreciation method" value={settingsForm.default_depreciation_method} onChange={(value) => setSettingsForm((current) => ({ ...current, default_depreciation_method: value }))} options={[["straight_line", "Straight line"], ["reducing_balance", "Reducing balance"]]} />
+          <SelectField label="Posting frequency" value={settingsForm.posting_frequency} onChange={(value) => setSettingsForm((current) => ({ ...current, posting_frequency: value }))} options={[["monthly", "Monthly"], ["quarterly", "Quarterly"], ["annual", "Annual"]]} />
+          <Field label="Capitalisation threshold" value={settingsForm.capitalisation_threshold} onChange={(value) => setSettingsForm((current) => ({ ...current, capitalisation_threshold: value }))} />
+          <Field label="Asset prefix" value={settingsForm.asset_number_prefix} onChange={(value) => setSettingsForm((current) => ({ ...current, asset_number_prefix: value }))} />
+          <Field label="Next asset number" type="number" value={settingsForm.next_asset_number} onChange={(value) => setSettingsForm((current) => ({ ...current, next_asset_number: value }))} />
+          <AccountCodeSelect label="Default fixed asset account" accounts={accounts} value={settingsForm.default_fixed_asset_account} onChange={(value) => setSettingsForm((current) => ({ ...current, default_fixed_asset_account: value }))} />
+          <AccountCodeSelect label="Default accumulated depreciation" accounts={accounts} value={settingsForm.default_accumulated_depreciation_account} onChange={(value) => setSettingsForm((current) => ({ ...current, default_accumulated_depreciation_account: value }))} />
+          <AccountCodeSelect label="Default depreciation expense" accounts={accounts} value={settingsForm.default_depreciation_expense_account} onChange={(value) => setSettingsForm((current) => ({ ...current, default_depreciation_expense_account: value }))} />
+          <AccountCodeSelect label="Default disposal account" accounts={accounts} value={settingsForm.default_disposal_account} onChange={(value) => setSettingsForm((current) => ({ ...current, default_disposal_account: value }))} />
+          <div className="md:col-span-2 xl:col-span-3"><Button type="submit" disabled={saving || busy}>Save fixed asset settings</Button></div>
+        </form>
+      </Panel>
+    );
+  }
+
+  return <PlaceholderModulePanel title={tab} moduleTitle="Fixed Assets" />;
+}
+
+function SelectField({ label, value, onChange, options = [] }) {
+  const optionRows = (Array.isArray(options) ? options : []).map((option) => {
+    if (Array.isArray(option)) return { value: option[0] ?? "", label: option[1] ?? option[0] ?? "Select" };
+    if (option && typeof option === "object") return { value: option.value ?? option.id ?? "", label: option.label ?? option.name ?? option.value ?? option.id ?? "Select" };
+    return { value: option ?? "", label: option || "Any" };
+  });
+  return (
+    <div>
+      <Label className="text-xs font-semibold text-stone-600">{label}</Label>
+      <select value={value || ""} onChange={(e) => onChange(e.target.value)} className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm">
+        <option value="">Select</option>
+        {optionRows.map((option) => <option key={option.value || option.label} value={option.value}>{option.label}</option>)}
+      </select>
+    </div>
+  );
+}
+
+function AssetActionPanel({ title, assets, actionForm, setActionForm, children }) {
+  return (
+    <Panel title={title}>
+      <div className="space-y-3">
+        <SelectField label="Asset" value={actionForm.asset_id || assets?.[0]?.id || ""} onChange={(value) => setActionForm((current) => ({ ...current, asset_id: value }))} options={(Array.isArray(assets) ? assets : []).map((asset) => [asset.id, `${asset.asset_code} - ${asset.asset_name}`])} />
+        <Field label="Notes" value={actionForm.notes} onChange={(value) => setActionForm((current) => ({ ...current, notes: value }))} />
+        {children}
+      </div>
+    </Panel>
+  );
+}
+
 function AccountCodeSelect({ accounts, value, onChange, label }) {
+  const accountRows = Array.isArray(accounts) ? accounts : [];
   return (
     <div>
       <Label className="text-xs font-semibold text-stone-600">{label}</Label>
       <select value={value || ""} onChange={(e) => onChange(e.target.value)} className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm">
         <option value="">Select account</option>
-        {accounts.map((account) => <option key={account.id || account.code} value={account.code}>{account.code} - {account.name}</option>)}
+        {accountRows.map((account) => <option key={account.id || account.code} value={account.code}>{account.code} - {account.name}</option>)}
       </select>
     </div>
   );
