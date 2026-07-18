@@ -261,6 +261,8 @@ export default function AdminClientDetail() {
         status: client.status,
         is_vat_client: !!client.is_vat_client,
         ai_analysis_enabled: !!client.ai_analysis_enabled,
+        accounting_destination: client.accounting_destination || (client.native_accounting_enabled ? "native" : "external"),
+        native_accounting_enabled: !!client.native_accounting_enabled || client.accounting_destination === "native",
         ...practicePayload,
       });
       toast.success("Client updated");
@@ -698,6 +700,7 @@ export default function AdminClientDetail() {
         <TabsContent value="software" className="mt-4">
           <AccountancySoftwarePanel
             client={client}
+            setClientField={setField}
             detail={integrationDetail}
             settings={integrationSettings}
             setSettings={setIntegrationSettings}
@@ -1035,6 +1038,7 @@ function OutstandingItems({ items, tab, setTab, onUpload }) {
 
 function AccountancySoftwarePanel({
   client,
+  setClientField,
   detail,
   settings,
   setSettings,
@@ -1055,14 +1059,59 @@ function AccountancySoftwarePanel({
   const globallyDisabled = isQuickBooks && quickBooksConfig.enabled === false;
   const globallyMissing = isQuickBooks && !quickBooksConfig.configured;
   const connectedEnvironment = settings.sandbox ? "sandbox" : "production";
+  const accountingDestination = client.accounting_destination || (client.native_accounting_enabled ? "native" : "external");
+  const nativeEnabled = accountingDestination === "native" || !!client.native_accounting_enabled;
 
   function updateSetting(key, value) {
     setSettings((current) => ({ ...current, [key]: value }));
   }
 
+  function setAccountingDestination(value) {
+    setClientField("accounting_destination", value);
+    setClientField("native_accounting_enabled", value === "native");
+  }
+
   return (
     <section className="grid gap-4 xl:grid-cols-[0.95fr_1.25fr]">
-      <form onSubmit={saveSettings} className="rounded-md border border-stone-200 bg-white p-4">
+      <div className="space-y-4">
+        <div className="rounded-md border border-stone-200 bg-white p-4">
+          <div className="mb-3 flex items-start justify-between gap-3">
+            <div>
+              <h2 className="font-display text-lg font-semibold">Accounting destination</h2>
+              <p className="mt-1 text-sm text-stone-600">
+                Choose where reviewed documents are posted when you publish them.
+              </p>
+            </div>
+            <Badge className={nativeEnabled ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-100" : "bg-stone-100 text-stone-700 hover:bg-stone-100"}>
+              {nativeEnabled ? "EPOS native" : "External"}
+            </Badge>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => setAccountingDestination("external")}
+              className={`rounded-md border p-3 text-left text-sm transition ${!nativeEnabled ? "border-emerald-500 bg-emerald-50 text-emerald-950" : "border-stone-200 bg-stone-50 text-stone-700 hover:border-stone-300"}`}
+            >
+              <span className="block font-semibold">External software</span>
+              <span className="mt-1 block text-xs opacity-80">Use QuickBooks now, with Sage/Xero profiles ready later.</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setAccountingDestination("native")}
+              className={`rounded-md border p-3 text-left text-sm transition ${nativeEnabled ? "border-emerald-500 bg-emerald-50 text-emerald-950" : "border-stone-200 bg-stone-50 text-stone-700 hover:border-stone-300"}`}
+            >
+              <span className="block font-semibold">EPOS native accounting</span>
+              <span className="mt-1 block text-xs opacity-80">Post into EPOS ledgers, VAT, suppliers, customers, and reports.</span>
+            </button>
+          </div>
+          {nativeEnabled && (
+            <p className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+              This client will appear in Accountancy software after saving.
+            </p>
+          )}
+        </div>
+
+        <form onSubmit={saveSettings} className="rounded-md border border-stone-200 bg-white p-4">
         <div className="mb-4 flex items-start justify-between gap-3">
           <div>
             <h2 className="font-display text-lg font-semibold">Accountancy software</h2>
@@ -1155,7 +1204,8 @@ function AccountancySoftwarePanel({
             </Button>
           </div>
         </div>
-      </form>
+        </form>
+      </div>
 
       <div className="rounded-md border border-stone-200 bg-white">
         <div className="flex flex-col gap-3 border-b border-stone-200 p-4 lg:flex-row lg:items-center lg:justify-between">

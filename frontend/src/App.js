@@ -10,6 +10,7 @@ import AdminClientDetail from "@/pages/admin/AdminClientDetail";
 import AdminSubmissions from "@/pages/admin/AdminSubmissions";
 import AdminIntegrations from "@/pages/admin/AdminIntegrations";
 import AdminAccountancySettings from "@/pages/admin/AdminAccountancySettings";
+import AdminAccountancySoftware from "@/pages/admin/AdminAccountancySoftware";
 import AdminSettings from "@/pages/admin/AdminSettings";
 import ClientLayout from "@/pages/client/ClientLayout";
 import ClientDashboard from "@/pages/client/ClientDashboard";
@@ -71,6 +72,7 @@ export default function App() {
             <Route path="clients/:id" element={<AdminClientDetail />} />
             <Route path="submissions" element={<AdminSubmissions />} />
             <Route path="integrations" element={<AdminIntegrations />} />
+            <Route path="accounting" element={<AdminAccountancySoftware />} />
             <Route path="accountancy" element={<AdminAccountancySettings />} />
             <Route path="settings" element={<AdminSettings />} />
           </Route>

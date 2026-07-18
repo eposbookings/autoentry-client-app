@@ -3,7 +3,7 @@ import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
 import { EposLogo } from "@/components/Brand";
-import { Users, FileText, Settings, LogOut, PlugZap, ClipboardList } from "lucide-react";
+import { Users, FileText, Settings, LogOut, PlugZap, ClipboardList, Landmark } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 const linkBase =
@@ -53,6 +53,10 @@ export default function AdminLayout() {
           <NavLink to="/admin/integrations" data-testid="nav-integrations"
             className={({isActive}) => `${linkBase} ${isActive ? "admin-nav-link-active" : "text-stone-600 hover:bg-white/80 hover:text-stone-900"}`}>
             <PlugZap className="h-4 w-4" /> Global integrations
+          </NavLink>
+          <NavLink to="/admin/accounting" data-testid="nav-accounting"
+            className={({isActive}) => `${linkBase} ${isActive ? "admin-nav-link-active" : "text-stone-600 hover:bg-white/80 hover:text-stone-900"}`}>
+            <Landmark className="h-4 w-4" /> Accountancy software
           </NavLink>
           <NavLink to="/admin/accountancy" data-testid="nav-accountancy"
             className={({isActive}) => `${linkBase} ${isActive ? "admin-nav-link-active" : "text-stone-600 hover:bg-white/80 hover:text-stone-900"}`}>
