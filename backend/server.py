@@ -1349,6 +1349,7 @@ DEFAULT_ACCOUNTANCY_SERVICES = [
 ]
 
 NATIVE_ACCOUNTING_MODULES = [
+    {"key": "ai_workspace", "label": "AI Workspace", "description": "One command centre for work queues, exceptions, approvals, deadlines and accounting health."},
     {"key": "payables", "label": "Accounts Payable", "description": "Supplier bills, credit notes, payments, and aged payables."},
     {"key": "receivables", "label": "Accounts Receivable", "description": "Customer invoices, receipts, and aged receivables."},
     {"key": "banking", "label": "Banking", "description": "Bank accounts, statement imports, matching, and payment runs."},
@@ -4090,6 +4091,233 @@ def serialize_aged_balances(rows: dict[str, dict]) -> list[dict]:
     return sorted(result, key=lambda item: str(item.get("contact_name") or "").lower())
 
 
+def build_ai_accounting_workspace(
+    client_id: str,
+    summary: dict,
+    accounts: list[dict],
+    contacts: list[dict],
+    journals: list[dict],
+    periods: list[dict],
+    audit_events: list[dict],
+    ap: dict,
+    ar: dict,
+    banking: dict,
+    vat: dict,
+    reports: dict,
+) -> dict:
+    today = datetime.now(timezone.utc).date()
+    ap_dashboard = ap.get("dashboard", {})
+    ar_dashboard = ar.get("dashboard", {})
+    banking_dashboard = banking.get("dashboard", {})
+    vat_dashboard = vat.get("dashboard", {})
+    report_dashboard = reports.get("dashboard", {})
+
+    def amount_value(value) -> Decimal:
+        return money(value)
+
+    def due_days(value) -> Optional[int]:
+        try:
+            due = datetime.fromisoformat(str(value or "")[:10]).date()
+            return (due - today).days
+        except Exception:
+            return None
+
+    def dated_item_date(row: dict, *keys: str) -> str:
+        for key in keys:
+            value = str(row.get(key) or "")[:10]
+            if value:
+                return value
+        return ""
+
+    def queue_item(priority: str, module: str, title: str, detail: str, action: str, tab: str = "") -> dict:
+        return {
+            "id": new_id(),
+            "priority": priority,
+            "module": module,
+            "title": title,
+            "detail": detail,
+            "action": action,
+            "target_tab": tab,
+        }
+
+    work_queue: dict[str, list[dict]] = {"high": [], "medium": [], "low": []}
+    exceptions: list[dict] = []
+    approvals: list[dict] = []
+    deadlines: list[dict] = []
+    insights: list[dict] = []
+
+    unreconciled = int(banking_dashboard.get("unreconciled_transactions") or 0)
+    awaiting_match = int(banking_dashboard.get("awaiting_match") or 0)
+    vat_outstanding = int(vat_dashboard.get("outstanding_returns") or 0)
+    ap_awaiting = int(ap_dashboard.get("awaiting_approval") or 0)
+    ar_awaiting = len([i for i in ar.get("invoices", []) if i.get("status") in {"draft", "awaiting_approval", "approved"}])
+    ap_overdue = int(ap_dashboard.get("overdue_invoices") or 0)
+    ar_overdue = int(ar_dashboard.get("overdue_invoices") or 0)
+
+    if vat_outstanding:
+        work_queue["high"].append(queue_item("High", "VAT", f"{vat_outstanding} VAT return needs attention", "A VAT period is open and at or past its return due date.", "Review VAT Returns", "VAT Returns"))
+    if unreconciled:
+        work_queue["high"].append(queue_item("High", "Banking", f"{unreconciled} unreconciled bank transactions", "Reconcile imported and manual bank transactions before reporting.", "Open Reconciliation", "Reconciliation"))
+    if ar_overdue:
+        work_queue["high"].append(queue_item("High", "Accounts Receivable", f"{ar_overdue} overdue customer invoices", "Customer cash collection needs review.", "Open Aged Debtors", "Aged Debtors"))
+    if ap_overdue:
+        work_queue["medium"].append(queue_item("Medium", "Accounts Payable", f"{ap_overdue} overdue supplier bills", "Supplier balances have passed their due date.", "Open Aged Creditors", "Aged Creditors"))
+    if ap_awaiting:
+        work_queue["medium"].append(queue_item("Medium", "Accounts Payable", f"{ap_awaiting} purchase invoices awaiting approval", "Approve or reject purchase invoices before posting.", "Open Purchase Invoices", "Purchase Invoices"))
+    if ar_awaiting:
+        work_queue["medium"].append(queue_item("Medium", "Accounts Receivable", f"{ar_awaiting} sales invoices awaiting posting", "Review sales invoices so income and debtors are up to date.", "Open Sales Invoices", "Sales Invoices"))
+    if awaiting_match:
+        work_queue["low"].append(queue_item("Low", "Banking", f"{awaiting_match} suggested bank matches", "Suggested matches are available for approval.", "Review Suggested Matches", "Reconciliation"))
+
+    for invoice in ap.get("invoices", []):
+        status = str(invoice.get("status") or "")
+        if status in {"draft", "awaiting_approval", "approved"}:
+            approvals.append({
+                "module": "Accounts Payable",
+                "record_type": "Purchase Invoice",
+                "reference": invoice.get("invoice_number") or invoice.get("reference") or "Purchase invoice",
+                "contact": invoice.get("supplier_name"),
+                "amount": invoice.get("gross_amount"),
+                "status": status.replace("_", " ").title(),
+                "date": dated_item_date(invoice, "invoice_date", "created_at"),
+            })
+    for invoice in ar.get("invoices", []):
+        status = str(invoice.get("status") or "")
+        if status in {"draft", "awaiting_approval", "approved"}:
+            approvals.append({
+                "module": "Accounts Receivable",
+                "record_type": "Sales Invoice",
+                "reference": invoice.get("invoice_number") or invoice.get("reference") or "Sales invoice",
+                "contact": invoice.get("customer_name"),
+                "amount": invoice.get("gross_amount"),
+                "status": status.replace("_", " ").title(),
+                "date": dated_item_date(invoice, "invoice_date", "created_at"),
+            })
+
+    invoice_keys: dict[str, list[str]] = {}
+    for invoice in ap.get("invoices", []):
+        key = f"ap:{invoice.get('supplier_id')}:{str(invoice.get('invoice_number') or '').strip().lower()}:{money_str(money(invoice.get('gross_amount')))}"
+        if invoice.get("invoice_number"):
+            invoice_keys.setdefault(key, []).append(invoice.get("invoice_number"))
+    for key, values in invoice_keys.items():
+        if len(values) > 1:
+            exceptions.append({"severity": "High", "module": "Accounts Payable", "type": "Possible duplicate", "detail": f"{len(values)} purchase invoices share supplier, number and amount.", "reference": values[0]})
+
+    for item in vat.get("reports", {}).get("exceptions", []):
+        exceptions.append({
+            "severity": "Medium",
+            "module": "VAT",
+            "type": "Missing VAT data",
+            "detail": "A VAT transaction is missing a VAT code or VAT period.",
+            "reference": item.get("document_number") or item.get("source_id") or item.get("id"),
+        })
+
+    suspense_accounts = {str(a.get("code") or "") for a in accounts if str(a.get("purpose") or "").lower() == "suspense" or "suspense" in str(a.get("name") or "").lower()}
+    for journal in journals:
+        total = amount_value(journal.get("total_debit"))
+        if total >= Decimal("5000.00"):
+            exceptions.append({"severity": "Medium", "module": "General Ledger", "type": "Large journal", "detail": f"Journal total is {money_str(total)}.", "reference": journal.get("reference") or journal.get("id")})
+        for line in journal.get("lines", []) or []:
+            if str(line.get("account_code") or "") in suspense_accounts:
+                exceptions.append({"severity": "High", "module": "General Ledger", "type": "Suspense posting", "detail": "A journal line has been posted to suspense.", "reference": journal.get("reference") or journal.get("id")})
+                break
+
+    for period in periods:
+        if period.get("status") == "open":
+            days = due_days(period.get("period_end"))
+            if days is not None and 0 <= days <= 14:
+                deadlines.append({"module": "General Ledger", "title": f"{period.get('period_name') or 'Accounting period'} ends soon", "start_date": period.get("period_start"), "due_date": period.get("period_end"), "status": period.get("status"), "days": days})
+    for row in vat.get("periods", []):
+        days = due_days(row.get("due_date"))
+        if days is not None and days <= 45 and row.get("status") == "open":
+            deadlines.append({"module": "VAT", "title": "VAT return due", "start_date": row.get("period_start"), "due_date": row.get("due_date"), "status": row.get("status"), "days": days})
+    for invoice in ar.get("overdue_invoices", [])[:10]:
+        deadlines.append({"module": "Accounts Receivable", "title": f"Customer invoice overdue: {invoice.get('invoice_number')}", "start_date": invoice.get("invoice_date"), "due_date": invoice.get("due_date"), "status": invoice.get("status"), "days": -int(invoice.get("days_overdue") or 0)})
+    for invoice in ap.get("invoices", []):
+        if money(invoice.get("outstanding_amount")) > Decimal("0.00"):
+            days = due_days(invoice.get("due_date"))
+            if days is not None and days <= 14:
+                deadlines.append({"module": "Accounts Payable", "title": f"Supplier bill due: {invoice.get('invoice_number')}", "start_date": invoice.get("invoice_date"), "due_date": invoice.get("due_date"), "status": invoice.get("status"), "days": days})
+
+    if amount_value(report_dashboard.get("net_profit")) < Decimal("0.00"):
+        net_profit = report_dashboard.get("net_profit") or "0.00"
+        insights.append({"tone": "warning", "module": "Reports", "title": "Profit is negative this month", "detail": f"Net profit is {net_profit}. Review high expense categories and unposted income."})
+    if amount_value(ap_dashboard.get("outstanding_total")) > amount_value(ar_dashboard.get("outstanding_total")) and amount_value(ap_dashboard.get("outstanding_total")) > 0:
+        insights.append({"tone": "warning", "module": "Cash", "title": "Supplier exposure is higher than customer debt", "detail": "Outstanding payables exceed outstanding receivables. Check short-term cash position before payment runs."})
+    if banking_dashboard.get("last_bank_import"):
+        insights.append({"tone": "info", "module": "Banking", "title": "Bank data is available", "detail": f"Last bank import was {banking_dashboard.get('last_bank_import')}. Review suggested matches while they are fresh."})
+    if not insights:
+        insights.append({"tone": "success", "module": "AI Workspace", "title": "No major accounting issues detected", "detail": "The current ledgers do not show urgent rule-based exceptions."})
+
+    health_penalty = (
+        min(25, len(exceptions) * 4)
+        + min(20, unreconciled)
+        + min(20, vat_outstanding * 8)
+        + min(15, ap_awaiting + ar_awaiting)
+        + min(20, ap_overdue + ar_overdue)
+    )
+    health_score = max(0, 100 - health_penalty)
+    health_categories = [
+        {"area": "Banking", "score": max(0, 100 - min(60, unreconciled * 5)), "status": "Healthy" if unreconciled == 0 else "Needs reconciliation"},
+        {"area": "VAT", "score": max(0, 100 - min(70, vat_outstanding * 25 + len(vat.get("reports", {}).get("exceptions", [])) * 10)), "status": "Healthy" if not vat_outstanding else "Return due"},
+        {"area": "Approvals", "score": max(0, 100 - min(60, (ap_awaiting + ar_awaiting) * 8)), "status": "Clear" if not (ap_awaiting + ar_awaiting) else "Waiting"},
+        {"area": "Debtors/Creditors", "score": max(0, 100 - min(70, (ap_overdue + ar_overdue) * 10)), "status": "Healthy" if not (ap_overdue + ar_overdue) else "Overdue items"},
+    ]
+
+    def search_row(kind: str, label: str, reference: str = "", amount: str = "", module: str = "") -> dict:
+        return {"type": kind, "label": label, "reference": reference or "", "amount": amount or "", "module": module or kind}
+
+    search_index = []
+    search_index += [search_row("Contact", c.get("name"), c.get("email"), "", str(c.get("contact_type") or "Contact").title()) for c in contacts]
+    search_index += [search_row("Purchase Invoice", i.get("invoice_number") or "Purchase invoice", i.get("supplier_name"), i.get("gross_amount"), "Accounts Payable") for i in ap.get("invoices", [])]
+    search_index += [search_row("Sales Invoice", i.get("invoice_number") or "Sales invoice", i.get("customer_name"), i.get("gross_amount"), "Accounts Receivable") for i in ar.get("invoices", [])]
+    search_index += [search_row("Bank Transaction", t.get("description") or t.get("reference") or "Bank transaction", t.get("reference"), t.get("amount"), "Banking") for t in banking.get("transactions", [])]
+    search_index += [search_row("Journal", j.get("reference") or "Journal", j.get("description"), j.get("total_debit"), "General Ledger") for j in journals]
+    search_index += [search_row("VAT Return", str(r.get("period_end") or "VAT return"), r.get("status"), r.get("box5"), "VAT") for r in vat.get("returns", [])]
+
+    assistant_answers = {
+        "What needs my attention first?": (work_queue["high"][0]["detail"] if work_queue["high"] else "There is no high priority work in the current accounting workspace."),
+        "Are bank transactions reconciled?": f"{unreconciled} bank transactions are unreconciled and {awaiting_match} have suggested matches.",
+        "Is VAT ready?": f"Current VAT period: {vat_dashboard.get('current_period') or '-'}; net VAT due: {vat_dashboard.get('net_vat_due') or '0.00'}; outstanding returns: {vat_outstanding}.",
+        "How is cash looking?": f"Cash at bank is {report_dashboard.get('cash_at_bank') or summary.get('bank_balance') or '0.00'}. Outstanding debtors are {ar_dashboard.get('outstanding_total') or '0.00'} and creditors are {ap_dashboard.get('outstanding_total') or '0.00'}.",
+    }
+
+    return {
+        "kpis": [
+            {"label": "Documents Awaiting Review", "value": ap_dashboard.get("draft_invoices", 0) + ar_awaiting, "module": "AI Workspace"},
+            {"label": "Purchase Invoices Awaiting Approval", "value": ap_awaiting, "module": "Accounts Payable"},
+            {"label": "Sales Invoices Awaiting Approval", "value": ar_awaiting, "module": "Accounts Receivable"},
+            {"label": "Bank Transactions Awaiting Reconciliation", "value": unreconciled, "module": "Banking"},
+            {"label": "VAT Return Status", "value": "Due" if vat_outstanding else "Current", "module": "VAT"},
+            {"label": "Overdue Customer Invoices", "value": ar_overdue, "module": "Accounts Receivable"},
+            {"label": "Overdue Supplier Bills", "value": ap_overdue, "module": "Accounts Payable"},
+            {"label": "Cash Position", "value": report_dashboard.get("cash_at_bank") or summary.get("bank_balance") or "0.00", "module": "Reports"},
+            {"label": "Profit This Month", "value": report_dashboard.get("net_profit") or reports.get("profit_and_loss", {}).get("profit") or "0.00", "module": "Reports"},
+        ],
+        "work_queue": work_queue,
+        "insights": insights,
+        "exceptions": exceptions,
+        "approvals": approvals,
+        "deadlines": sorted(deadlines, key=lambda item: str(item.get("due_date") or "9999-99-99")),
+        "health_check": {"score": health_score, "categories": health_categories, "exception_count": len(exceptions)},
+        "assistant": {"suggested_questions": list(assistant_answers.keys()), "answers": assistant_answers},
+        "global_search": {"index": search_index[:500]},
+        "notifications": (work_queue["high"] + exceptions)[:12],
+        "settings": {
+            "default_landing_tab": "Overview",
+            "kpi_visibility": [item["label"] for item in [
+                {"label": "Documents Awaiting Review"},
+                {"label": "Bank Transactions Awaiting Reconciliation"},
+                {"label": "VAT Return Status"},
+                {"label": "Cash Position"},
+                {"label": "Profit This Month"},
+            ]],
+            "work_queue_priorities": ["High", "Medium", "Low"],
+            "assistant_mode": "Rule-based now, LLM-ready later",
+        },
+    }
+
+
 def pick_csv_value(row: dict, candidates: list[str]) -> str:
     lookup = {str(k or "").strip().lower(): v for k, v in row.items()}
     for candidate in candidates:
@@ -4215,24 +4443,49 @@ async def get_native_accounting_workspace(
         lines_by_entry.setdefault(str(line["entry_id"]), []).append(line)
     for journal in journals:
         journal["lines"] = lines_by_entry.get(str(journal["id"]), [])
+    summary = await native_accounting_summary(session, client_id)
+    banking_data = await banking_workspace(session, client_id, accounts)
+    bank_transactions = await many(
+        session,
+        select(accounting_bank_transactions).where(accounting_bank_transactions.c.client_id == client_id).order_by(accounting_bank_transactions.c.transaction_date.desc(), accounting_bank_transactions.c.created_at.desc()),
+    )
+    vat_engine_data = await vat_engine_workspace(session, client_id)
+    reports_data = await native_accounting_reports(session, client_id)
+    accounts_payable_data = await accounts_payable_workspace(session, client_id)
+    accounts_receivable_data = await accounts_receivable_workspace(session, client_id)
+    ai_workspace_data = build_ai_accounting_workspace(
+        client_id,
+        summary,
+        [serialize_native_account(a) for a in accounts],
+        [serialize_native_contact(c) for c in contacts],
+        journals,
+        [serialize_period(p) for p in periods],
+        [serialize_audit_event(e) for e in audit_events],
+        accounts_payable_data,
+        accounts_receivable_data,
+        banking_data,
+        vat_engine_data,
+        reports_data,
+    )
     return {
         "client": serialize_user(client),
         "modules": NATIVE_ACCOUNTING_MODULES,
-        "summary": await native_accounting_summary(session, client_id),
+        "summary": summary,
         "accounts": [serialize_native_account(a) for a in accounts],
         "accounting_settings": serialize_accounting_settings(settings_row),
         "financial_years": [serialize_financial_year(y) for y in financial_years],
         "contacts": [serialize_native_contact(c) for c in contacts],
         "journals": journals,
-        "banking": await banking_workspace(session, client_id, accounts),
-        "bank_transactions": [serialize_bank_transaction(t) for t in (await many(session, select(accounting_bank_transactions).where(accounting_bank_transactions.c.client_id == client_id).order_by(accounting_bank_transactions.c.transaction_date.desc(), accounting_bank_transactions.c.created_at.desc())))],
+        "banking": banking_data,
+        "bank_transactions": [serialize_bank_transaction(t) for t in bank_transactions],
         "vat_returns": [serialize_vat_return(r) for r in vat_returns],
-        "vat_engine": await vat_engine_workspace(session, client_id),
+        "vat_engine": vat_engine_data,
         "periods": [serialize_period(p) for p in periods],
         "audit_log": [serialize_audit_event(e) for e in audit_events],
-        "reports": await native_accounting_reports(session, client_id),
-        "accounts_payable": await accounts_payable_workspace(session, client_id),
-        "accounts_receivable": await accounts_receivable_workspace(session, client_id),
+        "reports": reports_data,
+        "accounts_payable": accounts_payable_data,
+        "accounts_receivable": accounts_receivable_data,
+        "ai_workspace": ai_workspace_data,
     }
 
 
