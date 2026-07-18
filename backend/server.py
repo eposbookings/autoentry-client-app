@@ -8,6 +8,7 @@ import hmac
 import base64
 import hashlib
 import asyncio
+import calendar
 import csv
 import difflib
 import io
@@ -22,7 +23,7 @@ import textwrap
 import uuid
 import zipfile
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from email.message import EmailMessage
 from typing import Any, List, Optional
@@ -283,10 +284,30 @@ accounting_accounts = Table(
     Column("client_id", String(36), nullable=False, index=True),
     Column("code", String(32), nullable=False, index=True),
     Column("name", String(255), nullable=False, index=True),
+    Column("category", String(64), default="Expense", index=True),
     Column("account_type", String(64), nullable=False, index=True),
+    Column("purpose", String(64), default="Standard Nominal", index=True),
     Column("normal_balance", String(16), nullable=False),
     Column("control_account", Boolean, default=False),
+    Column("is_control_account", Boolean, default=False),
     Column("active", Boolean, default=True),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_settings = Table(
+    "accounting_settings",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, unique=True, index=True),
+    Column("default_sales_account", String(32)),
+    Column("default_purchase_account", String(32)),
+    Column("default_vat_control_account", String(32)),
+    Column("default_bank_account", String(32)),
+    Column("default_suspense_account", String(32)),
+    Column("default_debtors_control_account", String(32)),
+    Column("default_creditors_control_account", String(32)),
+    Column("default_retained_earnings_account", String(32)),
     Column("created_at", String(64)),
     Column("updated_at", String(64)),
 )
@@ -299,6 +320,7 @@ accounting_contacts = Table(
     Column("contact_type", String(32), nullable=False, index=True),
     Column("name", String(255), nullable=False, index=True),
     Column("email", String(255)),
+    Column("external_id", String(255)),
     Column("account_code", String(64)),
     Column("active", Boolean, default=True),
     Column("raw_json", Text),
@@ -346,9 +368,15 @@ accounting_audit_log = Table(
     Column("id", String(36), primary_key=True),
     Column("client_id", String(36), nullable=False, index=True),
     Column("actor_id", String(36)),
+    Column("module", String(64), index=True),
+    Column("record_type", String(64), index=True),
+    Column("record_id", String(64), index=True),
     Column("action", String(64), nullable=False, index=True),
     Column("entity_type", String(64), index=True),
     Column("entity_id", String(64), index=True),
+    Column("previous_value", Text),
+    Column("new_value", Text),
+    Column("ip_address", String(64)),
     Column("details_json", Text),
     Column("created_at", String(64)),
 )
@@ -395,10 +423,27 @@ accounting_periods = Table(
     metadata,
     Column("id", String(36), primary_key=True),
     Column("client_id", String(36), nullable=False, index=True),
+    Column("financial_year_id", String(36), index=True),
+    Column("period_name", String(64)),
+    Column("period_number", Integer, default=1),
     Column("period_start", String(32), index=True),
     Column("period_end", String(32), index=True),
     Column("status", String(32), default="open", index=True),
+    Column("transactions_posted", Integer, default=0),
     Column("notes", Text),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+accounting_financial_years = Table(
+    "accounting_financial_years",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("name", String(128), nullable=False),
+    Column("start_date", String(32), index=True),
+    Column("end_date", String(32), index=True),
+    Column("status", String(32), default="open", index=True),
     Column("created_at", String(64)),
     Column("updated_at", String(64)),
 )
@@ -440,6 +485,7 @@ async def ensure_schema_columns(conn):
         client_integrations,
         integration_records,
         accounting_accounts,
+        accounting_settings,
         accounting_contacts,
         accounting_journal_entries,
         accounting_journal_lines,
@@ -447,6 +493,7 @@ async def ensure_schema_columns(conn):
         accounting_bank_transactions,
         accounting_vat_returns,
         accounting_periods,
+        accounting_financial_years,
     ):
         existing_column_info = await conn.run_sync(
             lambda sync_conn, table_name=table.name: {
@@ -678,6 +725,7 @@ NATIVE_ACCOUNTING_MODULES = [
     {"key": "vat", "label": "VAT", "description": "VAT control, return boxes, audit trail, and MTD-ready summaries."},
     {"key": "general_ledger", "label": "General Ledger", "description": "Double-entry journals and account activity."},
     {"key": "chart_of_accounts", "label": "Chart of Accounts", "description": "Nominal codes, control accounts, and reporting structure."},
+    {"key": "audit", "label": "Audit Trail", "description": "Permanent accounting activity history across all modules."},
     {"key": "reports", "label": "Reports", "description": "Profit and loss, balance sheet, trial balance, and ledgers."},
     {"key": "settings", "label": "Settings", "description": "Accounting periods, defaults, VAT basis, and locks."},
     {"key": "fixed_assets", "label": "Fixed Assets", "description": "Coming next: asset register and depreciation journals."},
@@ -685,17 +733,20 @@ NATIVE_ACCOUNTING_MODULES = [
 ]
 
 DEFAULT_NATIVE_ACCOUNTS = [
-    {"code": "1100", "name": "Trade debtors", "account_type": "Asset", "normal_balance": "debit", "control_account": True},
-    {"code": "1200", "name": "Bank", "account_type": "Asset", "normal_balance": "debit", "control_account": True},
-    {"code": "2000", "name": "Trade creditors", "account_type": "Liability", "normal_balance": "credit", "control_account": True},
-    {"code": "2200", "name": "VAT control", "account_type": "Liability", "normal_balance": "credit", "control_account": True},
-    {"code": "4000", "name": "Sales", "account_type": "Income", "normal_balance": "credit", "control_account": False},
-    {"code": "5000", "name": "Purchases", "account_type": "Expense", "normal_balance": "debit", "control_account": False},
-    {"code": "5100", "name": "Subcontractors", "account_type": "Expense", "normal_balance": "debit", "control_account": False},
-    {"code": "5200", "name": "Materials", "account_type": "Expense", "normal_balance": "debit", "control_account": False},
-    {"code": "5300", "name": "Motor and travel", "account_type": "Expense", "normal_balance": "debit", "control_account": False},
-    {"code": "5400", "name": "Office and software", "account_type": "Expense", "normal_balance": "debit", "control_account": False},
-    {"code": "9999", "name": "Suspense", "account_type": "Asset", "normal_balance": "debit", "control_account": False},
+    {"code": "1100", "name": "Trade debtors", "category": "Asset", "account_type": "Receivable", "purpose": "Sales Ledger", "normal_balance": "debit", "control_account": True, "is_control_account": True},
+    {"code": "1200", "name": "Bank", "category": "Asset", "account_type": "Bank", "purpose": "Bank Account", "normal_balance": "debit", "control_account": True, "is_control_account": True},
+    {"code": "2000", "name": "Trade creditors", "category": "Liability", "account_type": "Payable", "purpose": "Purchase Ledger", "normal_balance": "credit", "control_account": True, "is_control_account": True},
+    {"code": "2200", "name": "VAT control", "category": "Liability", "account_type": "VAT", "purpose": "VAT Control", "normal_balance": "credit", "control_account": True, "is_control_account": True},
+    {"code": "2210", "name": "Payroll control", "category": "Liability", "account_type": "Payroll", "purpose": "Payroll Control", "normal_balance": "credit", "control_account": True, "is_control_account": True},
+    {"code": "2300", "name": "Corporation Tax", "category": "Liability", "account_type": "Tax", "purpose": "Corporation Tax", "normal_balance": "credit", "control_account": True, "is_control_account": True},
+    {"code": "3200", "name": "Retained earnings", "category": "Equity", "account_type": "Equity", "purpose": "Retained Earnings", "normal_balance": "credit", "control_account": True, "is_control_account": True},
+    {"code": "4000", "name": "Sales", "category": "Income", "account_type": "Sales", "purpose": "Standard Nominal", "normal_balance": "credit", "control_account": False, "is_control_account": False},
+    {"code": "5000", "name": "Purchases", "category": "Expense", "account_type": "Purchases", "purpose": "Standard Nominal", "normal_balance": "debit", "control_account": False, "is_control_account": False},
+    {"code": "5100", "name": "Subcontractors", "category": "Expense", "account_type": "Cost of Sales", "purpose": "Standard Nominal", "normal_balance": "debit", "control_account": False, "is_control_account": False},
+    {"code": "5200", "name": "Materials", "category": "Expense", "account_type": "Cost of Sales", "purpose": "Standard Nominal", "normal_balance": "debit", "control_account": False, "is_control_account": False},
+    {"code": "5300", "name": "Motor and travel", "category": "Expense", "account_type": "Overheads", "purpose": "Standard Nominal", "normal_balance": "debit", "control_account": False, "is_control_account": False},
+    {"code": "5400", "name": "Office and software", "category": "Expense", "account_type": "Overheads", "purpose": "Standard Nominal", "normal_balance": "debit", "control_account": False, "is_control_account": False},
+    {"code": "9999", "name": "Suspense", "category": "Asset", "account_type": "Suspense", "purpose": "Suspense", "normal_balance": "debit", "control_account": True, "is_control_account": True},
 ]
 
 
@@ -935,6 +986,21 @@ async def ensure_native_accounting_client(session: AsyncSession, client_id: str)
         .order_by(accounting_accounts.c.code.asc()),
     )
     if existing:
+        defaults_by_code = {item["code"]: item for item in DEFAULT_NATIVE_ACCOUNTS}
+        for account in existing:
+            defaults = defaults_by_code.get(str(account.get("code") or ""), {})
+            values = {}
+            if not account.get("category"):
+                values["category"] = defaults.get("category") or infer_account_category(account.get("account_type"))
+            if not account.get("purpose"):
+                values["purpose"] = defaults.get("purpose") or infer_account_purpose(account)
+            if account.get("is_control_account") is None:
+                values["is_control_account"] = bool(account.get("control_account")) or bool(defaults.get("is_control_account"))
+            if values:
+                values["updated_at"] = now
+                await session.execute(update(accounting_accounts).where(accounting_accounts.c.id == account["id"]).values(**values))
+        await ensure_accounting_settings(session, client_id)
+        await session.flush()
         return existing
     for account in DEFAULT_NATIVE_ACCOUNTS:
         await session.execute(
@@ -956,6 +1022,8 @@ async def ensure_native_accounting_client(session: AsyncSession, client_id: str)
             native_accounting_created_at=now,
         )
     )
+    await session.flush()
+    await ensure_accounting_settings(session, client_id)
     await session.flush()
     return await many(
         session,
@@ -1018,6 +1086,17 @@ async def post_native_journal(
     lines: list[dict],
     actor_id: Optional[str] = None,
 ) -> dict:
+    locked_period = await one(
+        session,
+        select(accounting_periods).where(
+            accounting_periods.c.client_id == client_id,
+            accounting_periods.c.period_start <= entry_date,
+            accounting_periods.c.period_end >= entry_date,
+            accounting_periods.c.status.in_(["locked", "closed"]),
+        ),
+    )
+    if locked_period:
+        raise HTTPException(status_code=400, detail=f"Accounting period is {locked_period.get('status')}; reopen it before posting.")
     total_debit = sum((money(line.get("debit")) for line in lines), Decimal("0.00"))
     total_credit = sum((money(line.get("credit")) for line in lines), Decimal("0.00"))
     if total_debit <= Decimal("0.00") or total_credit <= Decimal("0.00"):
@@ -1626,7 +1705,88 @@ async def delete_client(
 
 # ---------- Admin: Native Accountancy Software ----------
 def serialize_native_account(row: dict) -> dict:
-    return dict(row)
+    row = dict(row)
+    account_type = str(row.get("account_type") or "").strip()
+    category = str(row.get("category") or "").strip() or infer_account_category(account_type)
+    control = bool(row.get("is_control_account")) or bool(row.get("control_account"))
+    row["category"] = category
+    row["purpose"] = str(row.get("purpose") or "").strip() or infer_account_purpose(row)
+    row["is_control_account"] = control
+    row["control_account"] = control
+    row["current_balance"] = row.get("current_balance") or "0.00"
+    return row
+
+
+def infer_account_category(account_type: str) -> str:
+    lookup = {
+        "asset": "Asset",
+        "bank": "Asset",
+        "receivable": "Asset",
+        "liability": "Liability",
+        "payable": "Liability",
+        "vat": "Liability",
+        "tax": "Liability",
+        "payroll": "Liability",
+        "equity": "Equity",
+        "income": "Income",
+        "sales": "Income",
+        "expense": "Expense",
+        "purchases": "Expense",
+        "cost of sales": "Expense",
+        "overheads": "Expense",
+    }
+    return lookup.get(str(account_type or "").strip().lower(), "Expense")
+
+
+def infer_account_purpose(account: dict) -> str:
+    code = str(account.get("code") or "")
+    name = str(account.get("name") or "").lower()
+    account_type = str(account.get("account_type") or "").lower()
+    if code == "1100" or "debtor" in name or account_type == "receivable":
+        return "Sales Ledger"
+    if code == "2000" or "creditor" in name or account_type == "payable":
+        return "Purchase Ledger"
+    if code == "1200" or account_type == "bank":
+        return "Bank Account"
+    if code == "2200" or account_type == "vat":
+        return "VAT Control"
+    if code == "9999" or "suspense" in name:
+        return "Suspense"
+    if code == "3200" or "retained" in name:
+        return "Retained Earnings"
+    if code == "2300" or "corporation tax" in name:
+        return "Corporation Tax"
+    if code == "2210" or "payroll" in name:
+        return "Payroll Control"
+    return "Standard Nominal"
+
+
+def default_accounting_settings(client_id: str, now: Optional[str] = None) -> dict:
+    timestamp = now or utc_now_iso()
+    return {
+        "id": new_id(),
+        "client_id": client_id,
+        "default_sales_account": "4000",
+        "default_purchase_account": "5000",
+        "default_vat_control_account": "2200",
+        "default_bank_account": "1200",
+        "default_suspense_account": "9999",
+        "default_debtors_control_account": "1100",
+        "default_creditors_control_account": "2000",
+        "default_retained_earnings_account": "3200",
+        "created_at": timestamp,
+        "updated_at": timestamp,
+    }
+
+
+async def ensure_accounting_settings(session: AsyncSession, client_id: str) -> dict:
+    existing = await one(session, select(accounting_settings).where(accounting_settings.c.client_id == client_id))
+    if existing:
+        return existing
+    row = default_accounting_settings(client_id)
+    await session.execute(insert(accounting_settings).values(**row))
+    await session.flush()
+    return row
 
 
 def serialize_native_contact(row: dict) -> dict:
@@ -1684,9 +1844,15 @@ async def add_accounting_audit(
             id=new_id(),
             client_id=client_id,
             actor_id=actor_id,
+            module=entity_type,
+            record_type=entity_type,
+            record_id=entity_id,
             action=action,
             entity_type=entity_type,
             entity_id=entity_id,
+            previous_value=None,
+            new_value=json.dumps(details or {}),
+            ip_address=None,
             details_json=json.dumps(details or {}),
             created_at=utc_now_iso(),
         )
@@ -1711,6 +1877,28 @@ def serialize_audit_event(row: dict) -> dict:
     row = dict(row)
     row["details_json"] = parse_json_object(row.get("details_json")) or {}
     return row
+
+
+def serialize_accounting_settings(row: dict) -> dict:
+    return dict(row)
+
+
+def serialize_financial_year(row: dict) -> dict:
+    return dict(row)
+
+
+async def accounting_period_transaction_counts(session: AsyncSession, client_id: str) -> dict[str, int]:
+    periods = await many(session, select(accounting_periods).where(accounting_periods.c.client_id == client_id))
+    journals = await many(session, select(accounting_journal_entries).where(accounting_journal_entries.c.client_id == client_id))
+    counts: dict[str, int] = {}
+    for period in periods:
+        start = str(period.get("period_start") or "")
+        end = str(period.get("period_end") or "")
+        counts[str(period.get("id"))] = len([
+            journal for journal in journals
+            if start <= str(journal.get("entry_date") or "") <= end and journal.get("status") == "posted"
+        ])
+    return counts
 
 
 async def native_account_balances(session: AsyncSession, client_id: str) -> dict[str, Decimal]:
@@ -1869,6 +2057,21 @@ def normalize_csv_date(value: str) -> str:
     return text_value
 
 
+def add_months_to_date(value: date, months: int) -> date:
+    month_index = value.month - 1 + months
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    last_day = calendar.monthrange(year, month)[1]
+    return date(year, month, min(value.day, last_day))
+
+
+def parse_iso_date(value: str, field_name: str) -> date:
+    try:
+        return datetime.fromisoformat(str(value or "")[:10]).date()
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"{field_name} must be a valid date.")
+
+
 @api.get("/admin/accounting/clients")
 async def list_native_accounting_clients(
     user: dict = Depends(require_admin),
@@ -1906,6 +2109,14 @@ async def get_native_accounting_workspace(
         session,
         select(accounting_accounts).where(accounting_accounts.c.client_id == client_id).order_by(accounting_accounts.c.code.asc()),
     )
+    balances = await native_account_balances(session, client_id)
+    for account in accounts:
+        account["current_balance"] = money_str(balances.get(str(account.get("code") or ""), Decimal("0.00")))
+    settings_row = await ensure_accounting_settings(session, client_id)
+    financial_years = await many(
+        session,
+        select(accounting_financial_years).where(accounting_financial_years.c.client_id == client_id).order_by(accounting_financial_years.c.start_date.desc()),
+    )
     contacts = await many(
         session,
         select(accounting_contacts).where(accounting_contacts.c.client_id == client_id).order_by(accounting_contacts.c.name.asc()),
@@ -1924,8 +2135,11 @@ async def get_native_accounting_workspace(
     )
     periods = await many(
         session,
-        select(accounting_periods).where(accounting_periods.c.client_id == client_id).order_by(accounting_periods.c.period_end.desc(), accounting_periods.c.created_at.desc()),
+        select(accounting_periods).where(accounting_periods.c.client_id == client_id).order_by(accounting_periods.c.period_start.asc(), accounting_periods.c.created_at.asc()),
     )
+    period_counts = await accounting_period_transaction_counts(session, client_id)
+    for period in periods:
+        period["transactions_posted"] = period_counts.get(str(period.get("id")), 0)
     audit_events = await many(
         session,
         select(accounting_audit_log).where(accounting_audit_log.c.client_id == client_id).order_by(accounting_audit_log.c.created_at.desc()).limit(50),
@@ -1947,6 +2161,8 @@ async def get_native_accounting_workspace(
         "modules": NATIVE_ACCOUNTING_MODULES,
         "summary": await native_accounting_summary(session, client_id),
         "accounts": [serialize_native_account(a) for a in accounts],
+        "accounting_settings": serialize_accounting_settings(settings_row),
+        "financial_years": [serialize_financial_year(y) for y in financial_years],
         "contacts": [serialize_native_contact(c) for c in contacts],
         "journals": journals,
         "bank_transactions": [serialize_bank_transaction(t) for t in bank_transactions],
@@ -1980,9 +2196,12 @@ async def create_native_account(
         "client_id": client_id,
         "code": code,
         "name": name,
-        "account_type": str(payload.get("account_type") or payload.get("type") or "expense").strip(),
+        "category": str(payload.get("category") or infer_account_category(payload.get("account_type") or payload.get("type") or "expense")).strip(),
+        "account_type": str(payload.get("account_type") or payload.get("type") or "Expense").strip(),
+        "purpose": str(payload.get("purpose") or "Standard Nominal").strip(),
         "normal_balance": str(payload.get("normal_balance") or "debit").strip().lower(),
-        "control_account": bool(payload.get("control_account")),
+        "control_account": bool(payload.get("is_control_account") or payload.get("control_account")),
+        "is_control_account": bool(payload.get("is_control_account") or payload.get("control_account")),
         "active": bool(payload.get("active", True)),
         "created_at": now,
         "updated_at": now,
@@ -2310,6 +2529,131 @@ async def create_native_accounting_period(
     await add_accounting_audit(session, client_id, user.get("id"), "period_created", "accounting_period", row["id"], row)
     await session.commit()
     return serialize_period(row)
+
+
+@api.post("/admin/accounting/clients/{client_id}/financial-years")
+async def create_native_financial_year(
+    client_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before adding financial years.")
+    start = parse_iso_date(str(payload.get("start_date") or ""), "Start date")
+    end = parse_iso_date(str(payload.get("end_date") or ""), "End date")
+    if end < start:
+        raise HTTPException(status_code=400, detail="Financial year end date must be after the start date.")
+    name = str(payload.get("name") or f"FY {start.year}/{str(end.year)[-2:]}").strip()
+    existing = await one(
+        session,
+        select(accounting_financial_years).where(
+            accounting_financial_years.c.client_id == client_id,
+            accounting_financial_years.c.start_date == start.isoformat(),
+            accounting_financial_years.c.end_date == end.isoformat(),
+        ),
+    )
+    if existing:
+        raise HTTPException(status_code=400, detail="This financial year already exists.")
+    now = utc_now_iso()
+    year_id = new_id()
+    year_row = {
+        "id": year_id,
+        "client_id": client_id,
+        "name": name,
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+        "status": "open",
+        "created_at": now,
+        "updated_at": now,
+    }
+    await session.execute(insert(accounting_financial_years).values(**year_row))
+
+    period_start = start
+    period_number = 1
+    while period_start <= end:
+        next_month_start = add_months_to_date(period_start, 1)
+        period_end = min(next_month_start - timedelta(days=1), end)
+        await session.execute(
+            insert(accounting_periods).values(
+                id=new_id(),
+                client_id=client_id,
+                financial_year_id=year_id,
+                period_name=f"P{period_number:02d}",
+                period_number=period_number,
+                period_start=period_start.isoformat(),
+                period_end=period_end.isoformat(),
+                status="open",
+                transactions_posted=0,
+                notes=name,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        period_start = period_end + timedelta(days=1)
+        period_number += 1
+    await add_accounting_audit(session, client_id, user.get("id"), "financial_year_created", "financial_year", year_id, year_row)
+    await session.commit()
+    return {"financial_year": serialize_financial_year(year_row), "periods_created": period_number - 1}
+
+
+@api.patch("/admin/accounting/clients/{client_id}/periods/{period_id}")
+async def update_native_accounting_period(
+    client_id: str,
+    period_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before changing periods.")
+    period = await one(session, select(accounting_periods).where(accounting_periods.c.client_id == client_id, accounting_periods.c.id == period_id))
+    if not period:
+        raise HTTPException(status_code=404, detail="Accounting period not found.")
+    status = str(payload.get("status") or "").strip().lower()
+    if status not in {"open", "locked", "closed"}:
+        raise HTTPException(status_code=400, detail="Period status must be open, locked, or closed.")
+    before = serialize_period(period)
+    await session.execute(
+        update(accounting_periods)
+        .where(accounting_periods.c.id == period_id)
+        .values(status=status, updated_at=utc_now_iso())
+    )
+    await add_accounting_audit(session, client_id, user.get("id"), f"period_{status}", "accounting_period", period_id, {"previous": before, "status": status})
+    await session.commit()
+    return {"ok": True, "status": status}
+
+
+@api.put("/admin/accounting/clients/{client_id}/settings")
+async def update_native_accounting_settings(
+    client_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before saving accounting settings.")
+    existing = await ensure_accounting_settings(session, client_id)
+    allowed = {
+        "default_sales_account",
+        "default_purchase_account",
+        "default_vat_control_account",
+        "default_bank_account",
+        "default_suspense_account",
+        "default_debtors_control_account",
+        "default_creditors_control_account",
+        "default_retained_earnings_account",
+    }
+    values = {key: str(payload.get(key) or "").strip() for key in allowed if key in payload}
+    values["updated_at"] = utc_now_iso()
+    await session.execute(update(accounting_settings).where(accounting_settings.c.client_id == client_id).values(**values))
+    await add_accounting_audit(session, client_id, user.get("id"), "accounting_settings_updated", "accounting_settings", existing["id"], values)
+    await session.commit()
+    updated_row = await ensure_accounting_settings(session, client_id)
+    return serialize_accounting_settings(updated_row)
 
 
 @api.get("/admin/companies-house/search")
