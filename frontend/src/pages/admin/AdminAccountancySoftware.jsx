@@ -116,10 +116,10 @@ const MODULE_DETAILS = {
   },
   reports: {
     title: "Reports",
-    manage: ["Trial Balance", "Profit and Loss", "Balance Sheet", "Aged Balances"],
-    statLabel: "Net assets",
-    stat: (workspace) => formatMoney(workspace?.reports?.balance_sheet?.net_assets),
-    tabs: ["Report Centre", "Trial Balance", "Profit and Loss", "Balance Sheet", "Cash Flow", "Aged Debtors", "Aged Creditors", "VAT Summary", "Nominal Activity"],
+    manage: ["Financial Statements", "Management Reports", "VAT Reports", "Sales Reports", "Purchase Reports", "Bank Reports"],
+    statLabel: "Net profit",
+    stat: (workspace) => formatMoney(workspace?.reports?.dashboard?.net_profit || workspace?.reports?.profit_and_loss?.profit),
+    tabs: ["Dashboard", "Financial Statements", "Management Reports", "VAT Reports", "Sales Reports", "Purchase Reports", "Bank Reports", "Custom Reports", "Report Scheduler", "Exports", "Settings"],
   },
   settings: {
     title: "Settings",
@@ -3411,87 +3411,367 @@ function ChartOfAccounts({ accounts, form, setForm, createAccount, busy }) {
 
 function ReportsWorkspace({ workspace, activeReport }) {
   const reports = workspace.reports || {};
-  const pnl = reports.profit_and_loss || {};
-  const balanceSheet = reports.balance_sheet || {};
-  const trialBalance = reports.trial_balance || [];
-  const agedReceivables = reports.aged_receivables || [];
-  const agedPayables = reports.aged_payables || [];
-  if (activeReport === "Trial Balance") return <TrialBalanceReport workspace={workspace} />;
-  if (activeReport === "Profit and Loss") {
-    return (
-      <Panel title="Profit and Loss">
-        <ReportRows rows={[["Income", pnl.income], ["Expenses", pnl.expenses], ["Profit / loss", pnl.profit]]} />
-      </Panel>
-    );
-  }
-  if (activeReport === "Balance Sheet") {
-    return (
-      <Panel title="Balance Sheet">
-        <ReportRows rows={[["Assets", balanceSheet.assets], ["Liabilities", balanceSheet.liabilities], ["Equity", balanceSheet.equity], ["Net assets", balanceSheet.net_assets]]} />
-      </Panel>
-    );
-  }
-  if (activeReport === "Aged Debtors") return <AgedBalanceTable title="Aged debtors" rows={agedReceivables} empty="No customer balances yet." />;
-  if (activeReport === "Aged Creditors") return <AgedBalanceTable title="Aged creditors" rows={agedPayables} empty="No supplier balances yet." />;
+  if (activeReport === "Financial Statements") return <FinancialStatementsWorkspace workspace={workspace} />;
+  if (activeReport === "Management Reports") return <ManagementReportsWorkspace reports={reports} />;
+  if (activeReport === "VAT Reports") return <VatReportSuite reports={reports} />;
+  if (activeReport === "Sales Reports") return <SalesReportSuite reports={reports} />;
+  if (activeReport === "Purchase Reports") return <PurchaseReportSuite reports={reports} />;
+  if (activeReport === "Bank Reports") return <BankReportSuite reports={reports} />;
+  if (activeReport === "Custom Reports") return <CustomReportsWorkspace reports={reports} />;
+  if (activeReport === "Report Scheduler") return <ReportSchedulerWorkspace reports={reports} />;
+  if (activeReport === "Exports") return <ReportExportsWorkspace reports={reports} />;
+  if (activeReport === "Settings") return <ReportSettingsWorkspace reports={reports} />;
+  return <ReportsDashboard reports={reports} />;
+}
+
+function ReportsDashboard({ reports }) {
+  const dashboard = reports.dashboard || {};
+  const workingCapital = dashboard.working_capital || {};
   return (
     <div className="space-y-4">
+      <ReportActionBar title="Reporting dashboard" rows={dashboard.recent_activity || []} />
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <SummaryCard label="Income" value={formatMoney(pnl.income)} tone="emerald" />
-        <SummaryCard label="Expenses" value={formatMoney(pnl.expenses)} tone="amber" />
-        <SummaryCard label="Profit" value={formatMoney(pnl.profit)} tone="blue" />
-        <SummaryCard label="Net assets" value={formatMoney(balanceSheet.net_assets)} tone="stone" />
+        <SummaryCard label="Revenue this month" value={formatMoney(dashboard.revenue_this_month)} tone="emerald" />
+        <SummaryCard label="Expenses this month" value={formatMoney(dashboard.expenses_this_month)} tone="amber" />
+        <SummaryCard label="Gross profit" value={formatMoney(dashboard.gross_profit)} tone="blue" />
+        <SummaryCard label="Net profit" value={formatMoney(dashboard.net_profit)} tone="stone" />
+        <SummaryCard label="Cash at bank" value={formatMoney(dashboard.cash_at_bank)} tone="emerald" />
+        <SummaryCard label="VAT liability" value={formatMoney(dashboard.vat_liability)} tone="amber" />
+        <SummaryCard label="Accounts receivable" value={formatMoney(dashboard.accounts_receivable)} tone="blue" />
+        <SummaryCard label="Accounts payable" value={formatMoney(dashboard.accounts_payable)} tone="stone" />
       </div>
-      <div className="grid gap-4 xl:grid-cols-2">
-        <Panel title="Profit and loss">
+      <div className="grid gap-4 xl:grid-cols-[1.3fr_0.7fr]">
+        <Panel title="Financial performance">
+          <ReportTable
+            rows={dashboard.financial_performance || []}
+            columns={[
+              ["period", "Period"],
+              ["income", "Revenue", "money"],
+              ["expenses", "Expenses", "money"],
+              ["profit", "Profit", "money"],
+            ]}
+            empty="No posted transactions yet."
+          />
+        </Panel>
+        <Panel title="Working capital">
           <ReportRows rows={[
-            ["Income", pnl.income],
-            ["Expenses", pnl.expenses],
-            ["Profit / loss", pnl.profit],
+            ["Debtors", workingCapital.debtors],
+            ["Creditors", workingCapital.creditors],
+            ["Cash", workingCapital.cash],
+            ["Net working capital", workingCapital.net_working_capital],
           ]} />
         </Panel>
-        <Panel title="Balance sheet">
-          <ReportRows rows={[
-            ["Assets", balanceSheet.assets],
-            ["Liabilities", balanceSheet.liabilities],
-            ["Equity", balanceSheet.equity],
-            ["Net assets", balanceSheet.net_assets],
-          ]} />
+      </div>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Panel title="Cash position">
+          <ReportTable rows={dashboard.bank_balances || []} columns={[["account_name", "Bank account"], ["current_balance", "Balance", "money"], ["reconciled_balance", "Reconciled", "money"]]} empty="No bank accounts configured." />
+        </Panel>
+        <Panel title="Recent financial activity">
+          <ReportTable rows={dashboard.recent_activity || []} columns={[["date", "Date", "date"], ["module", "Module"], ["reference", "Reference"], ["amount", "Amount", "money"]]} empty="No recent postings yet." />
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+function FinancialStatementsWorkspace({ workspace }) {
+  const reports = workspace.reports || {};
+  const pnl = reports.profit_and_loss || {};
+  const balanceSheet = reports.balance_sheet || {};
+  const cashFlow = reports.cash_flow || {};
+  const equity = reports.statement_of_changes_in_equity || {};
+  return (
+    <div className="space-y-4">
+      <ReportActionBar title="Financial statements" rows={reports.trial_balance || []} />
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Panel title="Profit and Loss">
+          <ReportRows rows={[["Income", pnl.income], ["Expenses", pnl.expenses], ["Gross profit", pnl.gross_profit], ["Net profit / loss", pnl.profit]]} />
+          <ExpandableReportRows title="Income detail" rows={pnl.sections?.income || []} />
+          <ExpandableReportRows title="Expense detail" rows={pnl.sections?.expenses || []} />
+        </Panel>
+        <Panel title="Balance Sheet">
+          <ReportRows rows={[["Assets", balanceSheet.assets], ["Liabilities", balanceSheet.liabilities], ["Equity", balanceSheet.equity], ["Current year profit", balanceSheet.current_year_profit], ["Net assets", balanceSheet.net_assets]]} />
+          <ExpandableReportRows title="Asset detail" rows={balanceSheet.sections?.assets || []} />
+          <ExpandableReportRows title="Liability detail" rows={balanceSheet.sections?.liabilities || []} />
+          <ExpandableReportRows title="Equity detail" rows={balanceSheet.sections?.equity || []} />
         </Panel>
       </div>
       <div className="grid gap-4 xl:grid-cols-2">
-        <AgedBalanceTable title="Aged debtors" rows={agedReceivables} empty="No customer balances yet." />
-        <AgedBalanceTable title="Aged creditors" rows={agedPayables} empty="No supplier balances yet." />
+        <Panel title="Cash Flow Statement">
+          <ReportRows rows={[["Operating activities", cashFlow.operating_activities], ["Investing activities", cashFlow.investing_activities], ["Financing activities", cashFlow.financing_activities], ["Net cash movement", cashFlow.net_cash_movement]]} />
+        </Panel>
+        <Panel title="Statement of Changes in Equity">
+          <ReportRows rows={[["Opening equity", equity.opening_equity], ["Current year profit", equity.current_year_profit], ["Closing equity", equity.closing_equity]]} />
+        </Panel>
       </div>
-      <Panel title="Trial balance">
-        {trialBalance.length === 0 ? (
-          <p className="py-8 text-center text-sm text-stone-500">No posted balances yet.</p>
-        ) : (
-          <div className="overflow-auto">
-            <table className="min-w-full text-left text-sm">
-              <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
-                <tr>
-                  <th className="px-3 py-2">Code</th>
-                  <th className="px-3 py-2">Account</th>
-                  <th className="px-3 py-2">Type</th>
-                  <th className="px-3 py-2 text-right">Debit</th>
-                  <th className="px-3 py-2 text-right">Credit</th>
-                </tr>
-              </thead>
-              <tbody>
-                {trialBalance.map((row) => (
-                  <tr key={row.code} className="border-t border-stone-100">
-                    <td className="px-3 py-2 font-semibold text-stone-900">{row.code}</td>
-                    <td className="px-3 py-2">{row.name}</td>
-                    <td className="px-3 py-2 text-stone-600">{row.type}</td>
-                    <td className="px-3 py-2 text-right">{formatMoney(row.debit)}</td>
-                    <td className="px-3 py-2 text-right">{formatMoney(row.credit)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+      <TrialBalanceReport workspace={workspace} />
+    </div>
+  );
+}
+
+function ManagementReportsWorkspace({ reports }) {
+  const management = reports.management || {};
+  return (
+    <div className="space-y-4">
+      <ReportActionBar title="Management reports" rows={management.monthly_performance || []} />
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Panel title="Income vs Expenses">
+          <ReportTable rows={management.income_vs_expenses || []} columns={[["period", "Period"], ["income", "Income", "money"], ["expenses", "Expenses", "money"], ["profit", "Profit", "money"]]} empty="No transactions to compare yet." />
+        </Panel>
+        <Panel title="KPI summary">
+          <ReportRows rows={[["Gross margin", management.kpi_summary?.gross_margin], ["Net margin", management.kpi_summary?.net_margin], ["Working capital", management.kpi_summary?.working_capital]]} />
+        </Panel>
+      </div>
+      <Panel title="Trend analysis">
+        <ReportTable rows={management.trend_analysis || []} columns={[["period", "Period"], ["income", "Revenue", "money"], ["expenses", "Expenses", "money"], ["profit", "Net profit", "money"]]} empty="No trend data yet." />
       </Panel>
+      <Panel title="Department summary">
+        <p className="py-6 text-center text-sm text-stone-500">Department and cost-centre reporting is ready for future dimensions once departments are enabled.</p>
+      </Panel>
+    </div>
+  );
+}
+
+function VatReportSuite({ reports }) {
+  const vat = reports.vat_reports || {};
+  const boxes = vat.return_summary || {};
+  return (
+    <div className="space-y-4">
+      <ReportActionBar title="VAT reports" rows={vat.detail || []} />
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Panel title="VAT Return Summary">
+          <ReportRows rows={[
+            ["Box 1 - VAT due on sales", boxes.box1],
+            ["Box 2 - VAT due on acquisitions", boxes.box2],
+            ["Box 3 - Total VAT due", boxes.box3],
+            ["Box 4 - VAT reclaimed", boxes.box4],
+            ["Box 5 - Net VAT", boxes.box5],
+            ["Box 6 - Net sales", boxes.box6],
+            ["Box 7 - Net purchases", boxes.box7],
+            ["Box 8 - EC sales", boxes.box8],
+            ["Box 9 - EC purchases", boxes.box9],
+          ]} />
+        </Panel>
+        <Panel title="VAT by Code">
+          <ReportTable rows={vat.by_code || []} columns={[["vat_code", "VAT code"], ["transactions", "Transactions"], ["net", "Net", "money"], ["vat", "VAT", "money"], ["gross", "Gross", "money"]]} empty="No VAT movements yet." />
+        </Panel>
+      </div>
+      <Panel title="VAT Detail">
+        <ReportTable rows={vat.detail || []} columns={[["date", "Date", "date"], ["source_module", "Module"], ["document_number", "Document"], ["vat_code", "VAT code"], ["net", "Net", "money"], ["vat", "VAT", "money"], ["gross", "Gross", "money"]]} empty="No VAT transactions yet." />
+      </Panel>
+      <Panel title="VAT Exceptions">
+        <ReportTable rows={vat.exceptions || []} columns={[["date", "Date", "date"], ["document_number", "Document"], ["vat_code", "VAT code"], ["net", "Net", "money"], ["vat", "VAT", "money"]]} empty="No VAT exceptions found." />
+      </Panel>
+    </div>
+  );
+}
+
+function SalesReportSuite({ reports }) {
+  const sales = reports.sales_reports || {};
+  return (
+    <div className="space-y-4">
+      <ReportActionBar title="Sales reports" rows={sales.sales_analysis || []} />
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Panel title="Customer Sales">
+          <ReportTable rows={sales.customer_sales || []} columns={[["customer", "Customer"], ["invoice_count", "Invoices"], ["outstanding", "Outstanding", "money"]]} empty="No customer sales yet." />
+        </Panel>
+        <AgedBalanceTable title="Aged debtors" rows={sales.aged_debtors || []} empty="No debtor balances yet." />
+      </div>
+      <Panel title="Invoice Analysis">
+        <ReportTable rows={sales.invoice_analysis || []} columns={[["invoice_number", "Invoice"], ["customer_name", "Customer"], ["invoice_date", "Date", "date"], ["gross_amount", "Gross", "money"], ["outstanding_amount", "Outstanding", "money"], ["status", "Status"]]} empty="No sales invoices yet." />
+      </Panel>
+      <Panel title="Receipts Analysis">
+        <ReportTable rows={sales.receipts_analysis || []} columns={[["receipt_date", "Date", "date"], ["customer_name", "Customer"], ["amount", "Amount", "money"], ["payment_method", "Method"], ["status", "Status"]]} empty="No customer receipts yet." />
+      </Panel>
+    </div>
+  );
+}
+
+function PurchaseReportSuite({ reports }) {
+  const purchases = reports.purchase_reports || {};
+  return (
+    <div className="space-y-4">
+      <ReportActionBar title="Purchase reports" rows={purchases.purchase_analysis || []} />
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Panel title="Supplier Spend">
+          <ReportTable rows={purchases.supplier_spend || []} columns={[["supplier", "Supplier"], ["invoice_count", "Invoices"], ["outstanding", "Outstanding", "money"]]} empty="No supplier spend yet." />
+        </Panel>
+        <AgedBalanceTable title="Aged creditors" rows={purchases.aged_creditors || []} empty="No creditor balances yet." />
+      </div>
+      <Panel title="Outstanding Bills">
+        <ReportTable rows={purchases.outstanding_bills || []} columns={[["invoice_number", "Bill"], ["supplier_name", "Supplier"], ["invoice_date", "Date", "date"], ["gross_amount", "Gross", "money"], ["outstanding_amount", "Outstanding", "money"], ["status", "Status"]]} empty="No outstanding bills." />
+      </Panel>
+      <Panel title="Purchase VAT">
+        <ReportTable rows={purchases.purchase_vat || []} columns={[["date", "Date", "date"], ["document_number", "Document"], ["vat_code", "VAT code"], ["net", "Net", "money"], ["vat", "VAT", "money"], ["gross", "Gross", "money"]]} empty="No purchase VAT yet." />
+      </Panel>
+    </div>
+  );
+}
+
+function BankReportSuite({ reports }) {
+  const bank = reports.bank_reports || {};
+  return (
+    <div className="space-y-4">
+      <ReportActionBar title="Bank reports" rows={bank.bank_activity || []} />
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Panel title="Bank Balances">
+          <ReportTable rows={bank.balances || []} columns={[["account_name", "Bank account"], ["current_balance", "Current", "money"], ["reconciled_balance", "Reconciled", "money"]]} empty="No bank accounts configured." />
+        </Panel>
+        <Panel title="Outstanding Transactions">
+          <ReportTable rows={bank.outstanding_transactions || []} columns={[["transaction_date", "Date", "date"], ["description", "Description"], ["amount", "Amount", "money"], ["suggested_match", "Suggested match"]]} empty="No unreconciled bank items." />
+        </Panel>
+      </div>
+      <Panel title="Cashbook">
+        <ReportTable rows={bank.cashbook || []} columns={[["transaction_date", "Date", "date"], ["description", "Description"], ["reference", "Reference"], ["money_in", "Money in", "money"], ["money_out", "Money out", "money"], ["status", "Status"]]} empty="No cashbook activity yet." />
+      </Panel>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Panel title="Bank Charges">
+          <ReportTable rows={bank.bank_charges || []} columns={[["transaction_date", "Date", "date"], ["description", "Description"], ["money_out", "Charge", "money"], ["status", "Status"]]} empty="No bank charges posted." />
+        </Panel>
+        <Panel title="Interest">
+          <ReportTable rows={bank.interest || []} columns={[["transaction_date", "Date", "date"], ["description", "Description"], ["money_in", "Interest", "money"], ["status", "Status"]]} empty="No interest transactions posted." />
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+function CustomReportsWorkspace({ reports }) {
+  const custom = reports.custom_reports || {};
+  return (
+    <div className="grid gap-4 xl:grid-cols-2">
+      <Panel title="Report Builder">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Info label="Columns available" value={(custom.available_columns || []).join(", ")} />
+          <Info label="Grouping" value={(custom.grouping_options || []).join(", ")} />
+          <Info label="Sorting" value={(custom.sorting_options || []).join(", ")} />
+          <Info label="Saved reports" value={(custom.saved_reports || []).length} />
+        </div>
+      </Panel>
+      <Panel title="Saved Custom Reports">
+        <ReportTable rows={custom.saved_reports || []} columns={[["name", "Name"], ["type", "Type"], ["updated_at", "Updated", "date"]]} empty="No custom reports saved yet." />
+      </Panel>
+    </div>
+  );
+}
+
+function ReportSchedulerWorkspace({ reports }) {
+  const scheduler = reports.report_scheduler || {};
+  return (
+    <div className="grid gap-4 xl:grid-cols-2">
+      <Panel title="Scheduling Framework">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Info label="Frequencies" value={(scheduler.frequencies || []).join(", ")} />
+          <Info label="Delivery methods" value={(scheduler.delivery_methods || []).join(", ")} />
+        </div>
+      </Panel>
+      <Panel title="Scheduled Reports">
+        <ReportTable rows={scheduler.scheduled_reports || []} columns={[["name", "Report"], ["frequency", "Frequency"], ["next_run", "Next run", "date"], ["status", "Status"]]} empty="No scheduled reports yet." />
+      </Panel>
+    </div>
+  );
+}
+
+function ReportExportsWorkspace({ reports }) {
+  const exports = reports.exports || {};
+  const rows = reports.trial_balance || [];
+  return (
+    <div className="grid gap-4 xl:grid-cols-2">
+      <Panel title="Export Centre">
+        <ReportRows rows={[["Supported formats", (exports.formats || []).join(", ")], ["Print layout", exports.print_layout]]} />
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button type="button" variant="outline" className="gap-2" onClick={() => window.print()}><Download className="h-4 w-4" /> PDF</Button>
+          <Button type="button" variant="outline" className="gap-2" onClick={() => downloadReportCsv("report-export.xls", rows, "application/vnd.ms-excel;charset=utf-8", "\t")}><Download className="h-4 w-4" /> Excel</Button>
+          <Button type="button" variant="outline" className="gap-2" onClick={() => downloadReportCsv("report-export.csv", rows)}><Download className="h-4 w-4" /> CSV</Button>
+          <Button type="button" variant="outline" className="gap-2" onClick={() => window.print()}><Printer className="h-4 w-4" /> Print</Button>
+        </div>
+      </Panel>
+      <Panel title="Generated Exports">
+        <ReportTable rows={exports.generated || []} columns={[["created_at", "Created", "date"], ["report", "Report"], ["format", "Format"], ["status", "Status"]]} empty="No generated exports yet." />
+      </Panel>
+    </div>
+  );
+}
+
+function ReportSettingsWorkspace({ reports }) {
+  const settings = reports.settings || {};
+  return (
+    <Panel title="Reporting Settings">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <Info label="Report basis" value={settings.report_basis} />
+        <Info label="Default date range" value={settings.default_date_range} />
+        <Info label="Comparative periods" value={settings.comparative_periods ? "Enabled" : "Disabled"} />
+        <Info label="Currency" value={settings.currency} />
+        <Info label="PDF branding" value={settings.pdf_branding} />
+      </div>
+    </Panel>
+  );
+}
+
+function ReportActionBar({ title, rows }) {
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-stone-200 bg-white p-3 sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        <h3 className="font-display text-base font-semibold text-stone-900">{title}</h3>
+        <p className="text-xs text-stone-500">Generated from posted accounting transactions and supporting ledgers.</p>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <Button type="button" variant="outline" size="sm" className="gap-2"><RefreshCw className="h-4 w-4" />Refresh</Button>
+        <Button type="button" variant="outline" size="sm" className="gap-2" onClick={() => downloadReportCsv(`${title}.csv`, rows || [])}><Download className="h-4 w-4" />CSV</Button>
+        <Button type="button" variant="outline" size="sm" className="gap-2" onClick={() => downloadReportCsv(`${title}.xls`, rows || [], "application/vnd.ms-excel;charset=utf-8", "\t")}><Download className="h-4 w-4" />Excel</Button>
+        <Button type="button" variant="outline" size="sm" className="gap-2" onClick={() => window.print()}><Download className="h-4 w-4" />PDF</Button>
+        <Button type="button" variant="outline" size="sm" className="gap-2" onClick={() => window.print()}><Printer className="h-4 w-4" />Print</Button>
+      </div>
+    </div>
+  );
+}
+
+function ExpandableReportRows({ title, rows }) {
+  const [openCode, setOpenCode] = useState("");
+  if (!rows?.length) return null;
+  return (
+    <div className="mt-3 rounded-md border border-stone-100">
+      <div className="bg-stone-50 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-stone-500">{title}</div>
+      <div className="divide-y divide-stone-100">
+        {rows.map((row) => {
+          const isOpen = openCode === row.code;
+          return (
+            <div key={row.code}>
+              <button type="button" onClick={() => setOpenCode(isOpen ? "" : row.code)} className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-stone-50">
+                <span><strong>{row.code}</strong> {row.name}</span>
+                <span className="font-semibold">{formatMoney(row.balance)}</span>
+              </button>
+              {isOpen && <ReportTable rows={row.activity || []} columns={[["date", "Date", "date"], ["reference", "Reference"], ["description", "Description"], ["debit", "Debit", "money"], ["credit", "Credit", "money"]]} empty="No drill-down lines for this account." compact />}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ReportTable({ rows, columns, empty, compact = false }) {
+  if (!rows?.length) return <p className="py-8 text-center text-sm text-stone-500">{empty || "No report rows yet."}</p>;
+  return (
+    <div className="overflow-auto">
+      <table className="min-w-full text-left text-sm">
+        <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
+          <tr>
+            {columns.map(([key, label]) => <th key={key} className={`px-3 ${compact ? "py-1.5" : "py-2"}`}>{label}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => (
+            <tr key={row.id || row.code || `${row.reference || row.name || row.description || "row"}-${index}`} className="border-t border-stone-100">
+              {columns.map(([key, , type]) => (
+                <td key={key} className={`px-3 ${compact ? "py-1.5" : "py-2"} ${type === "money" ? "text-right font-medium" : ""}`}>
+                  {type === "money" ? formatMoney(row[key]) : type === "date" ? formatDate(row[key]) : row[key] ?? "-"}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -3575,7 +3855,7 @@ function ReportRows({ rows }) {
       {rows.map(([label, value]) => (
         <div key={label} className="flex items-center justify-between gap-4 py-2 text-sm">
           <span className="text-stone-600">{label}</span>
-          <strong className="font-display text-stone-900">{formatMoney(value)}</strong>
+          <strong className="font-display text-stone-900">{formatReportValue(value)}</strong>
         </div>
       ))}
     </div>
@@ -3644,6 +3924,12 @@ function formatMoney(value) {
   return n.toLocaleString("en-GB", { style: "currency", currency: "GBP" });
 }
 
+function formatReportValue(value) {
+  if (value === null || value === undefined || value === "") return "-";
+  const n = Number(value);
+  return Number.isFinite(n) && String(value).trim() !== "" ? formatMoney(value) : String(value);
+}
+
 function formatDate(value) {
   if (!value) return "-";
   const d = new Date(value);
@@ -3667,4 +3953,26 @@ function displayAuditValue(value) {
   } catch {
     return "-";
   }
+}
+
+function downloadReportCsv(filename, rows, mimeType = "text/csv;charset=utf-8", delimiter = ",") {
+  if (!rows?.length) {
+    toast.info("There are no rows to export yet.");
+    return;
+  }
+  const keys = Array.from(rows.reduce((set, row) => {
+    Object.keys(row || {}).forEach((key) => {
+      if (typeof row[key] !== "object") set.add(key);
+    });
+    return set;
+  }, new Set()));
+  const escape = (value) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+  const csv = [keys.map(escape).join(delimiter), ...rows.map((row) => keys.map((key) => escape(row[key])).join(delimiter))].join("\n");
+  const blob = new Blob([csv], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename.replace(/\s+/g, "-").toLowerCase();
+  link.click();
+  URL.revokeObjectURL(url);
 }

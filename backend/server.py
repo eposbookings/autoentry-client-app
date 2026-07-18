@@ -3703,11 +3703,76 @@ async def native_accounting_reports(session: AsyncSession, client_id: str) -> di
     journals = await many(session, select(accounting_journal_entries).where(accounting_journal_entries.c.client_id == client_id))
     journal_by_id = {str(journal.get("id") or ""): journal for journal in journals}
     lines = await many(session, select(accounting_journal_lines).where(accounting_journal_lines.c.client_id == client_id))
+    ap = await accounts_payable_workspace(session, client_id)
+    ar = await accounts_receivable_workspace(session, client_id)
+    banking = await banking_workspace(session, client_id, accounts)
+    vat = await vat_engine_workspace(session, client_id)
 
     balances: dict[str, Decimal] = {}
+    movements: dict[str, Decimal] = {}
+    account_activity: dict[str, list[dict]] = {}
     aged_receivables: dict[str, dict] = {}
     aged_payables: dict[str, dict] = {}
     today = datetime.now(timezone.utc).date()
+    month_start = today.replace(day=1)
+
+    def parse_entry_date(value: str) -> Optional[date]:
+        try:
+            return datetime.fromisoformat(str(value or "")[:10]).date()
+        except Exception:
+            return None
+
+    def account_type_for(code: str) -> str:
+        account = account_by_code.get(code) or {}
+        return str(account.get("account_type") or account.get("category") or "").lower()
+
+    def account_category_for(code: str) -> str:
+        account = account_by_code.get(code) or {}
+        return str(account.get("category") or account.get("account_type") or "").lower()
+
+    def account_purpose_for(code: str) -> str:
+        account = account_by_code.get(code) or {}
+        return str(account.get("purpose") or "").lower()
+
+    def signed_account_value(code: str, balance: Decimal) -> Decimal:
+        kind = account_type_for(code)
+        category = account_category_for(code)
+        if kind in ("income", "sales") or category == "income":
+            return -balance
+        if kind in ("liability", "payable", "vat", "equity") or category in ("liability", "equity"):
+            return -balance
+        return balance
+
+    def is_income(code: str) -> bool:
+        return account_type_for(code) in ("income", "sales") or account_category_for(code) == "income"
+
+    def is_expense(code: str) -> bool:
+        return account_type_for(code) in ("expense", "purchases", "cost of sales", "overheads") or account_category_for(code) == "expense"
+
+    def is_asset(code: str) -> bool:
+        return account_type_for(code) in ("asset", "bank", "receivable") or account_category_for(code) == "asset"
+
+    def is_liability(code: str) -> bool:
+        return account_type_for(code) in ("liability", "payable", "vat", "tax", "payroll") or account_category_for(code) == "liability"
+
+    def is_equity(code: str) -> bool:
+        return account_type_for(code) == "equity" or account_category_for(code) == "equity"
+
+    def report_row(account: dict, balance: Decimal) -> dict:
+        code = str(account.get("code") or "")
+        return {
+            "account_id": account.get("id"),
+            "code": code,
+            "name": account.get("name"),
+            "category": account.get("category"),
+            "account_type": account.get("account_type"),
+            "purpose": account.get("purpose"),
+            "balance": money_str(signed_account_value(code, balance)),
+            "raw_balance": money_str(balance),
+            "activity": account_activity.get(code, []),
+        }
+
+    monthly: dict[str, dict[str, Decimal]] = {}
     for line in lines:
         code = str(line.get("account_code") or "")
         if not code:
@@ -3715,13 +3780,32 @@ async def native_accounting_reports(session: AsyncSession, client_id: str) -> di
         debit = money(line.get("debit"))
         credit = money(line.get("credit"))
         balances[code] = balances.get(code, Decimal("0.00")) + debit - credit
+        journal = journal_by_id.get(str(line.get("entry_id") or "")) or {}
+        entry_date = str(journal.get("entry_date") or "")[:10]
+        entry_day = parse_entry_date(entry_date)
+        if entry_day and entry_day >= month_start:
+            movements[code] = movements.get(code, Decimal("0.00")) + debit - credit
+        month_key = entry_date[:7] if entry_date else "undated"
+        monthly.setdefault(month_key, {"income": Decimal("0.00"), "expenses": Decimal("0.00"), "profit": Decimal("0.00")})
+        if is_income(code):
+            monthly[month_key]["income"] += credit - debit
+        elif is_expense(code):
+            monthly[month_key]["expenses"] += debit - credit
+        monthly[month_key]["profit"] = monthly[month_key]["income"] - monthly[month_key]["expenses"]
+        account_activity.setdefault(code, []).append({
+            "date": entry_date,
+            "reference": journal.get("reference"),
+            "description": line.get("description") or journal.get("description"),
+            "source_type": journal.get("source_type"),
+            "source_id": journal.get("source_id"),
+            "debit": money_str(debit),
+            "credit": money_str(credit),
+        })
         if code not in ("1100", "2000"):
             continue
         contact_id = str(line.get("contact_id") or "")
         contact = contact_by_id.get(contact_id) or {}
         contact_name = contact.get("name") or line.get("contact_name") or "Unassigned"
-        journal = journal_by_id.get(str(line.get("entry_id") or "")) or {}
-        entry_date = str(journal.get("entry_date") or "")[:10]
         try:
             age_days = max(0, (today - datetime.fromisoformat(entry_date).date()).days)
         except Exception:
@@ -3750,43 +3834,239 @@ async def native_accounting_reports(session: AsyncSession, client_id: str) -> di
     asset_total = Decimal("0.00")
     liability_total = Decimal("0.00")
     equity_total = Decimal("0.00")
+    current_month_income = Decimal("0.00")
+    current_month_expenses = Decimal("0.00")
+    sections = {"income": [], "expenses": [], "assets": [], "liabilities": [], "equity": []}
 
     for account in sorted(accounts, key=lambda item: str(item.get("code") or "")):
         code = str(account.get("code") or "")
         balance = balances.get(code, Decimal("0.00"))
+        movement = movements.get(code, Decimal("0.00"))
         account_type = str(account.get("account_type") or "").lower()
-        if account_type == "income":
+        row = report_row(account, balance)
+        if is_income(code):
             income_total += -balance
-        elif account_type == "expense":
+            current_month_income += -movement
+            sections["income"].append(row)
+        elif is_expense(code):
             expense_total += balance
-        elif account_type in ("asset", "bank", "receivable"):
+            current_month_expenses += movement
+            sections["expenses"].append(row)
+        elif is_asset(code):
             asset_total += balance
-        elif account_type in ("liability", "payable", "vat"):
+            sections["assets"].append(row)
+        elif is_liability(code):
             liability_total += -balance
-        elif account_type == "equity":
+            sections["liabilities"].append(row)
+        elif is_equity(code):
             equity_total += -balance
+            sections["equity"].append(row)
         if balance:
             trial_balance.append({
+                "account_id": account.get("id"),
                 "code": code,
                 "name": account.get("name"),
                 "type": account_type,
+                "category": account.get("category"),
+                "purpose": account.get("purpose"),
                 "debit": money_str(balance if balance > 0 else Decimal("0.00")),
                 "credit": money_str(-balance if balance < 0 else Decimal("0.00")),
+                "movement": money_str(movement),
+                "activity": account_activity.get(code, []),
             })
 
+    month_rows = []
+    for key in sorted([k for k in monthly.keys() if k != "undated"])[-12:]:
+        values = monthly[key]
+        month_rows.append({
+            "period": key,
+            "income": money_str(values["income"]),
+            "expenses": money_str(values["expenses"]),
+            "profit": money_str(values["profit"]),
+        })
+
+    cash_at_bank = sum(
+        (signed_account_value(code, balance) for code, balance in balances.items() if account_purpose_for(code) == "bank account" or account_type_for(code) == "bank"),
+        Decimal("0.00"),
+    )
+    ar_total = sum((row["total"] for row in aged_receivables.values()), Decimal("0.00"))
+    ap_total = sum((row["total"] for row in aged_payables.values()), Decimal("0.00"))
+    vat_liability = money(vat.get("dashboard", {}).get("net_vat_due"))
+    gross_profit = income_total - sum(
+        (balances.get(str(account.get("code") or ""), Decimal("0.00")) for account in accounts if str(account.get("account_type") or "").lower() == "cost of sales"),
+        Decimal("0.00"),
+    )
+    net_profit = income_total - expense_total
+    recent_activity = []
+    for journal in sorted(journals, key=lambda item: (str(item.get("entry_date") or ""), str(item.get("created_at") or "")), reverse=True)[:12]:
+        recent_activity.append({
+            "date": str(journal.get("entry_date") or "")[:10],
+            "module": vat_source_module(str(journal.get("source_type") or "")),
+            "record_type": str(journal.get("source_type") or "journal").replace("_", " ").title(),
+            "reference": journal.get("reference"),
+            "description": journal.get("description"),
+            "amount": money_str(money(journal.get("total_debit"))),
+        })
+
+    vat_transactions = vat.get("transactions", [])
+    vat_by_code: dict[str, dict] = {}
+    for item in vat_transactions:
+        key = str(item.get("vat_code") or "No VAT")
+        row = vat_by_code.setdefault(key, {"vat_code": key, "net": Decimal("0.00"), "vat": Decimal("0.00"), "gross": Decimal("0.00"), "transactions": 0})
+        row["net"] += money(item.get("net"))
+        row["vat"] += money(item.get("vat"))
+        row["gross"] += money(item.get("gross"))
+        row["transactions"] += 1
+
+    def serialize_totals(rows: dict[str, dict]) -> list[dict]:
+        return [
+            {**row, "net": money_str(row["net"]), "vat": money_str(row["vat"]), "gross": money_str(row["gross"])}
+            for row in sorted(rows.values(), key=lambda item: item["vat_code"])
+        ]
+
+    def percent_str(value: Decimal) -> str:
+        return f"{value.quantize(Decimal('0.01'))}%"
+
+    bank_reports = banking.get("reports", {})
+    bank_transactions = banking.get("transactions", [])
+    purchase_invoices = ap.get("invoices", [])
+    sales_invoices = ar.get("invoices", [])
+    supplier_spend = []
+    for row in ap.get("suppliers", []):
+        supplier_spend.append({
+            "supplier": row.get("name"),
+            "outstanding": row.get("outstanding_balance") or "0.00",
+            "invoice_count": len([i for i in purchase_invoices if str(i.get("supplier_id") or "") == str(row.get("id") or "")]),
+        })
+    customer_sales = []
+    for row in ar.get("customers", []):
+        customer_sales.append({
+            "customer": row.get("name"),
+            "outstanding": row.get("outstanding_balance") or "0.00",
+            "invoice_count": len([i for i in sales_invoices if str(i.get("customer_id") or "") == str(row.get("id") or "")]),
+        })
+
     return {
+        "dashboard": {
+            "revenue_this_month": money_str(current_month_income),
+            "expenses_this_month": money_str(current_month_expenses),
+            "gross_profit": money_str(gross_profit),
+            "net_profit": money_str(net_profit),
+            "cash_at_bank": money_str(cash_at_bank),
+            "vat_liability": money_str(vat_liability),
+            "accounts_receivable": money_str(ar_total),
+            "accounts_payable": money_str(ap_total),
+            "financial_performance": month_rows,
+            "bank_balances": banking.get("bank_accounts", []),
+            "working_capital": {
+                "debtors": money_str(ar_total),
+                "creditors": money_str(ap_total),
+                "cash": money_str(cash_at_bank),
+                "net_working_capital": money_str(ar_total + cash_at_bank - ap_total),
+            },
+            "recent_activity": recent_activity,
+        },
         "profit_and_loss": {
             "income": money_str(income_total),
             "expenses": money_str(expense_total),
             "profit": money_str(income_total - expense_total),
+            "gross_profit": money_str(gross_profit),
+            "sections": {
+                "income": sections["income"],
+                "expenses": sections["expenses"],
+            },
+            "monthly": month_rows,
         },
         "balance_sheet": {
             "assets": money_str(asset_total),
             "liabilities": money_str(liability_total),
             "equity": money_str(equity_total),
             "net_assets": money_str(asset_total - liability_total),
+            "current_year_profit": money_str(net_profit),
+            "sections": {
+                "assets": sections["assets"],
+                "liabilities": sections["liabilities"],
+                "equity": sections["equity"],
+            },
         },
         "trial_balance": trial_balance,
+        "cash_flow": {
+            "operating_activities": money_str(net_profit),
+            "investing_activities": money_str(Decimal("0.00")),
+            "financing_activities": money_str(Decimal("0.00")),
+            "net_cash_movement": money_str(sum((bank_transaction_amount(t) for t in bank_transactions), Decimal("0.00"))),
+            "rows": bank_transactions[:50],
+        },
+        "statement_of_changes_in_equity": {
+            "opening_equity": money_str(equity_total - net_profit),
+            "current_year_profit": money_str(net_profit),
+            "closing_equity": money_str(equity_total),
+        },
+        "management": {
+            "department_summary": [],
+            "income_vs_expenses": month_rows,
+            "monthly_performance": month_rows,
+            "trend_analysis": month_rows,
+            "kpi_summary": {
+                "gross_margin": percent_str((gross_profit / income_total * Decimal("100")) if income_total else Decimal("0.00")),
+                "net_margin": percent_str((net_profit / income_total * Decimal("100")) if income_total else Decimal("0.00")),
+                "working_capital": money_str(ar_total + cash_at_bank - ap_total),
+            },
+        },
+        "vat_reports": {
+            "return_summary": vat.get("current_boxes", {}),
+            "detail": vat_transactions,
+            "audit": vat_transactions,
+            "exceptions": vat.get("reports", {}).get("exceptions", []),
+            "by_code": serialize_totals(vat_by_code),
+        },
+        "sales_reports": {
+            "sales_analysis": sales_invoices,
+            "customer_sales": customer_sales,
+            "invoice_analysis": sales_invoices,
+            "receipts_analysis": ar.get("receipts", []),
+            "aged_debtors": serialize_aged_balances(aged_receivables),
+        },
+        "purchase_reports": {
+            "purchase_analysis": purchase_invoices,
+            "supplier_spend": supplier_spend,
+            "outstanding_bills": [i for i in purchase_invoices if money(i.get("outstanding_amount")) > Decimal("0.00")],
+            "purchase_vat": [t for t in vat_transactions if t.get("direction") == "purchase"],
+            "payment_forecast": ap.get("payments", []),
+            "aged_creditors": serialize_aged_balances(aged_payables),
+        },
+        "bank_reports": {
+            "cashbook": banking.get("cashbook", []),
+            "reconciliation": bank_reports.get("unreconciled_items", []),
+            "bank_charges": bank_reports.get("bank_charges", []),
+            "interest": bank_reports.get("interest", []),
+            "bank_activity": bank_transactions,
+            "outstanding_transactions": bank_reports.get("unreconciled_items", []),
+            "balances": banking.get("bank_accounts", []),
+        },
+        "custom_reports": {
+            "available_columns": ["Date", "Reference", "Account", "Contact", "Net", "VAT", "Gross", "Source Module", "Status"],
+            "saved_reports": [],
+            "grouping_options": ["Account", "Contact", "VAT Code", "Month", "Source Module"],
+            "sorting_options": ["Date", "Amount", "Reference", "Account"],
+        },
+        "report_scheduler": {
+            "frequencies": ["Daily", "Weekly", "Monthly", "Quarterly"],
+            "delivery_methods": ["Download", "Email (future)", "Client Portal (future)"],
+            "scheduled_reports": [],
+        },
+        "exports": {
+            "formats": ["PDF", "Excel", "CSV"],
+            "print_layout": "EPOS standard report layout",
+            "generated": [],
+        },
+        "settings": {
+            "report_basis": "accrual",
+            "default_date_range": "current_financial_year",
+            "comparative_periods": True,
+            "currency": "GBP",
+            "pdf_branding": "EPOS Accountancy",
+        },
         "aged_receivables": serialize_aged_balances(aged_receivables),
         "aged_payables": serialize_aged_balances(aged_payables),
         "account_count": len(account_by_code),
