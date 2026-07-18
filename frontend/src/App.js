@@ -11,6 +11,7 @@ import AdminSubmissions from "@/pages/admin/AdminSubmissions";
 import AdminIntegrations from "@/pages/admin/AdminIntegrations";
 import AdminAccountancySettings from "@/pages/admin/AdminAccountancySettings";
 import AdminAccountancySoftware from "@/pages/admin/AdminAccountancySoftware";
+import AdminAutomation from "@/pages/admin/AdminAutomation";
 import AdminSettings from "@/pages/admin/AdminSettings";
 import ClientLayout from "@/pages/client/ClientLayout";
 import ClientDashboard from "@/pages/client/ClientDashboard";
@@ -74,6 +75,7 @@ export default function App() {
             <Route path="integrations" element={<AdminIntegrations />} />
             <Route path="accounting" element={<AdminAccountancySoftware />} />
             <Route path="accountancy" element={<AdminAccountancySettings />} />
+            <Route path="automation" element={<AdminAutomation />} />
             <Route path="settings" element={<AdminSettings />} />
           </Route>
 

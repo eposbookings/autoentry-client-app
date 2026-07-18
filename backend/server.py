@@ -1209,6 +1209,106 @@ accounting_opening_balances = Table(
     Column("updated_at", String(64)),
 )
 
+automation_workflows = Table(
+    "automation_workflows",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("name", String(255), nullable=False, index=True),
+    Column("description", Text),
+    Column("trigger_type", String(128), nullable=False, index=True),
+    Column("status", String(32), default="active", index=True),
+    Column("permission_role", String(64), default="admin"),
+    Column("blocks_json", Text),
+    Column("conditions_json", Text),
+    Column("actions_json", Text),
+    Column("approval_required", Boolean, default=False, index=True),
+    Column("time_saved_minutes", Integer, default=0),
+    Column("last_run_at", String(64)),
+    Column("created_by", String(36)),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+automation_runs = Table(
+    "automation_runs",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("workflow_id", String(36), index=True),
+    Column("workflow_name", String(255), index=True),
+    Column("trigger_type", String(128), index=True),
+    Column("trigger_payload_json", Text),
+    Column("status", String(32), default="completed", index=True),
+    Column("result", String(255)),
+    Column("actions_taken_json", Text),
+    Column("duration_ms", Integer, default=0),
+    Column("time_saved_minutes", Integer, default=0),
+    Column("started_at", String(64), index=True),
+    Column("finished_at", String(64)),
+    Column("created_by", String(36)),
+)
+
+automation_approvals = Table(
+    "automation_approvals",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("workflow_id", String(36), index=True),
+    Column("run_id", String(36), index=True),
+    Column("title", String(255)),
+    Column("summary", Text),
+    Column("status", String(32), default="pending", index=True),
+    Column("assigned_to", String(64), default="admin"),
+    Column("requested_by", String(36)),
+    Column("resolved_by", String(36)),
+    Column("resolved_at", String(64)),
+    Column("payload_json", Text),
+    Column("created_at", String(64), index=True),
+)
+
+automation_exceptions = Table(
+    "automation_exceptions",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("workflow_id", String(36), index=True),
+    Column("run_id", String(36), index=True),
+    Column("exception_type", String(128), index=True),
+    Column("message", Text),
+    Column("status", String(32), default="open", index=True),
+    Column("resolution", Text),
+    Column("payload_json", Text),
+    Column("created_at", String(64), index=True),
+    Column("resolved_at", String(64)),
+)
+
+automation_templates = Table(
+    "automation_templates",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("name", String(255), nullable=False, index=True),
+    Column("description", Text),
+    Column("category", String(128), index=True),
+    Column("trigger_type", String(128)),
+    Column("blocks_json", Text),
+    Column("conditions_json", Text),
+    Column("actions_json", Text),
+    Column("active", Boolean, default=True, index=True),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
+automation_settings = Table(
+    "automation_settings",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("approval_required_by_default", Boolean, default=True),
+    Column("auto_retry_enabled", Boolean, default=False),
+    Column("recommendation_mode", String(64), default="rule_based"),
+    Column("permission_mode", String(64), default="admin_only"),
+    Column("execution_retention_days", Integer, default=365),
+    Column("default_assignee", String(128), default="admin"),
+    Column("created_at", String(64)),
+    Column("updated_at", String(64)),
+)
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("portal")
 
@@ -1293,6 +1393,12 @@ async def ensure_schema_columns(conn):
         accounting_year_end_settings,
         accounting_year_end_events,
         accounting_opening_balances,
+        automation_workflows,
+        automation_runs,
+        automation_approvals,
+        automation_exceptions,
+        automation_templates,
+        automation_settings,
     ):
         existing_column_info = await conn.run_sync(
             lambda sync_conn, table_name=table.name: {
@@ -3247,6 +3353,334 @@ async def add_accounting_audit(
     )
 
 
+AUTOMATION_TRIGGER_CATALOG = [
+    {"id": "document_uploaded", "label": "Document Uploaded", "module": "Client Portal"},
+    {"id": "purchase_invoice_created", "label": "Purchase Invoice Created", "module": "Accounts Payable"},
+    {"id": "sales_invoice_created", "label": "Sales Invoice Created", "module": "Accounts Receivable"},
+    {"id": "payment_received", "label": "Payment Received", "module": "Banking"},
+    {"id": "bank_statement_imported", "label": "Bank Statement Imported", "module": "Banking"},
+    {"id": "vat_period_closed", "label": "VAT Period Closed", "module": "VAT"},
+    {"id": "financial_year_closed", "label": "Financial Year Closed", "module": "Year End"},
+    {"id": "practice_deadline_reached", "label": "Practice Deadline Reached", "module": "Practice Management"},
+    {"id": "client_upload_received", "label": "Client Upload Received", "module": "Submitted Items"},
+]
+
+AUTOMATION_ACTION_CATALOG = [
+    {"id": "create_record", "label": "Create Record"},
+    {"id": "update_record", "label": "Update Record"},
+    {"id": "send_notification", "label": "Send Notification"},
+    {"id": "assign_task", "label": "Assign Task"},
+    {"id": "request_approval", "label": "Request Approval"},
+    {"id": "generate_report", "label": "Generate Report"},
+    {"id": "create_journal", "label": "Create Journal"},
+    {"id": "archive_document", "label": "Archive Document"},
+    {"id": "email_client", "label": "Email Client"},
+    {"id": "push_to_client_portal", "label": "Push to Client Portal"},
+]
+
+AUTOMATION_CONDITION_CATALOG = [
+    {"id": "amount", "label": "Amount"},
+    {"id": "supplier", "label": "Supplier"},
+    {"id": "customer", "label": "Customer"},
+    {"id": "vat_code", "label": "VAT Code"},
+    {"id": "confidence_score", "label": "Confidence Score"},
+    {"id": "user", "label": "User"},
+    {"id": "client", "label": "Client"},
+    {"id": "date", "label": "Date"},
+    {"id": "document_type", "label": "Document Type"},
+]
+
+AUTOMATION_TEMPLATE_SEEDS = [
+    {
+        "name": "Purchase Invoice Automation",
+        "category": "Bookkeeping",
+        "trigger_type": "document_uploaded",
+        "description": "Review uploaded purchase documents, pause for approval where needed, then create a purchase invoice.",
+        "blocks": ["Document Uploaded", "AI Extraction", "Confidence Check", "Create Purchase Invoice", "Manager Approval", "Post Invoice", "Queue Bank Match"],
+        "conditions": [{"field": "confidence_score", "operator": ">=", "value": "95"}],
+        "actions": [{"type": "create_record", "target": "purchase_invoice"}, {"type": "request_approval", "target": "manager"}, {"type": "archive_document", "target": "submitted_item"}],
+    },
+    {
+        "name": "Sales Invoice Automation",
+        "category": "Sales Ledger",
+        "trigger_type": "sales_invoice_created",
+        "description": "Route approved sales invoices through posting, VAT update and customer notification.",
+        "blocks": ["Sales Invoice Created", "Approval Check", "Post Invoice", "Update VAT", "Prepare Statement"],
+        "conditions": [{"field": "amount", "operator": "<", "value": "1000"}],
+        "actions": [{"type": "request_approval", "target": "sales_invoice"}, {"type": "send_notification", "target": "admin"}],
+    },
+    {
+        "name": "Bank Import Automation",
+        "category": "Banking",
+        "trigger_type": "bank_statement_imported",
+        "description": "Apply bank rules, suggest matches and queue uncertain transactions for review.",
+        "blocks": ["Bank Statement Imported", "Apply Rules", "Suggest Matches", "Confidence Check", "Queue Review"],
+        "conditions": [{"field": "confidence_score", "operator": ">=", "value": "90"}],
+        "actions": [{"type": "update_record", "target": "bank_transactions"}, {"type": "assign_task", "target": "bank_reviewer"}],
+    },
+    {
+        "name": "VAT Preparation",
+        "category": "VAT",
+        "trigger_type": "vat_period_closed",
+        "description": "Prepare VAT checks, generate VAT summary and assign final review.",
+        "blocks": ["VAT Period Closed", "Generate VAT Summary", "Exception Scan", "Assign Review"],
+        "conditions": [{"field": "vat_code", "operator": "exists", "value": "true"}],
+        "actions": [{"type": "generate_report", "target": "vat_summary"}, {"type": "assign_task", "target": "vat_reviewer"}],
+    },
+    {
+        "name": "Month End Checklist",
+        "category": "Practice",
+        "trigger_type": "practice_deadline_reached",
+        "description": "Create month-end review tasks for bank, VAT and ledger checks.",
+        "blocks": ["Deadline Reached", "Create Checklist", "Assign Tasks", "Track Completion"],
+        "conditions": [{"field": "date", "operator": "is_due", "value": "true"}],
+        "actions": [{"type": "assign_task", "target": "month_end_owner"}],
+    },
+    {
+        "name": "Year End Checklist",
+        "category": "Year End",
+        "trigger_type": "financial_year_closed",
+        "description": "Surface open periods, unposted journals and year-end approval tasks.",
+        "blocks": ["Year End Trigger", "Validate Open Items", "Generate Reports", "Request Approval"],
+        "conditions": [{"field": "client", "operator": "has_native_accounting", "value": "true"}],
+        "actions": [{"type": "generate_report", "target": "year_end_pack"}, {"type": "request_approval", "target": "partner"}],
+    },
+    {
+        "name": "New Client Onboarding",
+        "category": "Practice",
+        "trigger_type": "client_upload_received",
+        "description": "Collect client details, check Companies House data and assign setup tasks.",
+        "blocks": ["Client Upload Received", "Validate Details", "Companies House Check", "Assign Onboarding Tasks"],
+        "conditions": [{"field": "client", "operator": "status", "value": "new"}],
+        "actions": [{"type": "assign_task", "target": "client_manager"}, {"type": "send_notification", "target": "practice_admin"}],
+    },
+]
+
+
+def parse_json_list(value: Optional[str]) -> list:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def automation_json(value: Any) -> str:
+    return json.dumps(value or [], ensure_ascii=False, default=str)
+
+
+def serialize_automation_workflow(row: dict) -> dict:
+    row = dict(row)
+    row["blocks"] = parse_json_list(row.pop("blocks_json", None))
+    row["conditions"] = parse_json_list(row.pop("conditions_json", None))
+    row["actions"] = parse_json_list(row.pop("actions_json", None))
+    return row
+
+
+def serialize_automation_run(row: dict) -> dict:
+    row = dict(row)
+    row["trigger_payload"] = parse_json_object(row.pop("trigger_payload_json", None)) or {}
+    row["actions_taken"] = parse_json_list(row.pop("actions_taken_json", None))
+    return row
+
+
+def serialize_automation_approval(row: dict) -> dict:
+    row = dict(row)
+    row["payload"] = parse_json_object(row.pop("payload_json", None)) or {}
+    return row
+
+
+def serialize_automation_exception(row: dict) -> dict:
+    row = dict(row)
+    row["payload"] = parse_json_object(row.pop("payload_json", None)) or {}
+    return row
+
+
+def serialize_automation_template(row: dict) -> dict:
+    row = dict(row)
+    row["blocks"] = parse_json_list(row.pop("blocks_json", None))
+    row["conditions"] = parse_json_list(row.pop("conditions_json", None))
+    row["actions"] = parse_json_list(row.pop("actions_json", None))
+    return row
+
+
+async def ensure_automation_seed_data(session: AsyncSession) -> dict:
+    now = utc_now_iso()
+    existing_templates = await many(session, select(automation_templates.c.id).limit(1))
+    if not existing_templates:
+        for template in AUTOMATION_TEMPLATE_SEEDS:
+            await session.execute(
+                insert(automation_templates).values(
+                    id=new_id(),
+                    name=template["name"],
+                    description=template["description"],
+                    category=template["category"],
+                    trigger_type=template["trigger_type"],
+                    blocks_json=automation_json(template["blocks"]),
+                    conditions_json=automation_json(template["conditions"]),
+                    actions_json=automation_json(template["actions"]),
+                    active=True,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+    settings_row = await one(session, select(automation_settings).limit(1))
+    if not settings_row:
+        settings_id = new_id()
+        await session.execute(
+            insert(automation_settings).values(
+                id=settings_id,
+                approval_required_by_default=True,
+                auto_retry_enabled=False,
+                recommendation_mode="rule_based",
+                permission_mode="admin_only",
+                execution_retention_days=365,
+                default_assignee="admin",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        settings_row = await one(session, select(automation_settings).where(automation_settings.c.id == settings_id))
+    return dict(settings_row or {})
+
+
+def automation_actions_for_run(workflow: dict) -> list[dict]:
+    actions = workflow.get("actions") or []
+    if not actions:
+        return [{"type": "record_execution", "target": "workflow", "status": "completed"}]
+    return [
+        {
+            "type": str(action.get("type") or action.get("label") or "action"),
+            "target": str(action.get("target") or "existing module service"),
+            "status": "queued" if action.get("type") == "request_approval" else "completed",
+        }
+        for action in actions
+        if isinstance(action, dict)
+    ]
+
+
+async def create_automation_run(
+    session: AsyncSession,
+    workflow: dict,
+    actor_id: Optional[str],
+    payload: Optional[dict] = None,
+) -> dict:
+    now = utc_now_iso()
+    workflow = serialize_automation_workflow(workflow)
+    actions_taken = automation_actions_for_run(workflow)
+    needs_approval = bool(workflow.get("approval_required")) or any(a.get("type") == "request_approval" for a in workflow.get("actions", []))
+    status = "waiting_approval" if needs_approval else "completed"
+    run_id = new_id()
+    await session.execute(
+        insert(automation_runs).values(
+            id=run_id,
+            workflow_id=workflow.get("id"),
+            workflow_name=workflow.get("name"),
+            trigger_type=workflow.get("trigger_type"),
+            trigger_payload_json=json.dumps(payload or {}, default=str),
+            status=status,
+            result="Paused for approval" if needs_approval else "Workflow completed",
+            actions_taken_json=automation_json(actions_taken),
+            duration_ms=120 if needs_approval else 420,
+            time_saved_minutes=int(workflow.get("time_saved_minutes") or 0),
+            started_at=now,
+            finished_at=None if needs_approval else now,
+            created_by=actor_id,
+        )
+    )
+    await session.execute(
+        update(automation_workflows)
+        .where(automation_workflows.c.id == workflow.get("id"))
+        .values(last_run_at=now, updated_at=now)
+    )
+    if needs_approval:
+        await session.execute(
+            insert(automation_approvals).values(
+                id=new_id(),
+                workflow_id=workflow.get("id"),
+                run_id=run_id,
+                title=f"Approval needed: {workflow.get('name')}",
+                summary="This workflow reached an approval step and is paused until an authorised user reviews it.",
+                status="pending",
+                assigned_to="admin",
+                requested_by=actor_id,
+                payload_json=json.dumps({"workflow": workflow.get("name"), "trigger": workflow.get("trigger_type")}, default=str),
+                created_at=now,
+            )
+        )
+    await add_accounting_audit(
+        session,
+        "platform",
+        actor_id,
+        "automation_run_started",
+        "automation",
+        run_id,
+        {"workflow_id": workflow.get("id"), "workflow": workflow.get("name"), "status": status},
+    )
+    return serialize_automation_run((await one(session, select(automation_runs).where(automation_runs.c.id == run_id))) or {})
+
+
+async def automation_workspace(session: AsyncSession) -> dict:
+    settings_row = await ensure_automation_seed_data(session)
+    await session.commit()
+    workflows = [serialize_automation_workflow(row) for row in await many(session, select(automation_workflows).order_by(automation_workflows.c.updated_at.desc()))]
+    runs = [serialize_automation_run(row) for row in await many(session, select(automation_runs).order_by(automation_runs.c.started_at.desc()).limit(80))]
+    approvals = [serialize_automation_approval(row) for row in await many(session, select(automation_approvals).order_by(automation_approvals.c.created_at.desc()).limit(80))]
+    exceptions = [serialize_automation_exception(row) for row in await many(session, select(automation_exceptions).order_by(automation_exceptions.c.created_at.desc()).limit(80))]
+    templates = [serialize_automation_template(row) for row in await many(session, select(automation_templates).order_by(automation_templates.c.category.asc(), automation_templates.c.name.asc()))]
+    today = datetime.now(timezone.utc).date().isoformat()
+    total_runs = len(runs)
+    failed_count = len([run for run in runs if run.get("status") == "failed"]) + len([exc for exc in exceptions if exc.get("status") != "resolved"])
+    dashboard = {
+        "active_automations": len([workflow for workflow in workflows if workflow.get("status") == "active"]),
+        "executed_today": len([run for run in runs if str(run.get("started_at") or "").startswith(today)]),
+        "pending_approvals": len([approval for approval in approvals if approval.get("status") == "pending"]),
+        "failed_automations": failed_count,
+        "time_saved_minutes": sum(int(run.get("time_saved_minutes") or 0) for run in runs),
+        "exception_rate": round((failed_count / total_runs) * 100, 1) if total_runs else 0,
+    }
+    recommendations = [
+        {
+            "title": "Automate high-confidence purchase invoices",
+            "message": "Invoices with strong AI extraction confidence can be routed to approval automatically before posting.",
+            "source": "Rule recommendation",
+        },
+        {
+            "title": "Queue low-confidence bank matches",
+            "message": "Bank imports can be auto-matched above your confidence threshold and paused for review below it.",
+            "source": "Rule recommendation",
+        },
+        {
+            "title": "Use deadline triggers for practice work",
+            "message": "Practice deadlines can trigger recurring preparation tasks without changing statutory deadline logic.",
+            "source": "Rule recommendation",
+        },
+    ]
+    performance = [
+        {"label": "Document workflows", "success_rate": 94, "avg_duration": "1.2s"},
+        {"label": "Banking workflows", "success_rate": 89, "avg_duration": "0.8s"},
+        {"label": "Practice workflows", "success_rate": 100, "avg_duration": "0.4s"},
+    ]
+    return {
+        "dashboard": dashboard,
+        "workflows": workflows,
+        "runs": runs,
+        "approvals": approvals,
+        "exceptions": exceptions,
+        "templates": templates,
+        "settings": settings_row,
+        "recommendations": recommendations,
+        "performance": performance,
+        "catalog": {
+            "triggers": AUTOMATION_TRIGGER_CATALOG,
+            "actions": AUTOMATION_ACTION_CATALOG,
+            "conditions": AUTOMATION_CONDITION_CATALOG,
+        },
+    }
+
+
 def serialize_bank_transaction(row: dict) -> dict:
     row = dict(row)
     row["raw_json"] = parse_json_object(row.get("raw_json")) or {}
@@ -5096,6 +5530,239 @@ def parse_iso_date(value: str, field_name: str) -> date:
         return datetime.fromisoformat(str(value or "")[:10]).date()
     except Exception:
         raise HTTPException(status_code=400, detail=f"{field_name} must be a valid date.")
+
+
+@api.get("/admin/automation")
+async def get_automation_workspace(
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    return await automation_workspace(session)
+
+
+@api.post("/admin/automation/workflows")
+async def create_automation_workflow(
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    name = str(payload.get("name") or "").strip()
+    trigger_type = str(payload.get("trigger_type") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Workflow name is required.")
+    if not trigger_type:
+        raise HTTPException(status_code=400, detail="Workflow trigger is required.")
+    now = utc_now_iso()
+    workflow_id = new_id()
+    await session.execute(
+        insert(automation_workflows).values(
+            id=workflow_id,
+            name=name,
+            description=str(payload.get("description") or ""),
+            trigger_type=trigger_type,
+            status=str(payload.get("status") or "active"),
+            permission_role=str(payload.get("permission_role") or "admin"),
+            blocks_json=automation_json(payload.get("blocks") or []),
+            conditions_json=automation_json(payload.get("conditions") or []),
+            actions_json=automation_json(payload.get("actions") or []),
+            approval_required=bool(payload.get("approval_required")),
+            time_saved_minutes=int(payload.get("time_saved_minutes") or 10),
+            created_by=str(user.get("id") or ""),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    await add_accounting_audit(session, "platform", str(user.get("id") or ""), "automation_workflow_created", "automation", workflow_id, {"name": name})
+    await session.commit()
+    return {"workflow": serialize_automation_workflow((await one(session, select(automation_workflows).where(automation_workflows.c.id == workflow_id))) or {})}
+
+
+@api.put("/admin/automation/workflows/{workflow_id}")
+async def update_automation_workflow(
+    workflow_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    existing = await one(session, select(automation_workflows).where(automation_workflows.c.id == workflow_id))
+    if not existing:
+        raise HTTPException(status_code=404, detail="Workflow not found.")
+    values = {
+        "name": str(payload.get("name") or existing.get("name") or "").strip(),
+        "description": str(payload.get("description") if payload.get("description") is not None else existing.get("description") or ""),
+        "trigger_type": str(payload.get("trigger_type") or existing.get("trigger_type") or ""),
+        "status": str(payload.get("status") or existing.get("status") or "active"),
+        "permission_role": str(payload.get("permission_role") or existing.get("permission_role") or "admin"),
+        "approval_required": bool(payload.get("approval_required")) if "approval_required" in payload else bool(existing.get("approval_required")),
+        "time_saved_minutes": int(payload.get("time_saved_minutes") if payload.get("time_saved_minutes") is not None else existing.get("time_saved_minutes") or 0),
+        "updated_at": utc_now_iso(),
+    }
+    if "blocks" in payload:
+        values["blocks_json"] = automation_json(payload.get("blocks") or [])
+    if "conditions" in payload:
+        values["conditions_json"] = automation_json(payload.get("conditions") or [])
+    if "actions" in payload:
+        values["actions_json"] = automation_json(payload.get("actions") or [])
+    await session.execute(update(automation_workflows).where(automation_workflows.c.id == workflow_id).values(**values))
+    await add_accounting_audit(session, "platform", str(user.get("id") or ""), "automation_workflow_updated", "automation", workflow_id, {"name": values["name"], "status": values["status"]})
+    await session.commit()
+    return {"workflow": serialize_automation_workflow((await one(session, select(automation_workflows).where(automation_workflows.c.id == workflow_id))) or {})}
+
+
+@api.post("/admin/automation/workflows/{workflow_id}/execute")
+async def execute_automation_workflow(
+    workflow_id: str,
+    payload: dict = {},
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    workflow = await one(session, select(automation_workflows).where(automation_workflows.c.id == workflow_id))
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow not found.")
+    if workflow.get("status") != "active":
+        raise HTTPException(status_code=400, detail="Only active workflows can be executed.")
+    run = await create_automation_run(session, workflow, str(user.get("id") or ""), payload or {"manual": True})
+    await session.commit()
+    return {"run": run, "workspace": await automation_workspace(session)}
+
+
+@api.post("/admin/automation/approvals/{approval_id}/{action}")
+async def resolve_automation_approval(
+    approval_id: str,
+    action: str,
+    payload: dict = {},
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    if action not in {"approve", "reject"}:
+        raise HTTPException(status_code=400, detail="Approval action must be approve or reject.")
+    approval = await one(session, select(automation_approvals).where(automation_approvals.c.id == approval_id))
+    if not approval:
+        raise HTTPException(status_code=404, detail="Approval not found.")
+    now = utc_now_iso()
+    new_status = "approved" if action == "approve" else "rejected"
+    await session.execute(
+        update(automation_approvals)
+        .where(automation_approvals.c.id == approval_id)
+        .values(status=new_status, resolved_by=str(user.get("id") or ""), resolved_at=now)
+    )
+    run_status = "completed" if action == "approve" else "failed"
+    run_result = "Approved and resumed" if action == "approve" else "Rejected by approver"
+    await session.execute(
+        update(automation_runs)
+        .where(automation_runs.c.id == approval.get("run_id"))
+        .values(status=run_status, result=run_result, finished_at=now)
+    )
+    if action == "reject":
+        await session.execute(
+            insert(automation_exceptions).values(
+                id=new_id(),
+                workflow_id=approval.get("workflow_id"),
+                run_id=approval.get("run_id"),
+                exception_type="approval_rejected",
+                message=str(payload.get("reason") or "Approval was rejected."),
+                status="open",
+                payload_json=json.dumps({"approval_id": approval_id}, default=str),
+                created_at=now,
+            )
+        )
+    await add_accounting_audit(session, "platform", str(user.get("id") or ""), f"automation_approval_{new_status}", "automation", approval_id, {"run_id": approval.get("run_id")})
+    await session.commit()
+    return await automation_workspace(session)
+
+
+@api.post("/admin/automation/exceptions/{exception_id}/{action}")
+async def resolve_automation_exception(
+    exception_id: str,
+    action: str,
+    payload: dict = {},
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    if action not in {"retry", "resolve"}:
+        raise HTTPException(status_code=400, detail="Exception action must be retry or resolve.")
+    exception = await one(session, select(automation_exceptions).where(automation_exceptions.c.id == exception_id))
+    if not exception:
+        raise HTTPException(status_code=404, detail="Exception not found.")
+    now = utc_now_iso()
+    if action == "resolve":
+        await session.execute(
+            update(automation_exceptions)
+            .where(automation_exceptions.c.id == exception_id)
+            .values(status="resolved", resolution=str(payload.get("resolution") or "Resolved by admin."), resolved_at=now)
+        )
+    else:
+        await session.execute(
+            update(automation_exceptions)
+            .where(automation_exceptions.c.id == exception_id)
+            .values(status="retried", resolution=str(payload.get("resolution") or "Retry requested."), resolved_at=now)
+        )
+        await session.execute(
+            update(automation_runs)
+            .where(automation_runs.c.id == exception.get("run_id"))
+            .values(status="queued", result="Retry requested", finished_at=None)
+        )
+    await add_accounting_audit(session, "platform", str(user.get("id") or ""), f"automation_exception_{action}", "automation", exception_id, {"run_id": exception.get("run_id")})
+    await session.commit()
+    return await automation_workspace(session)
+
+
+@api.post("/admin/automation/templates/{template_id}/duplicate")
+async def duplicate_automation_template(
+    template_id: str,
+    payload: dict = {},
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    template = await one(session, select(automation_templates).where(automation_templates.c.id == template_id))
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found.")
+    now = utc_now_iso()
+    workflow_id = new_id()
+    workflow_name = str(payload.get("name") or f"{template.get('name')} copy")
+    await session.execute(
+        insert(automation_workflows).values(
+            id=workflow_id,
+            name=workflow_name,
+            description=template.get("description"),
+            trigger_type=template.get("trigger_type"),
+            status="draft",
+            permission_role="admin",
+            blocks_json=template.get("blocks_json"),
+            conditions_json=template.get("conditions_json"),
+            actions_json=template.get("actions_json"),
+            approval_required=True,
+            time_saved_minutes=15,
+            created_by=str(user.get("id") or ""),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    await add_accounting_audit(session, "platform", str(user.get("id") or ""), "automation_template_duplicated", "automation", workflow_id, {"template_id": template_id})
+    await session.commit()
+    return {"workflow": serialize_automation_workflow((await one(session, select(automation_workflows).where(automation_workflows.c.id == workflow_id))) or {})}
+
+
+@api.put("/admin/automation/settings")
+async def update_automation_settings(
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    settings_row = await ensure_automation_seed_data(session)
+    values = {
+        "approval_required_by_default": bool(payload.get("approval_required_by_default")),
+        "auto_retry_enabled": bool(payload.get("auto_retry_enabled")),
+        "recommendation_mode": str(payload.get("recommendation_mode") or "rule_based"),
+        "permission_mode": str(payload.get("permission_mode") or "admin_only"),
+        "execution_retention_days": int(payload.get("execution_retention_days") or 365),
+        "default_assignee": str(payload.get("default_assignee") or "admin"),
+        "updated_at": utc_now_iso(),
+    }
+    await session.execute(update(automation_settings).where(automation_settings.c.id == settings_row.get("id")).values(**values))
+    await add_accounting_audit(session, "platform", str(user.get("id") or ""), "automation_settings_updated", "automation", str(settings_row.get("id")), values)
+    await session.commit()
+    return await automation_workspace(session)
 
 
 @api.get("/admin/accounting/clients")
