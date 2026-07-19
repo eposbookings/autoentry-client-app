@@ -200,32 +200,6 @@ function EditableField({
   );
 }
 
-function SettingField({ label, help, children }) {
-  return (
-    <div>
-      <div className="flex items-center gap-1.5">
-        <Label className="text-xs font-semibold text-stone-600">{label}</Label>
-        <HelpHint text={help} />
-      </div>
-      <div className="mt-1">{children}</div>
-    </div>
-  );
-}
-
-function SettingCheckbox({ label, checked, onChange, help }) {
-  return (
-    <label className="flex min-h-12 items-start gap-3 rounded-md border border-stone-200 bg-white p-3 text-sm">
-      <input type="checkbox" checked={Boolean(checked)} onChange={(e) => onChange(e.target.checked)} className="mt-1" />
-      <span>
-        <span className="flex items-center gap-1.5 font-semibold text-stone-800">
-          {label}
-          <HelpHint text={help} />
-        </span>
-      </span>
-    </label>
-  );
-}
-
 function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
   const ap = workspace.accounts_payable || {};
   const clientId = workspace.client?.id;
@@ -310,11 +284,6 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
     if (!supplierForm.name.trim()) return toast.error("Supplier name is required");
     await run(async () => postJson("/ap/suppliers", supplierForm), "Supplier created");
     setSupplierForm(emptySupplierForm);
-  }
-
-  async function saveSettings(e) {
-    e.preventDefault();
-    await run(async () => putJson("/ap/settings", settingsForm), "Supplier settings saved");
   }
 
   function supplierById(id) {
@@ -1004,52 +973,7 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
     );
   }
 
-  return (
-    <form onSubmit={saveSettings} className="space-y-4">
-      <Panel title="Supplier settings">
-        <div className="grid gap-4 lg:grid-cols-2">
-          <Section title="Workflow controls">
-            <div className="space-y-3">
-              <SettingCheckbox label="Approval required" checked={settingsForm.approval_required} onChange={(value) => setSettingsForm((form) => ({ ...form, approval_required: value }))} help="Requires supplier transactions to be approved before posting once posting workflow is connected." />
-              <p className="rounded-lg border border-stone-200 bg-stone-50 p-3 text-xs leading-5 text-stone-600">
-                Duplicate invoice checks are handled by the posting workflow against each supplier ledger. Supplier defaults such as nominal account, VAT, terms, currency and bank details are managed on the supplier record.
-              </p>
-            </div>
-          </Section>
-          <Section title="Behaviour">
-            <div className="grid gap-3">
-              <SettingField label="Supplier numbering" help="Controls how new supplier records are numbered in the supplier master. Manual means users choose the supplier code. Automatic options can be connected later to a numbering rule.">
-                <select value={settingsForm.supplier_numbering || "manual"} onChange={(e) => setSettingsForm((form) => ({ ...form, supplier_numbering: e.target.value }))} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm">
-                  <option value="manual">Manual</option>
-                  <option value="automatic">Automatic</option>
-                  <option value="prefix">Prefix based</option>
-                </select>
-              </SettingField>
-              <SettingField label="Payment on account behaviour" help="Controls supplier payments where no invoice exists yet. Holding them keeps the balance available for future allocation without creating an expense.">
-                <select value={settingsForm.payment_on_account_behaviour || "hold"} onChange={(e) => setSettingsForm((form) => ({ ...form, payment_on_account_behaviour: e.target.value }))} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm">
-                  <option value="hold">Hold for future allocation</option>
-                  <option value="warn">Warn before saving</option>
-                  <option value="require_allocation">Require allocation</option>
-                </select>
-              </SettingField>
-              <SettingField label="Expense behaviour" help="Controls whether small supplier purchases can be entered directly as expenses in the supplier ledger instead of creating a creditor invoice.">
-                <select value={settingsForm.expense_behaviour || "allow"} onChange={(e) => setSettingsForm((form) => ({ ...form, expense_behaviour: e.target.value }))} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm">
-                  <option value="allow">Allow expense entries</option>
-                  <option value="review">Review expense entries</option>
-                  <option value="disable">Disable expense entries</option>
-                </select>
-              </SettingField>
-            </div>
-          </Section>
-        </div>
-      </Panel>
-      <div className="flex justify-end">
-        <Button type="submit" disabled={saving || busy}>
-          <Save className="mr-2 h-4 w-4" /> Save supplier settings
-        </Button>
-      </div>
-    </form>
-  );
+  return null;
 }
 
 function FieldControl({ label, error, children }) {
