@@ -85,10 +85,10 @@ const MODULE_DETAILS = {
   },
   payables: {
     title: "Accounts Payable",
-    manage: ["Suppliers", "Purchase Invoices", "Credit Notes", "Supplier Payments"],
-    statLabel: "Outstanding bills",
+    manage: ["Supplier records", "Supplier ledger", "Documents", "Activity"],
+    statLabel: "Supplier balances",
     stat: (workspace) => formatMoney(workspace?.accounts_payable?.dashboard?.outstanding_total || workspace?.summary?.ap_outstanding || 0),
-    tabs: ["Dashboard", "Suppliers", "Purchase Invoices", "Credit Notes", "Payments", "Supplier Statements", "Aged Creditors", "Reports", "Settings"],
+    tabs: ["Dashboard", "Suppliers", "Settings"],
   },
   receivables: {
     title: "Accounts Receivable",
@@ -1873,7 +1873,7 @@ function ArRegister({ title, rows = [], numberKey, dateKey, amountKey, empty, ac
                   <td className="px-3 py-2">{row[numberKey] || row.reference || "-"}</td>
                   <td className="px-3 py-2">{formatDate(row[dateKey])}</td>
                   <td className="px-3 py-2">{formatDate(row.due_date)}</td>
-                  <td className="px-3 py-2"><Badge className={apStatusClass(row.status)}>{row.status}</Badge></td>
+                  <td className="px-3 py-2"><Badge className={statusBadgeClass(row.status)}>{row.status}</Badge></td>
                   <td className="px-3 py-2 text-right">{formatMoney(row.net_amount)}</td>
                   <td className="px-3 py-2 text-right">{formatMoney(row.vat_amount)}</td>
                   <td className="px-3 py-2 text-right">{formatMoney(row[amountKey])}</td>
@@ -1946,30 +1946,36 @@ function arStatementRows(customerId, invoices, creditNotes, receipts) {
   });
 }
 
-const EMPTY_AP_LINE = { description: "", nominal_account_code: "5000", quantity: "1", unit_price: "", net_amount: "", vat_amount: "", gross_amount: "", vat_code: "" };
-
 function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
   const ap = workspace.accounts_payable || {};
-  const suppliers = ap.suppliers || [];
-  const invoices = ap.invoices || [];
-  const creditNotes = ap.credit_notes || [];
-  const payments = ap.payments || [];
-  const accounts = workspace.accounts || [];
-  const bankAccounts = accounts.filter((account) => account.purpose === "Bank Account" || account.account_type === "Bank");
-  const expenseAccounts = accounts.filter((account) => account.category === "Expense" || account.account_type === "Purchases" || account.account_type === "Overheads");
+  const suppliers = useMemo(() => (Array.isArray(ap.suppliers) ? ap.suppliers : []), [ap.suppliers]);
+  const invoices = useMemo(() => (Array.isArray(ap.invoices) ? ap.invoices : []), [ap.invoices]);
+  const creditNotes = useMemo(() => (Array.isArray(ap.credit_notes) ? ap.credit_notes : []), [ap.credit_notes]);
+  const payments = useMemo(() => (Array.isArray(ap.payments) ? ap.payments : []), [ap.payments]);
+  const accounts = useMemo(() => (Array.isArray(workspace.accounts) ? workspace.accounts : []), [workspace.accounts]);
+  const bankAccounts = useMemo(() => accounts.filter((account) => account.purpose === "Bank Account" || account.account_type === "Bank"), [accounts]);
+  const expenseAccounts = useMemo(() => accounts.filter((account) => account.category === "Expense" || account.account_type === "Purchases" || account.account_type === "Overheads"), [accounts]);
   const [saving, setSaving] = useState(false);
   const [supplierQuery, setSupplierQuery] = useState("");
-  const [statementSupplierId, setStatementSupplierId] = useState("");
   const emptySupplierForm = { name: "", supplier_code: "", email: "", phone: "", website: "", vat_number: "", company_number: "", payment_terms_days: "30", default_currency: "GBP", default_purchase_account: "5000", default_vat_code: "", bank_name: "", bank_sort_code: "", bank_account_number: "", cis_registered: false, reverse_charge: false, notes: "" };
   const [supplierForm, setSupplierForm] = useState(emptySupplierForm);
-  const [invoiceForm, setInvoiceForm] = useState({ supplier_id: "", invoice_number: "", reference: "", invoice_date: "", due_date: "", currency: "GBP", lines: [{ ...EMPTY_AP_LINE }] });
-  const [creditForm, setCreditForm] = useState({ supplier_id: "", credit_note_number: "", reference: "", credit_note_date: "", currency: "GBP", lines: [{ ...EMPTY_AP_LINE }] });
-  const [paymentForm, setPaymentForm] = useState({ supplier_id: "", payment_date: "", reference: "", bank_account_code: bankAccounts[0]?.code || "1200", amount: "", invoice_id: "" });
   const [settingsForm, setSettingsForm] = useState(ap.settings || {});
+  const [selectedSupplierId, setSelectedSupplierId] = useState("");
+  const [supplierRecordTab, setSupplierRecordTab] = useState("Ledger");
+  const [selectedTransaction, setSelectedTransaction] = useState(null);
+  const apTabs = ["Dashboard", "Suppliers", "Settings"];
+  const activeTab = apTabs.includes(tab) ? tab : "Dashboard";
 
   useEffect(() => {
     setSettingsForm(ap.settings || {});
   }, [ap.settings]);
+
+  useEffect(() => {
+    if (selectedSupplierId && !suppliers.some((supplier) => supplier.id === selectedSupplierId)) {
+      setSelectedSupplierId("");
+      setSelectedTransaction(null);
+    }
+  }, [selectedSupplierId, suppliers]);
 
   const visibleSuppliers = suppliers.filter((supplier) => {
     const needle = supplierQuery.trim().toLowerCase();
@@ -2000,78 +2006,129 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
     setSupplierForm(emptySupplierForm);
   }
 
-  async function createInvoice(e) {
-    e.preventDefault();
-    if (!invoiceForm.supplier_id || !invoiceForm.invoice_number.trim()) return toast.error("Supplier and invoice number are required");
-    await run(async () => postJson("/ap/invoices", invoiceForm), "Purchase invoice created");
-    setInvoiceForm({ supplier_id: "", invoice_number: "", reference: "", invoice_date: "", due_date: "", currency: "GBP", lines: [{ ...EMPTY_AP_LINE }] });
-  }
-
-  async function approveInvoice(invoice) {
-    await run(async () => postJson(`/ap/invoices/${invoice.id}/approve`, {}), "Purchase invoice approved");
-  }
-
-  async function postInvoice(invoice) {
-    await run(async () => postJson(`/ap/invoices/${invoice.id}/post`, {}), "Purchase invoice posted to the ledger");
-  }
-
-  async function voidInvoice(invoice) {
-    await run(async () => postJson(`/ap/invoices/${invoice.id}/void`, {}), "Purchase invoice voided");
-  }
-
-  async function createCreditNote(e) {
-    e.preventDefault();
-    if (!creditForm.supplier_id || !creditForm.credit_note_number.trim()) return toast.error("Supplier and credit note number are required");
-    await run(async () => postJson("/ap/credit-notes", creditForm), "Supplier credit note created");
-    setCreditForm({ supplier_id: "", credit_note_number: "", reference: "", credit_note_date: "", currency: "GBP", lines: [{ ...EMPTY_AP_LINE }] });
-  }
-
-  async function postCreditNote(creditNote) {
-    await run(async () => postJson(`/ap/credit-notes/${creditNote.id}/post`, {}), "Supplier credit note posted");
-  }
-
-  async function createPayment(e) {
-    e.preventDefault();
-    if (!paymentForm.supplier_id || !paymentForm.amount) return toast.error("Supplier and payment amount are required");
-    const allocations = paymentForm.invoice_id ? [{ invoice_id: paymentForm.invoice_id, amount: paymentForm.amount }] : [];
-    await run(async () => postJson("/ap/payments", { ...paymentForm, allocations }), "Supplier payment posted");
-    setPaymentForm({ supplier_id: "", payment_date: "", reference: "", bank_account_code: bankAccounts[0]?.code || "1200", amount: "", invoice_id: "" });
-  }
-
   async function saveSettings(e) {
     e.preventDefault();
     await run(async () => putJson("/ap/settings", settingsForm), "Accounts Payable settings saved");
   }
 
-  if (tab === "Dashboard") {
+  const selectedSupplier = suppliers.find((supplier) => supplier.id === selectedSupplierId);
+  const supplierById = new Map(suppliers.map((supplier) => [supplier.id, supplier]));
+  const supplierPaymentOnAccount = (supplierId) => payments
+    .filter((payment) => payment.supplier_id === supplierId)
+    .reduce((sum, payment) => {
+      const allocated = (Array.isArray(payment.allocations) ? payment.allocations : []).reduce((total, allocation) => total + Number(allocation.amount || 0), 0);
+      return sum + Math.max(0, Number(payment.amount || 0) - allocated);
+    }, 0);
+  const supplierLastActivity = (supplierId) => {
+    const dates = [
+      ...invoices.filter((item) => item.supplier_id === supplierId).map((item) => item.invoice_date || item.created_at),
+      ...creditNotes.filter((item) => item.supplier_id === supplierId).map((item) => item.credit_note_date || item.created_at),
+      ...payments.filter((item) => item.supplier_id === supplierId).map((item) => item.payment_date || item.created_at),
+    ].filter(Boolean).sort((a, b) => new Date(b) - new Date(a));
+    return dates[0] || null;
+  };
+  const overdueSupplierIds = new Set(invoices
+    .filter((invoice) => Number(invoice.outstanding_amount || 0) > 0 && invoice.due_date && new Date(invoice.due_date) < new Date())
+    .map((invoice) => invoice.supplier_id));
+  const awaitingDocumentSupplierIds = new Set(invoices
+    .filter((invoice) => ["draft", "awaiting_approval"].includes(String(invoice.status || "").toLowerCase()))
+    .map((invoice) => invoice.supplier_id));
+  const recentSupplierActivity = [
+    ...invoices.map((item) => ({ ...item, activityType: "Invoice posted", supplierName: supplierById.get(item.supplier_id)?.name || item.supplier_name, activityDate: item.invoice_date || item.created_at, activityAmount: item.gross_amount })),
+    ...creditNotes.map((item) => ({ ...item, activityType: "Credit note", supplierName: supplierById.get(item.supplier_id)?.name || item.supplier_name, activityDate: item.credit_note_date || item.created_at, activityAmount: item.gross_amount })),
+    ...payments.map((item) => ({ ...item, activityType: "Payment posted", supplierName: supplierById.get(item.supplier_id)?.name || item.supplier_name, activityDate: item.payment_date || item.created_at, activityAmount: item.amount })),
+  ].filter((item) => item.activityDate).sort((a, b) => new Date(b.activityDate) - new Date(a.activityDate)).slice(0, 8);
+  const supplierLedgerRows = (supplierId) => {
+    const rows = [
+      ...invoices.filter((invoice) => invoice.supplier_id === supplierId).map((invoice) => ({
+        id: invoice.id,
+        source: invoice,
+        date: invoice.invoice_date || invoice.created_at,
+        type: "Purchase Invoice",
+        reference: invoice.invoice_number || invoice.reference || "-",
+        description: invoice.description || invoice.supplier_name || "Purchase invoice",
+        debit: 0,
+        credit: Number(invoice.gross_amount || invoice.total || 0),
+        status: invoice.status || "draft",
+      })),
+      ...creditNotes.filter((creditNote) => creditNote.supplier_id === supplierId).map((creditNote) => ({
+        id: creditNote.id,
+        source: creditNote,
+        date: creditNote.credit_note_date || creditNote.created_at,
+        type: "Credit Note",
+        reference: creditNote.credit_note_number || creditNote.reference || "-",
+        description: creditNote.description || "Supplier credit note",
+        debit: Number(creditNote.gross_amount || creditNote.total || 0),
+        credit: 0,
+        status: creditNote.status || "draft",
+      })),
+      ...payments.filter((payment) => payment.supplier_id === supplierId).map((payment) => {
+        const allocated = (Array.isArray(payment.allocations) ? payment.allocations : []).reduce((total, allocation) => total + Number(allocation.amount || 0), 0);
+        const unallocated = Math.max(0, Number(payment.amount || 0) - allocated);
+        return {
+          id: payment.id,
+          source: payment,
+          date: payment.payment_date || payment.created_at,
+          type: unallocated > 0 ? "Payment on Account" : "Supplier Payment",
+          reference: payment.reference || "-",
+          description: unallocated > 0 ? "Payment awaiting future invoice allocation" : "Supplier payment",
+          debit: Number(payment.amount || 0),
+          credit: 0,
+          status: payment.status || "posted",
+        };
+      }),
+    ].filter((row) => row.date).sort((a, b) => new Date(a.date) - new Date(b.date));
+    let runningBalance = 0;
+    return rows.map((row) => {
+      runningBalance += Number(row.credit || 0) - Number(row.debit || 0);
+      return { ...row, runningBalance };
+    });
+  };
+
+  if (activeTab === "Dashboard") {
     const dashboard = ap.dashboard || {};
-    const recent = [...invoices.slice(0, 4).map((item) => ({ ...item, kind: "Invoice" })), ...payments.slice(0, 4).map((item) => ({ ...item, kind: "Payment" }))].slice(0, 6);
+    const supplierAttention = suppliers
+      .filter((supplier) => overdueSupplierIds.has(supplier.id) || supplierPaymentOnAccount(supplier.id) > 0 || awaitingDocumentSupplierIds.has(supplier.id))
+      .slice(0, 8);
     return (
       <div className="space-y-4">
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <SummaryCard label="Outstanding bills" value={formatMoney(dashboard.outstanding_total)} tone="amber" />
-          <SummaryCard label="Overdue bills" value={dashboard.overdue_invoices || 0} tone="amber" />
-          <SummaryCard label="Awaiting approval" value={dashboard.awaiting_approval || 0} tone="blue" />
-          <SummaryCard label="Payments posted" value={formatMoney(dashboard.payments_total)} tone="emerald" />
+          <button type="button" className="text-left" onClick={() => { setSupplierQuery(""); setSelectedSupplierId(""); }}>
+            <SummaryCard label="Outstanding supplier balances" value={formatMoney(dashboard.outstanding_total)} tone="amber" />
+          </button>
+          <button type="button" className="text-left" onClick={() => { setSupplierQuery(""); setSelectedSupplierId(""); }}>
+            <SummaryCard label="Payments on account" value={formatMoney(suppliers.reduce((sum, supplier) => sum + supplierPaymentOnAccount(supplier.id), 0))} tone="blue" />
+          </button>
+          <button type="button" className="text-left" onClick={() => { setSupplierQuery(""); setSelectedSupplierId(""); }}>
+            <SummaryCard label="Suppliers awaiting documents" value={awaitingDocumentSupplierIds.size} tone="blue" />
+          </button>
+          <button type="button" className="text-left" onClick={() => { setSupplierQuery(""); setSelectedSupplierId(""); }}>
+            <SummaryCard label="Overdue supplier accounts" value={overdueSupplierIds.size || dashboard.overdue_invoices || 0} tone="amber" />
+          </button>
         </div>
         <div className="grid gap-4 xl:grid-cols-2">
-          <Panel title="Top suppliers">
-            {suppliers.filter((supplier) => Number(supplier.balance || 0) !== 0).slice(0, 8).map((supplier) => (
-              <div key={supplier.id} className="flex items-center justify-between border-b border-stone-100 py-2 last:border-0">
-                <span className="font-semibold text-stone-900">{supplier.name}</span>
-                <span>{formatMoney(supplier.balance)}</span>
-              </div>
-            ))}
-            {!suppliers.some((supplier) => Number(supplier.balance || 0) !== 0) && <p className="py-8 text-center text-sm text-stone-500">No supplier balances yet.</p>}
-          </Panel>
-          <Panel title="Recent activity">
-            {recent.length === 0 ? <p className="py-8 text-center text-sm text-stone-500">No Accounts Payable activity yet.</p> : recent.map((item) => (
-              <div key={`${item.kind}-${item.id}`} className="flex items-center justify-between border-b border-stone-100 py-2 last:border-0">
+          <Panel title="Supplier attention">
+            {supplierAttention.map((supplier) => (
+              <button key={supplier.id} type="button" onClick={() => { setSelectedSupplierId(supplier.id); setSupplierRecordTab("Ledger"); }} className="flex w-full items-center justify-between border-b border-stone-100 py-2 text-left last:border-0">
                 <div>
-                  <div className="font-semibold text-stone-900">{item.kind} {item.invoice_number || item.reference || item.credit_note_number}</div>
-                  <div className="text-xs text-stone-500">{item.supplier_name || "-"} - {formatDate(item.invoice_date || item.payment_date || item.credit_note_date)}</div>
+                  <div className="font-semibold text-stone-900">{supplier.name}</div>
+                  <div className="text-xs text-stone-500">
+                    {overdueSupplierIds.has(supplier.id) ? "Overdue balance" : supplierPaymentOnAccount(supplier.id) > 0 ? "Payment on account" : "Awaiting document"}
+                  </div>
                 </div>
-                <Badge className={apStatusClass(item.status)}>{item.status}</Badge>
+                <span className="font-semibold">{formatMoney(supplier.balance)}</span>
+              </button>
+            ))}
+            {supplierAttention.length === 0 && <p className="py-8 text-center text-sm text-stone-500">No suppliers need attention.</p>}
+          </Panel>
+          <Panel title="Recent supplier activity">
+            {recentSupplierActivity.length === 0 ? <p className="py-8 text-center text-sm text-stone-500">No supplier ledger activity yet.</p> : recentSupplierActivity.map((item) => (
+              <div key={`${item.activityType}-${item.id}`} className="flex items-center justify-between border-b border-stone-100 py-2 last:border-0">
+                <div>
+                  <div className="font-semibold text-stone-900">{item.activityType}</div>
+                  <div className="text-xs text-stone-500">{item.supplierName || "-"} - {formatDate(item.activityDate)}</div>
+                </div>
+                <span className="font-semibold">{formatMoney(item.activityAmount)}</span>
               </div>
             ))}
           </Panel>
@@ -2080,29 +2137,193 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
     );
   }
 
-  if (tab === "Suppliers") {
+  if (activeTab === "Suppliers") {
+    if (selectedSupplier) {
+      const ledgerRows = supplierLedgerRows(selectedSupplier.id);
+      const supplierDocuments = [
+        ...invoices.filter((invoice) => invoice.supplier_id === selectedSupplier.id).map((invoice) => ({ ...invoice, documentType: "Purchase Invoice", documentNumber: invoice.invoice_number, documentDate: invoice.invoice_date, documentAmount: invoice.gross_amount })),
+        ...creditNotes.filter((creditNote) => creditNote.supplier_id === selectedSupplier.id).map((creditNote) => ({ ...creditNote, documentType: "Credit Note", documentNumber: creditNote.credit_note_number, documentDate: creditNote.credit_note_date, documentAmount: creditNote.gross_amount })),
+      ].sort((a, b) => new Date(b.documentDate || b.created_at || 0) - new Date(a.documentDate || a.created_at || 0));
+      const auditRows = (Array.isArray(workspace.audit_trail) ? workspace.audit_trail : []).filter((entry) => {
+        const haystack = `${entry.record_id || ""} ${entry.record_type || ""} ${entry.new_value || ""} ${entry.previous_value || ""}`.toLowerCase();
+        return haystack.includes(String(selectedSupplier.id).toLowerCase()) || haystack.includes(String(selectedSupplier.name || "").toLowerCase());
+      });
+
+      return (
+        <div className="space-y-4">
+          <div className="rounded-lg border border-stone-200 bg-white p-4 shadow-sm">
+            <button type="button" onClick={() => { setSelectedSupplierId(""); setSelectedTransaction(null); }} className="mb-3 text-sm font-semibold text-[var(--brand)]">← Back to supplier cards</button>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="text-xl font-bold text-stone-950">{selectedSupplier.name}</h3>
+                <p className="text-sm text-stone-500">{selectedSupplier.supplier_code || "No supplier code"} - {selectedSupplier.email || "No email saved"}</p>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-right text-sm md:grid-cols-4">
+                <div className="rounded-md bg-stone-50 px-3 py-2"><div className="text-xs uppercase text-stone-500">Outstanding</div><div className="font-bold">{formatMoney(selectedSupplier.balance)}</div></div>
+                <div className="rounded-md bg-blue-50 px-3 py-2"><div className="text-xs uppercase text-blue-700">On account</div><div className="font-bold">{formatMoney(supplierPaymentOnAccount(selectedSupplier.id))}</div></div>
+                <div className="rounded-md bg-stone-50 px-3 py-2"><div className="text-xs uppercase text-stone-500">Last activity</div><div className="font-bold">{supplierLastActivity(selectedSupplier.id) ? formatDate(supplierLastActivity(selectedSupplier.id)) : "-"}</div></div>
+                <div className="rounded-md bg-emerald-50 px-3 py-2"><div className="text-xs uppercase text-emerald-700">Status</div><div className="font-bold">{selectedSupplier.status || "active"}</div></div>
+              </div>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {["General", "Ledger", "Documents", "Activity", "Audit Trail", "Settings"].map((item) => (
+                <button key={item} type="button" onClick={() => setSupplierRecordTab(item)} className={`rounded-md px-3 py-2 text-sm font-semibold ${supplierRecordTab === item ? "bg-[var(--brand)] text-white" : "bg-stone-100 text-stone-700"}`}>{item}</button>
+              ))}
+            </div>
+          </div>
+
+          {supplierRecordTab === "General" && (
+            <div className="grid gap-4 xl:grid-cols-2">
+              <Panel title="Supplier details">
+                <div className="grid gap-3 md:grid-cols-2">
+                  <ReadOnly label="Supplier code" value={selectedSupplier.supplier_code} />
+                  <ReadOnly label="Trading name" value={selectedSupplier.trading_name} />
+                  <ReadOnly label="Email" value={selectedSupplier.email} />
+                  <ReadOnly label="Phone" value={selectedSupplier.phone} />
+                  <ReadOnly label="Website" value={selectedSupplier.website} />
+                  <ReadOnly label="Company number" value={selectedSupplier.company_number} />
+                </div>
+              </Panel>
+              <Panel title="Payment, VAT and defaults">
+                <div className="grid gap-3 md:grid-cols-2">
+                  <ReadOnly label="Payment terms" value={`${selectedSupplier.payment_terms_days || 0} days`} />
+                  <ReadOnly label="Currency" value={selectedSupplier.default_currency || "GBP"} />
+                  <ReadOnly label="VAT number" value={selectedSupplier.vat_number} />
+                  <ReadOnly label="Default VAT" value={selectedSupplier.default_vat_code} />
+                  <ReadOnly label="Default purchase nominal" value={selectedSupplier.default_purchase_account} />
+                  <ReadOnly label="Bank" value={selectedSupplier.bank_name} />
+                  <ReadOnly label="Sort code" value={selectedSupplier.bank_sort_code} />
+                  <ReadOnly label="Account number" value={selectedSupplier.bank_account_number} />
+                </div>
+              </Panel>
+              <Panel title="Notes">
+                <p className="whitespace-pre-wrap text-sm text-stone-700">{selectedSupplier.notes || "No supplier notes saved."}</p>
+              </Panel>
+            </div>
+          )}
+
+          {supplierRecordTab === "Ledger" && (
+            <div className="grid gap-4 xl:grid-cols-[1fr_360px]">
+              <Panel title="Supplier ledger">
+                {ledgerRows.length === 0 ? <p className="py-8 text-center text-sm text-stone-500">No ledger transactions for this supplier yet.</p> : (
+                  <div className="overflow-auto">
+                    <table className="min-w-full text-left text-sm">
+                      <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500"><tr><th className="px-3 py-2">Date</th><th className="px-3 py-2">Transaction type</th><th className="px-3 py-2">Reference</th><th className="px-3 py-2">Description</th><th className="px-3 py-2 text-right">Debit</th><th className="px-3 py-2 text-right">Credit</th><th className="px-3 py-2 text-right">Running balance</th><th className="px-3 py-2">Status</th></tr></thead>
+                      <tbody>{ledgerRows.map((row) => (
+                        <tr key={`${row.type}-${row.id}`} onClick={() => setSelectedTransaction(row)} className="cursor-pointer border-t border-stone-100 hover:bg-stone-50">
+                          <td className="px-3 py-2">{formatDate(row.date)}</td>
+                          <td className="px-3 py-2 font-semibold text-stone-900">{row.type}</td>
+                          <td className="px-3 py-2">{row.reference}</td>
+                          <td className="px-3 py-2 text-stone-600">{row.description}</td>
+                          <td className="px-3 py-2 text-right">{row.debit ? formatMoney(row.debit) : "-"}</td>
+                          <td className="px-3 py-2 text-right">{row.credit ? formatMoney(row.credit) : "-"}</td>
+                          <td className="px-3 py-2 text-right font-semibold">{formatMoney(row.runningBalance)}</td>
+                          <td className="px-3 py-2"><Badge className={statusBadgeClass(row.status)}>{row.status}</Badge></td>
+                        </tr>
+                      ))}</tbody>
+                    </table>
+                  </div>
+                )}
+              </Panel>
+              <Panel title="Accounting record">
+                {!selectedTransaction ? <p className="py-8 text-center text-sm text-stone-500">Select a ledger transaction to view the accounting record.</p> : (
+                  <div className="space-y-3 text-sm">
+                    <ReadOnly label="Type" value={selectedTransaction.type} />
+                    <ReadOnly label="Reference" value={selectedTransaction.reference} />
+                    <ReadOnly label="Date" value={formatDate(selectedTransaction.date)} />
+                    <ReadOnly label="Debit" value={formatMoney(selectedTransaction.debit)} />
+                    <ReadOnly label="Credit" value={formatMoney(selectedTransaction.credit)} />
+                    <ReadOnly label="Status" value={selectedTransaction.status} />
+                  </div>
+                )}
+              </Panel>
+            </div>
+          )}
+
+          {supplierRecordTab === "Documents" && (
+            <Panel title="Supplier documents">
+              {supplierDocuments.length === 0 ? <p className="py-8 text-center text-sm text-stone-500">No documents are linked to this supplier yet.</p> : supplierDocuments.map((document) => (
+                <div key={`${document.documentType}-${document.id}`} className="flex items-center justify-between border-b border-stone-100 py-3 last:border-0">
+                  <div>
+                    <div className="font-semibold text-stone-900">{document.documentType} {document.documentNumber || document.reference || "-"}</div>
+                    <div className="text-xs text-stone-500">{formatDate(document.documentDate || document.created_at)} - {document.status || "draft"}</div>
+                  </div>
+                  <span className="font-semibold">{formatMoney(document.documentAmount)}</span>
+                </div>
+              ))}
+            </Panel>
+          )}
+
+          {supplierRecordTab === "Activity" && (
+            <Panel title="Supplier activity">
+              {ledgerRows.length === 0 ? <p className="py-8 text-center text-sm text-stone-500">No activity for this supplier yet.</p> : [...ledgerRows].reverse().map((row) => (
+                <div key={`activity-${row.type}-${row.id}`} className="border-b border-stone-100 py-3 last:border-0">
+                  <div className="font-semibold text-stone-900">{row.type}</div>
+                  <div className="text-sm text-stone-500">{formatDate(row.date)} - {row.reference} - {formatMoney(row.credit || row.debit)}</div>
+                </div>
+              ))}
+            </Panel>
+          )}
+
+          {supplierRecordTab === "Audit Trail" && (
+            <Panel title="Supplier audit trail">
+              {auditRows.length === 0 ? <p className="py-8 text-center text-sm text-stone-500">No supplier-specific audit records found yet.</p> : auditRows.map((entry) => (
+                <div key={entry.id || `${entry.created_at}-${entry.action}`} className="border-b border-stone-100 py-3 last:border-0">
+                  <div className="font-semibold text-stone-900">{entry.action || "Change recorded"}</div>
+                  <div className="text-sm text-stone-500">{formatDate(entry.created_at)} - {entry.module || "Accounts Payable"}</div>
+                </div>
+              ))}
+            </Panel>
+          )}
+
+          {supplierRecordTab === "Settings" && (
+            <Panel title="Supplier ledger settings">
+              <div className="grid gap-3 md:grid-cols-2">
+                <ReadOnly label="Default purchase nominal" value={selectedSupplier.default_purchase_account || settingsForm.default_purchase_account} />
+                <ReadOnly label="Default VAT" value={selectedSupplier.default_vat_code || settingsForm.default_vat_code} />
+                <ReadOnly label="Default currency" value={selectedSupplier.default_currency || "GBP"} />
+                <ReadOnly label="Payment terms" value={`${selectedSupplier.payment_terms_days || settingsForm.default_payment_terms_days || 0} days`} />
+              </div>
+              <div className="mt-4 rounded-md border border-stone-200 bg-stone-50 p-3 text-sm text-stone-600">
+                AI matching, document matching, payment on account behaviour and expense behaviour are controlled by Accounts Payable settings and will feed this supplier ledger.
+              </div>
+            </Panel>
+          )}
+        </div>
+      );
+    }
+
     return (
       <div className="grid gap-4 xl:grid-cols-[1fr_380px]">
-        <Panel title="Supplier master file">
+        <Panel title="Suppliers">
           <Input className="mb-3 h-9" value={supplierQuery} onChange={(e) => setSupplierQuery(e.target.value)} placeholder="Search suppliers by name, code or email" />
-          <div className="overflow-auto">
-            <table className="min-w-full text-left text-sm">
-              <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
-                <tr><th className="px-3 py-2">Code</th><th className="px-3 py-2">Supplier</th><th className="px-3 py-2">VAT</th><th className="px-3 py-2">Terms</th><th className="px-3 py-2">Default account</th><th className="px-3 py-2 text-right">Balance</th></tr>
-              </thead>
-              <tbody>
-                {visibleSuppliers.map((supplier) => (
-                  <tr key={supplier.id} className="border-t border-stone-100">
-                    <td className="px-3 py-2 text-stone-600">{supplier.supplier_code || "-"}</td>
-                    <td className="px-3 py-2"><strong>{supplier.name}</strong><div className="text-xs text-stone-500">{supplier.email || supplier.trading_name || "-"}</div></td>
-                    <td className="px-3 py-2 text-stone-600">{supplier.vat_number || "-"}</td>
-                    <td className="px-3 py-2 text-stone-600">{supplier.payment_terms_days || 0} days</td>
-                    <td className="px-3 py-2 text-stone-600">{supplier.default_purchase_account || "-"}</td>
-                    <td className="px-3 py-2 text-right font-semibold">{formatMoney(supplier.balance)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="grid gap-3 md:grid-cols-2">
+            {visibleSuppliers.map((supplier) => (
+              <button key={supplier.id} type="button" onClick={() => { setSelectedSupplierId(supplier.id); setSupplierRecordTab("Ledger"); setSelectedTransaction(null); }} className="rounded-lg border border-stone-200 bg-white p-4 text-left shadow-sm transition hover:border-emerald-300 hover:shadow-md">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h3 className="font-bold text-stone-950">{supplier.name}</h3>
+                    <p className="text-sm text-stone-500">{supplier.email || supplier.trading_name || supplier.supplier_code || "No contact saved"}</p>
+                  </div>
+                  <Badge className="bg-emerald-100 text-emerald-700">{supplier.status || "active"}</Badge>
+                </div>
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  <div className="rounded-md bg-amber-50 p-3">
+                    <div className="text-xs font-semibold uppercase text-amber-700">Outstanding</div>
+                    <div className="text-lg font-bold text-amber-800">{formatMoney(supplier.balance)}</div>
+                  </div>
+                  <div className="rounded-md bg-blue-50 p-3">
+                    <div className="text-xs font-semibold uppercase text-blue-700">Payment on account</div>
+                    <div className="text-lg font-bold text-blue-800">{formatMoney(supplierPaymentOnAccount(supplier.id))}</div>
+                  </div>
+                </div>
+                <div className="mt-4 flex items-center justify-between text-sm">
+                  <span className="text-stone-500">Last activity: {supplierLastActivity(supplier.id) ? formatDate(supplierLastActivity(supplier.id)) : "-"}</span>
+                  <span className="font-semibold text-[var(--brand)]">Open supplier ledger →</span>
+                </div>
+              </button>
+            ))}
+            {visibleSuppliers.length === 0 && <p className="py-8 text-center text-sm text-stone-500 md:col-span-2">No suppliers match that search.</p>}
           </div>
         </Panel>
         <Panel title="Create supplier">
@@ -2137,101 +2358,7 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
     );
   }
 
-  if (tab === "Purchase Invoices") {
-    return (
-      <div className="grid gap-4 xl:grid-cols-[1fr_430px]">
-        <ApRegister
-          title="Purchase invoices"
-          rows={invoices}
-          numberKey="invoice_number"
-          dateKey="invoice_date"
-          amountKey="gross_amount"
-          empty="No purchase invoices yet."
-          actions={(invoice) => (
-            <div className="flex justify-end gap-2">
-              {invoice.status === "awaiting_approval" && <Button size="sm" variant="outline" disabled={saving} onClick={() => approveInvoice(invoice)}>Approve</Button>}
-              {!invoice.posted_journal_id && (invoice.status === "approved" || !ap.settings?.approval_required) && <Button size="sm" disabled={saving} onClick={() => postInvoice(invoice)} style={{ background: "var(--brand)" }}>Post</Button>}
-              {!invoice.posted_journal_id && invoice.status !== "void" && <Button size="sm" variant="outline" disabled={saving} onClick={() => voidInvoice(invoice)}>Void</Button>}
-            </div>
-          )}
-        />
-        <ApDocumentForm title="Create purchase invoice" form={invoiceForm} setForm={setInvoiceForm} suppliers={suppliers} accounts={expenseAccounts} onSubmit={createInvoice} button="Create invoice" busy={busy || saving} numberKey="invoice_number" dateKey="invoice_date" />
-      </div>
-    );
-  }
-
-  if (tab === "Credit Notes") {
-    return (
-      <div className="grid gap-4 xl:grid-cols-[1fr_430px]">
-        <ApRegister
-          title="Supplier credit notes"
-          rows={creditNotes}
-          numberKey="credit_note_number"
-          dateKey="credit_note_date"
-          amountKey="gross_amount"
-          empty="No supplier credit notes yet."
-          actions={(creditNote) => !creditNote.posted_journal_id && <Button size="sm" disabled={saving} onClick={() => postCreditNote(creditNote)} style={{ background: "var(--brand)" }}>Post</Button>}
-        />
-        <ApDocumentForm title="Create supplier credit note" form={creditForm} setForm={setCreditForm} suppliers={suppliers} accounts={expenseAccounts} onSubmit={createCreditNote} button="Create credit note" busy={busy || saving} numberKey="credit_note_number" dateKey="credit_note_date" />
-      </div>
-    );
-  }
-
-  if (tab === "Payments") {
-    const supplierInvoices = invoices.filter((invoice) => invoice.supplier_id === paymentForm.supplier_id && Number(invoice.outstanding_amount || 0) > 0);
-    return (
-      <div className="grid gap-4 xl:grid-cols-[1fr_380px]">
-        <ApRegister title="Supplier payments" rows={payments} numberKey="reference" dateKey="payment_date" amountKey="amount" empty="No supplier payments yet." />
-        <Panel title="Pay supplier">
-          <form onSubmit={createPayment} className="space-y-3">
-            <SupplierSelect suppliers={suppliers} value={paymentForm.supplier_id} onChange={(value) => setPaymentForm((current) => ({ ...current, supplier_id: value, invoice_id: "" }))} />
-            <Field label="Payment date" type="date" value={paymentForm.payment_date} onChange={(value) => setPaymentForm((current) => ({ ...current, payment_date: value }))} />
-            <Field label="Reference" value={paymentForm.reference} onChange={(value) => setPaymentForm((current) => ({ ...current, reference: value }))} />
-            <AccountCodeSelect label="Bank account" accounts={bankAccounts} value={paymentForm.bank_account_code} onChange={(value) => setPaymentForm((current) => ({ ...current, bank_account_code: value }))} />
-            <div>
-              <Label className="text-xs font-semibold text-stone-600">Allocate to invoice</Label>
-              <select value={paymentForm.invoice_id} onChange={(e) => {
-                const invoice = invoices.find((item) => item.id === e.target.value);
-                setPaymentForm((current) => ({ ...current, invoice_id: e.target.value, amount: invoice?.outstanding_amount || current.amount }));
-              }} className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm">
-                <option value="">Oldest invoices automatically</option>
-                {supplierInvoices.map((invoice) => <option key={invoice.id} value={invoice.id}>{invoice.invoice_number} - {formatMoney(invoice.outstanding_amount)}</option>)}
-              </select>
-            </div>
-            <Field label="Amount" value={paymentForm.amount} onChange={(value) => setPaymentForm((current) => ({ ...current, amount: value }))} />
-            <Button disabled={busy || saving} className="w-full" style={{ background: "var(--brand)" }}>Post payment</Button>
-          </form>
-        </Panel>
-      </div>
-    );
-  }
-
-  if (tab === "Supplier Statements") {
-    const rows = statementSupplierId ? statementRows(statementSupplierId, invoices, creditNotes, payments) : [];
-    return (
-      <Panel title="Supplier statement">
-        <div className="mb-3 max-w-lg"><SupplierSelect suppliers={suppliers} value={statementSupplierId} onChange={setStatementSupplierId} /></div>
-        {rows.length === 0 ? <p className="py-8 text-center text-sm text-stone-500">Select a supplier to view statement activity.</p> : (
-          <div className="overflow-auto">
-            <table className="min-w-full text-left text-sm">
-              <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500"><tr><th className="px-3 py-2">Date</th><th className="px-3 py-2">Type</th><th className="px-3 py-2">Reference</th><th className="px-3 py-2 text-right">Debit</th><th className="px-3 py-2 text-right">Credit</th><th className="px-3 py-2 text-right">Balance</th></tr></thead>
-              <tbody>{rows.map((row, index) => <tr key={`${row.type}-${row.id}-${index}`} className="border-t border-stone-100"><td className="px-3 py-2">{formatDate(row.date)}</td><td className="px-3 py-2">{row.type}</td><td className="px-3 py-2">{row.reference}</td><td className="px-3 py-2 text-right">{row.debit ? formatMoney(row.debit) : "-"}</td><td className="px-3 py-2 text-right">{row.credit ? formatMoney(row.credit) : "-"}</td><td className="px-3 py-2 text-right font-semibold">{formatMoney(row.balance)}</td></tr>)}</tbody>
-            </table>
-          </div>
-        )}
-      </Panel>
-    );
-  }
-
-  if (tab === "Aged Creditors") {
-    return <AgedCreditorsTable rows={ap.aged_creditors || []} />;
-  }
-
-  if (tab === "Reports") {
-    return <ApReports ap={ap} />;
-  }
-
-  if (tab === "Settings") {
+  if (activeTab === "Settings") {
     return (
       <Panel title="Accounts Payable settings">
         <form onSubmit={saveSettings} className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
@@ -2242,6 +2369,13 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
           <Field label="Default terms days" value={settingsForm.default_payment_terms_days} onChange={(value) => setSettingsForm((current) => ({ ...current, default_payment_terms_days: value }))} />
           <AccountCodeSelect label="Default purchase account" accounts={expenseAccounts} value={settingsForm.default_purchase_account} onChange={(value) => setSettingsForm((current) => ({ ...current, default_purchase_account: value }))} />
           <Field label="Default VAT code" value={settingsForm.default_vat_code} onChange={(value) => setSettingsForm((current) => ({ ...current, default_vat_code: value }))} />
+          <Field label="Default currency" value={settingsForm.default_currency || "GBP"} onChange={(value) => setSettingsForm((current) => ({ ...current, default_currency: value }))} />
+          <AccountCodeSelect label="Default bank account" accounts={bankAccounts} value={settingsForm.default_bank_account} onChange={(value) => setSettingsForm((current) => ({ ...current, default_bank_account: value }))} />
+          <Field label="Supplier numbering" value={settingsForm.supplier_numbering || "Automatic"} onChange={(value) => setSettingsForm((current) => ({ ...current, supplier_numbering: value }))} />
+          <Field label="AI matching threshold" value={settingsForm.ai_matching_threshold || "85"} onChange={(value) => setSettingsForm((current) => ({ ...current, ai_matching_threshold: value }))} />
+          <Field label="Document matching behaviour" value={settingsForm.document_matching_behaviour || "Suggest supplier ledger match"} onChange={(value) => setSettingsForm((current) => ({ ...current, document_matching_behaviour: value }))} />
+          <Field label="Payment on account behaviour" value={settingsForm.payment_on_account_behaviour || "Keep unallocated until matched"} onChange={(value) => setSettingsForm((current) => ({ ...current, payment_on_account_behaviour: value }))} />
+          <Field label="Expense behaviour" value={settingsForm.expense_behaviour || "Post direct expenses to selected nominal"} onChange={(value) => setSettingsForm((current) => ({ ...current, expense_behaviour: value }))} />
           <div className="md:col-span-2 xl:col-span-4"><Button disabled={busy || saving} style={{ background: "var(--brand)" }}>Save AP settings</Button></div>
         </form>
       </Panel>
@@ -2249,78 +2383,6 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
   }
 
   return null;
-}
-
-function ApDocumentForm({ title, form, setForm, suppliers, accounts, onSubmit, button, busy, numberKey, dateKey }) {
-  const updateLine = (index, key, value) => setForm((current) => ({ ...current, lines: current.lines.map((line, lineIndex) => lineIndex === index ? { ...line, [key]: value } : line) }));
-  const totals = apFormTotals(form.lines || []);
-  return (
-    <Panel title={title}>
-      <form onSubmit={onSubmit} className="space-y-3">
-        <SupplierSelect suppliers={suppliers} value={form.supplier_id} onChange={(value) => setForm((current) => ({ ...current, supplier_id: value }))} />
-        <div className="grid grid-cols-2 gap-2">
-          <Field label="Number" value={form[numberKey]} onChange={(value) => setForm((current) => ({ ...current, [numberKey]: value }))} />
-          <Field label="Reference" value={form.reference} onChange={(value) => setForm((current) => ({ ...current, reference: value }))} />
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <Field label="Date" type="date" value={form[dateKey]} onChange={(value) => setForm((current) => ({ ...current, [dateKey]: value }))} />
-          {form.due_date !== undefined && <Field label="Due date" type="date" value={form.due_date} onChange={(value) => setForm((current) => ({ ...current, due_date: value }))} />}
-        </div>
-        <div className="rounded-md border border-stone-200">
-          <div className="border-b border-stone-100 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-stone-500">Lines</div>
-          {(form.lines || []).map((line, index) => (
-            <div key={index} className="grid gap-2 border-b border-stone-100 p-3 last:border-b-0">
-              <Field label="Description" value={line.description} onChange={(value) => updateLine(index, "description", value)} />
-              <AccountCodeSelect label="Nominal account" accounts={accounts} value={line.nominal_account_code} onChange={(value) => updateLine(index, "nominal_account_code", value)} />
-              <div className="grid grid-cols-3 gap-2">
-                <Field label="Net" value={line.net_amount} onChange={(value) => updateLine(index, "net_amount", value)} />
-                <Field label="VAT" value={line.vat_amount} onChange={(value) => updateLine(index, "vat_amount", value)} />
-                <Field label="Gross" value={line.gross_amount} onChange={(value) => updateLine(index, "gross_amount", value)} />
-              </div>
-              <Field label="VAT code" value={line.vat_code} onChange={(value) => updateLine(index, "vat_code", value)} />
-              {(form.lines || []).length > 1 && <Button type="button" variant="outline" size="sm" onClick={() => setForm((current) => ({ ...current, lines: current.lines.filter((_, lineIndex) => lineIndex !== index) }))}>Remove line</Button>}
-            </div>
-          ))}
-        </div>
-        <div className="flex flex-wrap justify-between gap-2 rounded-md bg-stone-50 p-3 text-sm">
-          <span>Net: <strong>{formatMoney(totals.net)}</strong></span>
-          <span>VAT: <strong>{formatMoney(totals.vat)}</strong></span>
-          <span>Gross: <strong>{formatMoney(totals.gross)}</strong></span>
-        </div>
-        <div className="flex gap-2">
-          <Button type="button" variant="outline" onClick={() => setForm((current) => ({ ...current, lines: [...current.lines, { ...EMPTY_AP_LINE }] }))}>Add line</Button>
-          <Button disabled={busy} style={{ background: "var(--brand)" }} className="flex-1">{button}</Button>
-        </div>
-      </form>
-    </Panel>
-  );
-}
-
-function ApRegister({ title, rows, numberKey, dateKey, amountKey, empty, actions }) {
-  return (
-    <Panel title={title}>
-      {rows.length === 0 ? <p className="py-10 text-center text-sm text-stone-500">{empty}</p> : (
-        <div className="overflow-auto">
-          <table className="min-w-full text-left text-sm">
-            <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500"><tr><th className="px-3 py-2">Supplier</th><th className="px-3 py-2">Reference</th><th className="px-3 py-2">Date</th><th className="px-3 py-2">Status</th><th className="px-3 py-2 text-right">Amount</th><th className="px-3 py-2 text-right">Outstanding</th><th className="px-3 py-2"></th></tr></thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.id} className="border-t border-stone-100 align-top">
-                  <td className="px-3 py-2 font-semibold text-stone-900">{row.supplier_name || "-"}</td>
-                  <td className="px-3 py-2">{row[numberKey] || row.reference || "-"}</td>
-                  <td className="px-3 py-2">{formatDate(row[dateKey])}</td>
-                  <td className="px-3 py-2"><Badge className={apStatusClass(row.status)}>{row.status}</Badge></td>
-                  <td className="px-3 py-2 text-right">{formatMoney(row[amountKey])}</td>
-                  <td className="px-3 py-2 text-right">{row.outstanding_amount ? formatMoney(row.outstanding_amount) : row.unallocated_amount ? formatMoney(row.unallocated_amount) : "-"}</td>
-                  <td className="px-3 py-2">{actions?.(row)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </Panel>
-  );
 }
 
 function SupplierSelect({ suppliers, value, onChange }) {
@@ -2997,38 +3059,6 @@ function AccountCodeSelect({ accounts, value, onChange, label }) {
   );
 }
 
-function AgedCreditorsTable({ rows }) {
-  return (
-    <Panel title="Aged creditors">
-      {rows.length === 0 ? <p className="py-10 text-center text-sm text-stone-500">No outstanding supplier balances.</p> : (
-        <div className="overflow-auto">
-          <table className="min-w-full text-left text-sm">
-            <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500"><tr><th className="px-3 py-2">Supplier</th><th className="px-3 py-2 text-right">Current</th><th className="px-3 py-2 text-right">1-30</th><th className="px-3 py-2 text-right">31-60</th><th className="px-3 py-2 text-right">61-90</th><th className="px-3 py-2 text-right">90+</th><th className="px-3 py-2 text-right">Total</th></tr></thead>
-            <tbody>{rows.map((row) => <tr key={row.supplier_id || row.supplier_name} className="border-t border-stone-100"><td className="px-3 py-2 font-semibold">{row.supplier_name}</td><td className="px-3 py-2 text-right">{formatMoney(row.current)}</td><td className="px-3 py-2 text-right">{formatMoney(row.days_1_30)}</td><td className="px-3 py-2 text-right">{formatMoney(row.days_31_60)}</td><td className="px-3 py-2 text-right">{formatMoney(row.days_61_90)}</td><td className="px-3 py-2 text-right">{formatMoney(row.days_90_plus)}</td><td className="px-3 py-2 text-right font-semibold">{formatMoney(row.total)}</td></tr>)}</tbody>
-          </table>
-        </div>
-      )}
-    </Panel>
-  );
-}
-
-function ApReports({ ap }) {
-  const invoices = ap.invoices || [];
-  const unpaid = invoices.filter((invoice) => Number(invoice.outstanding_amount || 0) > 0);
-  const vat = invoices.reduce((sum, invoice) => sum + Number(invoice.vat_amount || 0), 0);
-  return (
-    <div className="space-y-4">
-      <div className="grid gap-3 md:grid-cols-4">
-        <SummaryCard label="Purchase day book" value={invoices.length} tone="blue" />
-        <SummaryCard label="Unpaid bills" value={unpaid.length} tone="amber" />
-        <SummaryCard label="VAT on purchases" value={formatMoney(vat)} tone="emerald" />
-        <SummaryCard label="Supplier balances" value={formatMoney(ap.dashboard?.outstanding_total)} tone="stone" />
-      </div>
-      <ApRegister title="Unpaid bills" rows={unpaid} numberKey="invoice_number" dateKey="invoice_date" amountKey="gross_amount" empty="No unpaid bills." />
-    </div>
-  );
-}
-
 function apFormTotals(lines) {
   return (lines || []).reduce((total, line) => {
     const net = Number(line.net_amount || 0);
@@ -3036,26 +3066,6 @@ function apFormTotals(lines) {
     const gross = Number(line.gross_amount || (net + vat) || 0);
     return { net: total.net + net, vat: total.vat + vat, gross: total.gross + gross };
   }, { net: 0, vat: 0, gross: 0 });
-}
-
-function statementRows(supplierId, invoices, creditNotes, payments) {
-  let balance = 0;
-  return [
-    ...invoices.filter((item) => item.supplier_id === supplierId).map((item) => ({ id: item.id, date: item.invoice_date, type: "Invoice", reference: item.invoice_number, debit: Number(item.gross_amount || 0), credit: 0 })),
-    ...creditNotes.filter((item) => item.supplier_id === supplierId).map((item) => ({ id: item.id, date: item.credit_note_date, type: "Credit note", reference: item.credit_note_number, debit: 0, credit: Number(item.gross_amount || 0) })),
-    ...payments.filter((item) => item.supplier_id === supplierId).map((item) => ({ id: item.id, date: item.payment_date, type: "Payment", reference: item.reference, debit: 0, credit: Number(item.amount || 0) })),
-  ].sort((a, b) => String(a.date || "").localeCompare(String(b.date || ""))).map((row) => {
-    balance += row.debit - row.credit;
-    return { ...row, balance };
-  });
-}
-
-function apStatusClass(status) {
-  if (status === "posted" || status === "paid") return "bg-emerald-100 text-emerald-800 hover:bg-emerald-100";
-  if (status === "part_paid" || status === "approved") return "bg-sky-100 text-sky-800 hover:bg-sky-100";
-  if (status === "awaiting_approval") return "bg-amber-100 text-amber-800 hover:bg-amber-100";
-  if (status === "void") return "bg-red-100 text-red-800 hover:bg-red-100";
-  return "bg-stone-100 text-stone-700 hover:bg-stone-100";
 }
 
 function ContactsWorkspace({ contacts = [], form, setForm, createContact, busy, typeFilter = null, title = "Contacts" }) {
@@ -4945,6 +4955,17 @@ function Field({ label, value, onChange, type = "text" }) {
   );
 }
 
+function ReadOnly({ label, value }) {
+  return (
+    <div>
+      <Label className="text-xs font-semibold text-stone-600">{label}</Label>
+      <div className="mt-1 min-h-9 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-medium text-stone-800">
+        {value || "-"}
+      </div>
+    </div>
+  );
+}
+
 function Info({ label, value }) {
   return (
     <div className="rounded-md bg-stone-50 px-3 py-2 text-sm">
@@ -4977,6 +4998,20 @@ function formatDateTime(value) {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return value;
   return d.toLocaleString("en-GB");
+}
+
+function statusBadgeClass(status) {
+  const value = String(status || "").toLowerCase();
+  if (["posted", "paid", "allocated", "active", "reconciled", "approved"].includes(value)) {
+    return "bg-emerald-100 text-emerald-800";
+  }
+  if (["draft", "part_paid", "part paid", "unreconciled", "pending"].includes(value)) {
+    return "bg-amber-100 text-amber-800";
+  }
+  if (["void", "voided", "cancelled", "rejected", "failed"].includes(value)) {
+    return "bg-red-100 text-red-800";
+  }
+  return "bg-stone-100 text-stone-700";
 }
 
 function displayAuditValue(value) {
