@@ -2594,7 +2594,7 @@ def serialize_submission(d: dict) -> dict:
     d["ai_extracted_fields"] = parse_json_object(d.get("ai_extracted_fields")) or {}
     d["coding_fields"] = parse_json_object(d.get("coding_fields")) or {}
     d["document_direction"] = d.get("document_direction") or ("sales" if d.get("type") == "sales" else "purchase" if d.get("type") == "purchase" else "unclassified")
-    d["accounting_destination"] = d.get("accounting_destination") or ("epos_native_ar" if d.get("type") == "sales" else "")
+    d["accounting_destination"] = d.get("accounting_destination") or ("epos_native_ar" if d.get("type") == "sales" else "epos_native_ap" if d.get("type") == "purchase" else "")
     d["customer_match"] = parse_json_object(d.get("customer_match_json")) or {}
     d["duplicate_warning"] = parse_json_object(d.get("duplicate_warning_json")) or {}
     d["routing_history"] = parse_json_object(d.get("routing_history_json")) or {"events": []}
@@ -7724,6 +7724,80 @@ def append_submission_route_event(existing_value: Optional[str], event: dict) ->
     return json.dumps(history)
 
 
+def submission_route(submission: dict, coding_fields: Optional[dict] = None) -> str:
+    fields = coding_fields or {}
+    stored_type = str(submission.get("type") or "").strip().lower()
+    stored_direction = str(submission.get("document_direction") or "").strip().lower()
+    stored_doc_type = str(submission.get("ai_document_type") or "").strip().lower()
+    if stored_type == "sales" or stored_direction == "sales" or stored_doc_type == "sales_invoice":
+        return "sales"
+    if stored_type == "purchase" or stored_direction == "purchase" or stored_doc_type in {"bill", "purchase_invoice"}:
+        return "purchase"
+    route = str(
+        fields.get("route")
+        or fields.get("document_direction")
+        or ""
+    ).strip().lower()
+    doc_type = str(fields.get("document_type") or "").strip().lower()
+    if route in {"sales", "sales_invoice"} or doc_type == "sales_invoice":
+        return "sales"
+    if route in {"purchase", "purchase_invoice", "bill"} or doc_type in {"bill", "purchase_invoice"}:
+        return "purchase"
+    return "purchase" if not route else route
+
+
+def normalize_submission_review_status(status: str, route: str, fields: Optional[dict] = None) -> str:
+    value = str(status or "").strip().lower()
+    if value == "needs_clarification":
+        return "needs_review"
+    if value == "published":
+        return "published_to_ar" if route == "sales" else "published_to_ap"
+    if value == "reviewed":
+        if route == "sales":
+            fields = fields or {}
+            return "sales_ready_to_publish" if fields.get("invoice_number") and (fields.get("customer_id") or fields.get("customer_name")) else "sales_review"
+        return "purchase_ready_to_publish"
+    return value
+
+
+def accounting_publish_contract(accounting_publish: Optional[dict]) -> dict:
+    if not accounting_publish:
+        return {}
+    entity = accounting_publish.get("entity")
+    destination = accounting_publish.get("destination")
+    if not destination:
+        destination = "accounts_receivable" if entity == "SalesInvoice" else "accounts_payable" if entity == "PurchaseInvoice" else ""
+    return {
+        **accounting_publish,
+        "provider": accounting_publish.get("provider") or "epos_native",
+        "destination": destination,
+        "id": accounting_publish.get("id"),
+        "reference": accounting_publish.get("reference") or accounting_publish.get("doc_number"),
+        "status": accounting_publish.get("status"),
+        "gross_amount": accounting_publish.get("gross_amount"),
+    }
+
+
+def submitted_item_publish_response(accounting_publish: dict, invoice: Optional[dict] = None, already_published: bool = False) -> dict:
+    contract = accounting_publish_contract(accounting_publish)
+    entity = contract.get("entity")
+    route = "sales" if entity == "SalesInvoice" else "purchase"
+    destination = "accounts_receivable" if route == "sales" else "accounts_payable"
+    publish_status = "published_to_ar" if route == "sales" else "published_to_ap"
+    invoice_id_key = "ar_invoice_id" if route == "sales" else "ap_invoice_id"
+    return {
+        "ok": True,
+        "route": route,
+        "destination": destination,
+        "publish_status": publish_status,
+        invoice_id_key: contract.get("id"),
+        "invoice": invoice or {},
+        "summary": contract,
+        "accounting_publish": contract,
+        "already_published": already_published,
+    }
+
+
 @api.post("/admin/accounting/clients/{client_id}/ap/suppliers")
 async def create_ap_supplier(
     client_id: str,
@@ -11280,28 +11354,7 @@ async def publish_submission_to_native_accounting(
     client = await get_user_by_id(session, client_id)
     if not is_native_accounting_client(client):
         raise HTTPException(status_code=400, detail="Enable EPOS native accounting on this client before publishing internally.")
-    existing = await one(
-        session,
-        select(accounting_journal_entries).where(
-            accounting_journal_entries.c.client_id == client_id,
-            accounting_journal_entries.c.source_type == "submission",
-            accounting_journal_entries.c.source_id == str(submission["id"]),
-            accounting_journal_entries.c.status == "posted",
-        ),
-    )
-    if existing:
-        return {
-            "provider": "epos_native",
-            "entity": "JournalEntry",
-            "id": existing["id"],
-            "reference": existing.get("reference"),
-            "total_debit": existing.get("total_debit"),
-            "total_credit": existing.get("total_credit"),
-            "posted_at": existing.get("posted_at"),
-            "already_posted": True,
-        }
-
-    accounts = await ensure_native_accounting_client(session, client_id)
+    await ensure_native_accounting_client(session, client_id)
     doc_type = (submission.get("type") or "purchase").lower()
     is_sales = doc_type == "sales"
     if not is_sales:
@@ -11316,6 +11369,7 @@ async def publish_submission_to_native_accounting(
         if existing_ap_invoice:
             return {
                 "provider": "epos_native",
+                "destination": "accounts_payable",
                 "entity": "PurchaseInvoice",
                 "id": existing_ap_invoice.get("id"),
                 "reference": existing_ap_invoice.get("invoice_number"),
@@ -11325,12 +11379,20 @@ async def publish_submission_to_native_accounting(
                 "already_posted": True,
             }
         line_items = coding_fields.get("line_items") if isinstance(coding_fields.get("line_items"), list) else []
+        supplier_name = str(coding_fields.get("vendor_name") or coding_fields.get("supplier_name") or "").strip()
+        if not supplier_name:
+            raise HTTPException(status_code=400, detail="Supplier name is required before publishing to Accounts Payable.")
+        invoice_number = str(coding_fields.get("bill_number") or coding_fields.get("invoice_number") or coding_fields.get("reference") or "").strip()
+        if not invoice_number:
+            raise HTTPException(status_code=400, detail="Invoice number or reference is required before publishing to Accounts Payable.")
+        if money(coding_fields.get("total") or coding_fields.get("gross") or coding_fields.get("net") or submission.get("amount")) == Decimal("0.00"):
+            raise HTTPException(status_code=400, detail="Invoice amount is required before publishing to Accounts Payable.")
         ap_invoice = await create_ap_invoice_record(
             session,
             client_id,
             {
-                "supplier_name": coding_fields.get("vendor_name") or submission.get("client_business_name") or "Supplier",
-                "invoice_number": coding_fields.get("bill_number") or coding_fields.get("invoice_number") or coding_fields.get("reference") or submission.get("description"),
+                "supplier_name": supplier_name,
+                "invoice_number": invoice_number,
                 "reference": coding_fields.get("reference") or "",
                 "invoice_date": coding_fields.get("date") or submission.get("date"),
                 "due_date": coding_fields.get("due_date") or coding_fields.get("date") or submission.get("date"),
@@ -11361,6 +11423,7 @@ async def publish_submission_to_native_accounting(
         )
         return {
             "provider": "epos_native",
+            "destination": "accounts_payable",
             "entity": "PurchaseInvoice",
             "id": ap_invoice.get("id"),
             "reference": ap_invoice.get("invoice_number"),
@@ -11380,6 +11443,7 @@ async def publish_submission_to_native_accounting(
     if existing_ar_invoice:
         return {
             "provider": "epos_native",
+            "destination": "accounts_receivable",
             "entity": "SalesInvoice",
             "id": existing_ar_invoice.get("id"),
             "reference": existing_ar_invoice.get("invoice_number"),
@@ -11403,6 +11467,7 @@ async def publish_submission_to_native_accounting(
     )
     return {
         "provider": "epos_native",
+        "destination": "accounts_receivable",
         "entity": "SalesInvoice",
         "id": ar_invoice.get("id"),
         "reference": ar_invoice.get("invoice_number"),
@@ -11411,116 +11476,6 @@ async def publish_submission_to_native_accounting(
         "outstanding_amount": ar_invoice.get("outstanding_amount"),
         "created_at": ar_invoice.get("created_at"),
     }
-    contact_type = "customer" if is_sales else "supplier"
-    contact_name = coding_fields.get("customer_name") if is_sales else coding_fields.get("vendor_name")
-    contact_name = contact_name or coding_fields.get("vendor_name") or coding_fields.get("customer_name") or submission.get("client_business_name") or ""
-    contact = await get_or_create_native_contact(session, client_id, contact_name, contact_type)
-
-    control_account = find_native_account(accounts, None, "1100" if is_sales else "2000")
-    vat_account = find_native_account(accounts, None, "2200")
-    default_nominal = find_native_account(accounts, coding_fields.get("category"), "4000" if is_sales else "5000")
-
-    vat_amount = money(coding_fields.get("vat"))
-    total_amount = money(coding_fields.get("total") or coding_fields.get("gross") or submission.get("amount"))
-    net_amount = money(coding_fields.get("net"))
-    if net_amount == Decimal("0.00") and total_amount != Decimal("0.00"):
-        net_amount = total_amount - vat_amount
-    if total_amount == Decimal("0.00"):
-        total_amount = net_amount + vat_amount
-    if net_amount == Decimal("0.00") and vat_amount == Decimal("0.00"):
-        raise HTTPException(status_code=400, detail="Add a net/total value before publishing to EPOS Accounting.")
-
-    line_items = coding_fields.get("line_items") if isinstance(coding_fields.get("line_items"), list) else []
-    journal_lines: list[dict] = []
-    line_net_total = Decimal("0.00")
-    for line in line_items:
-        line_net = money(line.get("net") or line.get("total") or line.get("price"))
-        if line_net == Decimal("0.00"):
-            continue
-        line_account = find_native_account(accounts, line.get("category") or coding_fields.get("category"), default_nominal["code"])
-        line_net_total += line_net
-        journal_lines.append(
-            {
-                "account": line_account,
-                "contact": contact,
-                "debit": "0.00" if is_sales else money_str(line_net),
-                "credit": money_str(line_net) if is_sales else "0.00",
-                "vat_code": line.get("vat_code") or coding_fields.get("vat_code"),
-                "description": line.get("description") or coding_fields.get("description") or submission.get("description"),
-            }
-        )
-    if not journal_lines:
-        journal_lines.append(
-            {
-                "account": default_nominal,
-                "contact": contact,
-                "debit": "0.00" if is_sales else money_str(net_amount),
-                "credit": money_str(net_amount) if is_sales else "0.00",
-                "vat_code": coding_fields.get("vat_code"),
-                "description": coding_fields.get("description") or submission.get("description"),
-            }
-        )
-    elif line_net_total != net_amount and net_amount != Decimal("0.00"):
-        balancing_net = net_amount - line_net_total
-        if balancing_net != Decimal("0.00"):
-            debit_adjustment = Decimal("0.00")
-            credit_adjustment = Decimal("0.00")
-            if is_sales:
-                if balancing_net >= Decimal("0.00"):
-                    credit_adjustment = balancing_net
-                else:
-                    debit_adjustment = abs(balancing_net)
-            else:
-                if balancing_net >= Decimal("0.00"):
-                    debit_adjustment = balancing_net
-                else:
-                    credit_adjustment = abs(balancing_net)
-            journal_lines.append(
-                {
-                    "account": default_nominal,
-                    "contact": contact,
-                    "debit": money_str(debit_adjustment),
-                    "credit": money_str(credit_adjustment),
-                    "vat_code": coding_fields.get("vat_code"),
-                    "description": "Header/line balancing adjustment",
-                }
-            )
-
-    if vat_amount != Decimal("0.00"):
-        journal_lines.append(
-            {
-                "account": vat_account,
-                "contact": contact,
-                "debit": "0.00" if is_sales else money_str(vat_amount),
-                "credit": money_str(vat_amount) if is_sales else "0.00",
-                "vat_code": coding_fields.get("vat_code"),
-                "description": "VAT",
-            }
-        )
-
-    journal_lines.append(
-        {
-            "account": control_account,
-            "contact": contact,
-            "debit": money_str(total_amount) if is_sales else "0.00",
-            "credit": "0.00" if is_sales else money_str(total_amount),
-            "vat_code": coding_fields.get("vat_code"),
-            "description": coding_fields.get("description") or submission.get("description"),
-        }
-    )
-
-    reference = str(coding_fields.get("bill_number") or coding_fields.get("invoice_number") or coding_fields.get("reference") or submission.get("description") or submission["id"])
-    return await post_native_journal(
-        session,
-        client_id=client_id,
-        source_type="submission",
-        source_id=str(submission["id"]),
-        entry_date=submission_entry_date(submission, coding_fields),
-        reference=reference,
-        description=str(coding_fields.get("description") or submission.get("description") or "Published document"),
-        lines=journal_lines,
-        actor_id=actor_id,
-    )
 
 
 async def publish_submission_to_accounting_destination(
@@ -12762,7 +12717,7 @@ async def get_coding_history(session: AsyncSession, client_id: str, doc_type: st
         .where(
             submissions.c.client_id == client_id,
             submissions.c.type == doc_type,
-            submissions.c.review_status == "published",
+            submissions.c.review_status.in_(["published", "published_to_ap", "published_to_ar"]),
             submissions.c.coding_fields.is_not(None),
         )
         .order_by(submissions.c.reviewed_at.desc())
@@ -13537,8 +13492,10 @@ async def list_submissions(
     if review_status == "inbox":
         conditions.append(or_(submissions.c.review_status == "inbox", submissions.c.review_status.is_(None)))
     elif review_status == "archived":
-        conditions.append(submissions.c.review_status.in_(["archived", "published", "published_to_ar"]))
-    elif review_status in ("rejected", "published", "needs_review", "sales_review", "sales_ready_to_publish", "published_to_ar"):
+        conditions.append(submissions.c.review_status.in_(["archived", "published", "published_to_ap", "published_to_ar"]))
+    elif review_status == "published":
+        conditions.append(submissions.c.review_status.in_(["published", "published_to_ap", "published_to_ar"]))
+    elif review_status in ("rejected", "needs_review", "purchase_review", "purchase_ready_to_publish", "published_to_ap", "sales_review", "sales_ready_to_publish", "published_to_ar"):
         conditions.append(submissions.c.review_status == review_status)
     if q:
         like = f"%{q}%"
@@ -13619,7 +13576,8 @@ async def save_sales_invoice_review(
     reviewed["correction_history"] = history[-100:]
     match = await sales_customer_match_suggestions(session, str(doc["client_id"]), reviewed)
     duplicate = await sales_duplicate_warning(session, str(doc["client_id"]), reviewed)
-    status = str(payload.get("review_status") or ("sales_ready_to_publish" if reviewed.get("invoice_number") and (reviewed.get("customer_id") or reviewed.get("customer_name")) else "sales_review")).strip().lower()
+    requested_status = str(payload.get("review_status") or ("sales_ready_to_publish" if reviewed.get("invoice_number") and (reviewed.get("customer_id") or reviewed.get("customer_name")) else "sales_review")).strip().lower()
+    status = normalize_submission_review_status(requested_status, "sales", reviewed)
     if status not in {"inbox", "needs_review", "sales_review", "sales_ready_to_publish", "rejected"}:
         status = "sales_review"
     await session.execute(
@@ -13691,7 +13649,19 @@ async def publish_sales_submission_to_ar(
         raise HTTPException(status_code=400, detail="EPOS native accounting is not enabled for this client.")
     if doc.get("published_ar_invoice_id"):
         existing = await get_ar_invoice_or_404(session, str(doc["client_id"]), str(doc["published_ar_invoice_id"]))
-        return {"ok": True, "already_published": True, "ar_invoice_id": existing["id"], "invoice": serialize_ar_invoice(existing), "publish_status": "published_to_ar"}
+        return submitted_item_publish_response(
+            {
+                "provider": "epos_native",
+                "destination": "accounts_receivable",
+                "entity": "SalesInvoice",
+                "id": existing.get("id"),
+                "reference": existing.get("invoice_number"),
+                "status": existing.get("status"),
+                "gross_amount": existing.get("gross_amount"),
+            },
+            serialize_ar_invoice(existing),
+            True,
+        )
     fields = sales_submission_fields(doc, payload.get("review") if isinstance(payload.get("review"), dict) else payload)
     if not fields.get("customer_id") and not fields.get("customer_name"):
         raise HTTPException(status_code=400, detail="Customer is required before publishing to Accounts Receivable.")
@@ -13711,10 +13681,12 @@ async def publish_sales_submission_to_ar(
         "destination": "accounts_receivable",
         "entity": "SalesInvoice",
         "id": ar_invoice.get("id"),
+        "reference": ar_invoice.get("invoice_number"),
         "invoice_number": ar_invoice.get("invoice_number"),
         "status": ar_invoice.get("status"),
         "gross_amount": ar_invoice.get("gross_amount"),
     }
+    publish_summary = accounting_publish_contract(publish_summary)
     fields["accounting_publish"] = publish_summary
     fields["native_accounting_publish"] = publish_summary
     await session.execute(
@@ -13737,7 +13709,7 @@ async def publish_sales_submission_to_ar(
     )
     await add_accounting_audit(session, str(doc["client_id"]), str(user.get("id") or ""), "submitted_item_published_to_ar", "submitted_items", submission_id, {"ar_invoice_id": ar_invoice.get("id"), "invoice_number": ar_invoice.get("invoice_number")})
     await session.commit()
-    return {"ok": True, "ar_invoice_id": ar_invoice.get("id"), "invoice": ar_invoice, "publish_status": "published_to_ar", "summary": publish_summary}
+    return submitted_item_publish_response(publish_summary, ar_invoice)
 
 
 @api.patch("/admin/submissions/{submission_id}/review-status")
@@ -13748,35 +13720,61 @@ async def update_submission_review_status(
     session: AsyncSession = Depends(get_db),
 ):
     await require_document_processing_module(session)
-    status = payload.review_status.strip().lower()
-    if status not in {"inbox", "archived", "rejected", "published", "needs_review", "sales_review", "sales_ready_to_publish", "published_to_ar"}:
-        raise HTTPException(status_code=400, detail="Invalid submission status")
+    requested_status = payload.review_status.strip().lower()
     existing_submission = await one(session, select(submissions).where(submissions.c.id == submission_id))
     if not existing_submission:
         raise HTTPException(status_code=404, detail="Submission not found")
+    payload_fields = dict(payload.coding_fields or {})
+    stored_fields = parse_json_object(existing_submission.get("coding_fields")) or parse_json_object(existing_submission.get("ai_extracted_fields")) or {}
+    route = submission_route(existing_submission, payload_fields)
+    status = normalize_submission_review_status(requested_status, route, sales_submission_fields(existing_submission, payload_fields) if route == "sales" else payload_fields)
+    if status not in {"inbox", "archived", "rejected", "needs_review", "purchase_review", "purchase_ready_to_publish", "published_to_ap", "sales_review", "sales_ready_to_publish", "published_to_ar"}:
+        raise HTTPException(status_code=400, detail="Invalid submission status")
+    if route == "sales" and status == "published_to_ap":
+        raise HTTPException(status_code=400, detail="Sales invoice submissions publish to Accounts Receivable only.")
+    if route == "purchase" and status == "published_to_ar":
+        raise HTTPException(status_code=400, detail="Purchase invoice submissions publish to Accounts Payable only.")
     values = {"review_status": status, "reviewed_at": utc_now_iso()}
+    if route == "sales":
+        values["document_direction"] = "sales"
+        values["accounting_destination"] = "epos_native_ar"
+    elif route == "purchase":
+        values["document_direction"] = "purchase"
+        values["accounting_destination"] = "epos_native_ap"
     memory_updated = False
     supplier_name = ""
     accounting_publish = None
-    if payload.coding_fields is not None:
-        coding_fields = dict(payload.coding_fields)
+    publish_response = None
+    if payload.coding_fields is not None or status in {"published_to_ap", "published_to_ar"}:
+        coding_fields = payload_fields if payload.coding_fields is not None else dict(stored_fields)
         supplier_name = str(coding_fields.get("vendor_name") or "").strip()
-        if status == "published":
+        if status in {"published_to_ap", "published_to_ar"}:
             accounting_publish = await publish_submission_to_accounting_destination(session, existing_submission, coding_fields, str(user.get("id")))
+            accounting_publish = accounting_publish_contract(accounting_publish)
             coding_fields["accounting_publish"] = accounting_publish
             if accounting_publish.get("provider") == "quickbooks":
                 coding_fields["quickbooks_publish"] = accounting_publish
             if accounting_publish.get("provider") == "epos_native":
                 coding_fields["native_accounting_publish"] = accounting_publish
-                if accounting_publish.get("entity") == "SalesInvoice":
-                    values["review_status"] = "published_to_ar"
-                    values["publish_status"] = "published_to_ar"
-                    values["published_ar_invoice_id"] = accounting_publish.get("id")
-                    values["document_direction"] = "sales"
-                    values["accounting_destination"] = "epos_native_ar"
-                    values["routing_history_json"] = append_submission_route_event(existing_submission.get("routing_history_json"), {"action": "published_to_ar", "actor_id": str(user.get("id") or ""), "ar_invoice_id": accounting_publish.get("id")})
+            if accounting_publish.get("entity") == "SalesInvoice":
+                values["review_status"] = "published_to_ar"
+                values["publish_status"] = "published_to_ar"
+                values["published_ar_invoice_id"] = accounting_publish.get("id")
+                values["document_direction"] = "sales"
+                values["accounting_destination"] = "epos_native_ar"
+                values["routing_history_json"] = append_submission_route_event(existing_submission.get("routing_history_json"), {"action": "published_to_ar", "actor_id": str(user.get("id") or ""), "ar_invoice_id": accounting_publish.get("id")})
+                ar_invoice = await get_ar_invoice_or_404(session, str(existing_submission["client_id"]), str(accounting_publish.get("id")))
+                publish_response = submitted_item_publish_response(accounting_publish, serialize_ar_invoice(ar_invoice), bool(accounting_publish.get("already_posted")))
+            elif accounting_publish.get("entity") == "PurchaseInvoice":
+                values["review_status"] = "published_to_ap"
+                values["publish_status"] = "published_to_ap"
+                values["document_direction"] = "purchase"
+                values["accounting_destination"] = "epos_native_ap"
+                values["routing_history_json"] = append_submission_route_event(existing_submission.get("routing_history_json"), {"action": "published_to_ap", "actor_id": str(user.get("id") or ""), "ap_invoice_id": accounting_publish.get("id")})
+                ap_invoice = await get_ap_invoice_or_404(session, str(existing_submission["client_id"]), str(accounting_publish.get("id")))
+                publish_response = submitted_item_publish_response(accounting_publish, serialize_ap_invoice(ap_invoice), bool(accounting_publish.get("already_posted")))
         values["coding_fields"] = json.dumps(coding_fields)
-        memory_updated = status == "published"
+        memory_updated = status in {"published_to_ap", "published_to_ar"}
     result = await session.execute(
         update(submissions)
         .where(submissions.c.id == submission_id)
@@ -13786,7 +13784,7 @@ async def update_submission_review_status(
         await session.rollback()
         raise HTTPException(status_code=404, detail="Submission not found")
     await session.commit()
-    return {
+    response = {
         "ok": True,
         "review_status": values.get("review_status", status),
         "memory_updated": memory_updated,
@@ -13794,6 +13792,9 @@ async def update_submission_review_status(
         "accounting_publish": accounting_publish,
         "quickbooks_publish": accounting_publish if accounting_publish and accounting_publish.get("provider") == "quickbooks" else None,
     }
+    if publish_response:
+        response.update(publish_response)
+    return response
 
 
 @api.post("/admin/submissions/{submission_id}/extract-fields")
