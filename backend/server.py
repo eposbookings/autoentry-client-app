@@ -7390,6 +7390,152 @@ async def get_ap_invoice_or_404(session: AsyncSession, client_id: str, invoice_i
     return invoice
 
 
+async def next_ap_supplier_code(session: AsyncSession, client_id: str, name: str) -> str:
+    base = re.sub(r"[^A-Z0-9]", "", str(name or "").upper())[:6] or "SUP"
+    existing = await many(
+        session,
+        select(accounting_ap_supplier_profiles.c.supplier_code).where(accounting_ap_supplier_profiles.c.client_id == client_id),
+    )
+    existing_codes = {str(row.get("supplier_code") or "").upper() for row in existing}
+    candidate = base
+    counter = 1
+    while candidate in existing_codes:
+        counter += 1
+        candidate = f"{base}{counter:02d}"[:64]
+    return candidate
+
+
+async def create_native_ap_supplier_profile(
+    session: AsyncSession,
+    client_id: str,
+    payload: dict,
+    actor_id: Optional[str],
+) -> dict:
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before creating suppliers.")
+    name = str(payload.get("supplier_name") or payload.get("vendor_name") or payload.get("name") or payload.get("trading_name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Supplier name is required.")
+    ap_settings = await ensure_ap_settings(session, client_id)
+    supplier_code = str(payload.get("supplier_code") or payload.get("vendor_account") or "").strip()
+    existing_contact = await one(
+        session,
+        select(accounting_contacts).where(
+            accounting_contacts.c.client_id == client_id,
+            accounting_contacts.c.contact_type == "supplier",
+            func.lower(accounting_contacts.c.name) == name.lower(),
+        ),
+    )
+    if not supplier_code and existing_contact and existing_contact.get("account_code"):
+        supplier_code = str(existing_contact.get("account_code") or "").strip()
+    if not supplier_code:
+        supplier_code = await next_ap_supplier_code(session, client_id, name)
+    now = utc_now_iso()
+    if existing_contact:
+        contact_updates = {
+            "email": str(payload.get("supplier_email") or payload.get("email") or existing_contact.get("email") or "").strip(),
+            "account_code": str(supplier_code or existing_contact.get("account_code") or "").strip(),
+            "active": True,
+            "updated_at": now,
+        }
+        await session.execute(update(accounting_contacts).where(accounting_contacts.c.id == existing_contact["id"]).values(**contact_updates))
+        contact = {**existing_contact, **contact_updates}
+    else:
+        contact = {
+            "id": new_id(),
+            "client_id": client_id,
+            "contact_type": "supplier",
+            "name": name,
+            "email": str(payload.get("supplier_email") or payload.get("email") or "").strip(),
+            "external_id": "",
+            "account_code": supplier_code,
+            "active": True,
+            "raw_json": json.dumps({"source": "submitted_items_review"}),
+            "created_at": now,
+            "updated_at": now,
+        }
+        await session.execute(insert(accounting_contacts).values(**contact))
+    existing_profile = await one(
+        session,
+        select(accounting_ap_supplier_profiles).where(
+            accounting_ap_supplier_profiles.c.client_id == client_id,
+            accounting_ap_supplier_profiles.c.contact_id == contact["id"],
+        ),
+    )
+    try:
+        payment_terms_days = int(payload.get("payment_terms_days") or ap_settings.get("default_payment_terms_days") or 30)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Supplier payment terms must be a number.")
+    values = {
+        "supplier_code": supplier_code,
+        "trading_name": str(payload.get("trading_name") or name).strip(),
+        "phone": str(payload.get("phone") or "").strip(),
+        "website": str(payload.get("website") or "").strip(),
+        "vat_number": str(payload.get("supplier_vat_number") or payload.get("vat_number") or "").strip(),
+        "company_number": str(payload.get("company_number") or "").strip(),
+        "payment_terms_days": payment_terms_days,
+        "default_currency": str(payload.get("currency") or ap_settings.get("default_currency") or "GBP").strip().upper()[:8],
+        "default_purchase_account": nominal_account_code_value(payload.get("default_purchase_account") or payload.get("category"), ap_settings.get("default_purchase_account") or "5000"),
+        "default_vat_code": str(payload.get("default_vat_code") or payload.get("vat_code") or ap_settings.get("default_vat_code") or "").strip(),
+        "status": "active",
+        "notes": str(payload.get("notes") or "").strip(),
+        "updated_at": now,
+    }
+    if existing_profile:
+        await session.execute(update(accounting_ap_supplier_profiles).where(accounting_ap_supplier_profiles.c.id == existing_profile["id"]).values(**values))
+        profile = {**existing_profile, **values}
+    else:
+        profile = {"id": new_id(), "client_id": client_id, "contact_id": contact["id"], "created_at": now, **values}
+        await session.execute(insert(accounting_ap_supplier_profiles).values(**profile))
+    await add_accounting_audit(session, client_id, actor_id, "supplier_saved", "accounts_payable", profile["id"], {"name": name, "source": "submitted_items_review"})
+    return serialize_ap_supplier(profile, contact)
+
+
+async def ap_supplier_match_suggestions(session: AsyncSession, client_id: str, fields: dict, limit: int = 5) -> dict:
+    supplier_id = str(fields.get("supplier_id") or "").strip()
+    if supplier_id:
+        supplier = await get_ap_supplier_or_404(session, client_id, supplier_id)
+        contact = await one(session, select(accounting_contacts).where(accounting_contacts.c.id == supplier.get("contact_id")))
+        return {"matched": True, "requires_action": False, "suggestions": [serialize_ap_supplier(supplier, contact or {})]}
+    supplier_name = str(fields.get("supplier_name") or fields.get("vendor_name") or "").strip().lower()
+    supplier_code = str(fields.get("supplier_code") or fields.get("vendor_account") or "").strip().lower()
+    supplier_email = str(fields.get("supplier_email") or fields.get("email") or "").strip().lower()
+    supplier_vat = str(fields.get("supplier_vat_number") or fields.get("vat_number") or "").strip().lower()
+    contacts = await many(session, select(accounting_contacts).where(accounting_contacts.c.client_id == client_id, accounting_contacts.c.contact_type == "supplier"))
+    profiles = await many(session, select(accounting_ap_supplier_profiles).where(accounting_ap_supplier_profiles.c.client_id == client_id))
+    contact_by_id = {str(contact.get("id")): contact for contact in contacts}
+    suggestions = []
+    for profile in profiles:
+        contact = contact_by_id.get(str(profile.get("contact_id"))) or {}
+        name = str(contact.get("name") or profile.get("trading_name") or "").lower()
+        code = str(contact.get("account_code") or profile.get("supplier_code") or "").lower()
+        email = str(contact.get("email") or "").lower()
+        vat = str(profile.get("vat_number") or "").lower()
+        score = 0
+        reasons = []
+        if supplier_code and supplier_code == code:
+            score += 95
+            reasons.append("supplier_code")
+        if supplier_email and supplier_email == email:
+            score += 90
+            reasons.append("email")
+        if supplier_vat and supplier_vat == vat:
+            score += 90
+            reasons.append("vat_number")
+        if supplier_name and supplier_name == name:
+            score += 85
+            reasons.append("name")
+        elif supplier_name and name and (supplier_name in name or name in supplier_name):
+            score += 55
+            reasons.append("partial_name")
+        if score:
+            suggestions.append({**serialize_ap_supplier(profile, contact), "match_score": min(score, 100), "match_reasons": reasons})
+    suggestions.sort(key=lambda row: int(row.get("match_score") or 0), reverse=True)
+    matched = bool(suggestions and int(suggestions[0].get("match_score") or 0) >= 85)
+    return {"matched": matched, "requires_action": not matched, "suggestions": suggestions[:limit]}
+
+
 async def create_ap_invoice_record(
     session: AsyncSession,
     client_id: str,
@@ -11794,9 +11940,34 @@ async def publish_submission_to_native_accounting(
                 "already_posted": True,
             }
         line_items = coding_fields.get("line_items") if isinstance(coding_fields.get("line_items"), list) else []
+        supplier_id = str(coding_fields.get("supplier_id") or "").strip()
         supplier_name = str(coding_fields.get("vendor_name") or coding_fields.get("supplier_name") or "").strip()
-        if not supplier_name:
-            raise HTTPException(status_code=400, detail="Supplier name is required before publishing to Accounts Payable.")
+        if not supplier_id:
+            if bool(coding_fields.get("create_new_supplier")):
+                supplier = await create_native_ap_supplier_profile(
+                    session,
+                    client_id,
+                    {
+                        "supplier_name": supplier_name,
+                        "supplier_code": coding_fields.get("supplier_code") or coding_fields.get("vendor_account"),
+                        "supplier_email": coding_fields.get("supplier_email"),
+                        "supplier_vat_number": coding_fields.get("supplier_vat_number"),
+                        "supplier_address": coding_fields.get("supplier_address"),
+                        "currency": coding_fields.get("currency") or "GBP",
+                        "category": coding_fields.get("category"),
+                        "vat_code": coding_fields.get("vat_code"),
+                    },
+                    actor_id,
+                )
+                supplier_id = str(supplier.get("id") or "")
+                coding_fields["supplier_id"] = supplier_id
+                coding_fields["supplier_name"] = supplier.get("name") or supplier_name
+                coding_fields["vendor_name"] = supplier.get("name") or supplier_name
+                coding_fields["supplier_code"] = supplier.get("supplier_code") or supplier.get("account_code") or coding_fields.get("supplier_code") or ""
+                coding_fields["create_new_supplier"] = False
+                coding_fields["supplier_created_from_review"] = True
+            else:
+                raise HTTPException(status_code=400, detail="Select or create a supplier before publishing to Accounts Payable.")
         invoice_number = str(coding_fields.get("bill_number") or coding_fields.get("invoice_number") or coding_fields.get("reference") or "").strip()
         if not invoice_number:
             raise HTTPException(status_code=400, detail="Invoice number or reference is required before publishing to Accounts Payable.")
@@ -11807,6 +11978,7 @@ async def publish_submission_to_native_accounting(
             client_id,
             {
                 "supplier_name": supplier_name,
+                "supplier_id": supplier_id,
                 "invoice_number": invoice_number,
                 "reference": coding_fields.get("reference") or "",
                 "invoice_date": coding_fields.get("date") or submission.get("date"),
@@ -12816,6 +12988,13 @@ def attachment_mime(path: str) -> tuple[str, str]:
 CODING_FIELD_KEYS = (
     "vendor_name",
     "vendor_account",
+    "supplier_id",
+    "supplier_name",
+    "supplier_code",
+    "supplier_email",
+    "supplier_vat_number",
+    "supplier_address",
+    "create_new_supplier",
     "category",
     "date",
     "due_date",
@@ -12997,6 +13176,13 @@ def normalize_ai_coding_fields(data: dict) -> dict:
     fields = {
         "vendor_name": str(source.get("vendor_name") or "").strip()[:255],
         "vendor_account": str(source.get("vendor_account") or "").strip()[:255],
+        "supplier_id": str(source.get("supplier_id") or "").strip()[:36],
+        "supplier_name": str(source.get("supplier_name") or source.get("vendor_name") or "").strip()[:255],
+        "supplier_code": str(source.get("supplier_code") or source.get("vendor_account") or "").strip()[:64],
+        "supplier_email": str(source.get("supplier_email") or source.get("email") or "").strip()[:255],
+        "supplier_vat_number": str(source.get("supplier_vat_number") or source.get("vat_number") or "").strip()[:64],
+        "supplier_address": str(source.get("supplier_address") or "").strip()[:500],
+        "create_new_supplier": bool(source.get("create_new_supplier")),
         "category": str(source.get("category") or "").strip()[:255],
         "date": str(source.get("date") or "").strip()[:32],
         "due_date": str(source.get("due_date") or "").strip()[:32],
@@ -13017,6 +13203,10 @@ def normalize_ai_coding_fields(data: dict) -> dict:
         "ocr_text_lines": ocr_text_lines,
         "ocr_text_boxes": ocr_text_boxes,
     }
+    if fields["supplier_name"] and not fields["vendor_name"]:
+        fields["vendor_name"] = fields["supplier_name"]
+    if fields["supplier_code"] and not fields["vendor_account"]:
+        fields["vendor_account"] = fields["supplier_code"]
     if fields["document_type"] not in ("bill", "credit_note"):
         fields["document_type"] = "bill"
     if not fields["reference"]:
@@ -13945,6 +14135,149 @@ async def get_sales_submission_or_404(session: AsyncSession, submission_id: str)
     if doc.get("type") != "sales" and doc.get("document_direction") != "sales" and doc.get("ai_document_type") != "sales_invoice":
         raise HTTPException(status_code=400, detail="Submitted item is not routed as a sales invoice.")
     return doc
+
+
+async def get_purchase_submission_or_404(session: AsyncSession, submission_id: str) -> dict:
+    doc = await one(session, select(submissions).where(submissions.c.id == submission_id))
+    if not doc:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    if doc.get("type") == "sales" or doc.get("document_direction") == "sales" or doc.get("ai_document_type") == "sales_invoice":
+        raise HTTPException(status_code=400, detail="Submitted item is not routed as a purchase invoice.")
+    return doc
+
+
+def purchase_submission_fields(submission: dict, reviewed_fields: Optional[dict] = None) -> dict:
+    ai_fields = parse_json_object(submission.get("ai_extracted_fields")) or {}
+    coding_fields = parse_json_object(submission.get("coding_fields")) or {}
+    source = {**ai_fields, **coding_fields, **(reviewed_fields or {})}
+    fields = dict(source)
+    supplier_name = str(source.get("supplier_name") or source.get("vendor_name") or "").strip()
+    fields["supplier_id"] = str(source.get("supplier_id") or "").strip()
+    fields["supplier_name"] = supplier_name
+    fields["vendor_name"] = supplier_name
+    fields["supplier_code"] = str(source.get("supplier_code") or source.get("vendor_account") or "").strip()
+    fields["vendor_account"] = fields["supplier_code"]
+    fields["supplier_email"] = str(source.get("supplier_email") or source.get("email") or "").strip()
+    fields["supplier_vat_number"] = str(source.get("supplier_vat_number") or source.get("vat_number") or "").strip()
+    fields["supplier_address"] = source.get("supplier_address") or ""
+    fields["create_new_supplier"] = bool(source.get("create_new_supplier"))
+    return fields
+
+
+@api.get("/admin/submissions/{submission_id}/purchase-invoice-review")
+async def get_purchase_invoice_review(
+    submission_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await require_document_processing_module(session)
+    doc = await get_purchase_submission_or_404(session, submission_id)
+    fields = purchase_submission_fields(doc)
+    supplier_match = await ap_supplier_match_suggestions(session, str(doc["client_id"]), fields)
+    return {
+        "submission": serialize_submission(doc),
+        "review": fields,
+        "supplier_match": supplier_match,
+        "publish_status": doc.get("publish_status") or ("published_to_ap" if doc.get("review_status") == "published_to_ap" else "not_published"),
+    }
+
+
+@api.post("/admin/submissions/{submission_id}/purchase-invoice-review/supplier-match")
+async def match_purchase_invoice_supplier(
+    submission_id: str,
+    payload: dict = {},
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await require_document_processing_module(session)
+    doc = await get_purchase_submission_or_404(session, submission_id)
+    fields = purchase_submission_fields(doc, payload.get("review") if isinstance(payload.get("review"), dict) else payload)
+    match = await ap_supplier_match_suggestions(session, str(doc["client_id"]), fields)
+    return {"ok": True, "supplier_match": match}
+
+
+@api.post("/admin/submissions/{submission_id}/purchase-invoice-review/create-supplier")
+async def create_purchase_review_supplier(
+    submission_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await require_document_processing_module(session)
+    doc = await get_purchase_submission_or_404(session, submission_id)
+    fields = purchase_submission_fields(doc, payload.get("review") if isinstance(payload.get("review"), dict) else payload)
+    supplier = await create_native_ap_supplier_profile(session, str(doc["client_id"]), fields, str(user.get("id") or ""))
+    fields["supplier_id"] = supplier.get("id")
+    fields["supplier_name"] = supplier.get("name")
+    fields["vendor_name"] = supplier.get("name")
+    fields["supplier_code"] = supplier.get("supplier_code") or supplier.get("account_code") or ""
+    fields["vendor_account"] = fields["supplier_code"]
+    fields["create_new_supplier"] = False
+    fields["supplier_created_from_review"] = True
+    await session.execute(
+        update(submissions)
+        .where(submissions.c.id == submission_id)
+        .values(
+            coding_fields=json.dumps(fields),
+            document_direction="purchase",
+            accounting_destination="epos_native_ap",
+            review_status="purchase_ready_to_publish",
+            routing_history_json=append_submission_route_event(doc.get("routing_history_json"), {"action": "ap_supplier_created_from_review", "actor_id": str(user.get("id") or ""), "supplier_id": supplier.get("id")}),
+            reviewed_at=utc_now_iso(),
+        )
+    )
+    await add_accounting_audit(session, str(doc["client_id"]), str(user.get("id") or ""), "ap_supplier_created_from_submission_review", "submitted_items", submission_id, {"supplier_id": supplier.get("id"), "supplier_name": supplier.get("name")})
+    await session.commit()
+    fresh = await one(session, select(submissions).where(submissions.c.id == submission_id))
+    return {
+        "ok": True,
+        "supplier_id": supplier.get("id"),
+        "supplier_name": supplier.get("name"),
+        "supplier_code": supplier.get("supplier_code") or supplier.get("account_code") or "",
+        "supplier": supplier,
+        "submission": serialize_submission(fresh),
+        "review": fields,
+    }
+
+
+@api.post("/admin/submissions/{submission_id}/purchase-invoice-review/select-supplier")
+async def select_purchase_review_supplier(
+    submission_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await require_document_processing_module(session)
+    doc = await get_purchase_submission_or_404(session, submission_id)
+    supplier_id = str(payload.get("supplier_id") or "").strip()
+    supplier = await get_ap_supplier_or_404(session, str(doc["client_id"]), supplier_id)
+    contact = await one(session, select(accounting_contacts).where(accounting_contacts.c.id == supplier.get("contact_id")))
+    serialized_supplier = serialize_ap_supplier(supplier, contact or {})
+    fields = purchase_submission_fields(doc, payload.get("review") if isinstance(payload.get("review"), dict) else {})
+    fields["supplier_id"] = serialized_supplier.get("id")
+    fields["supplier_name"] = serialized_supplier.get("name")
+    fields["vendor_name"] = serialized_supplier.get("name")
+    fields["supplier_code"] = serialized_supplier.get("supplier_code") or serialized_supplier.get("account_code") or ""
+    fields["vendor_account"] = fields["supplier_code"]
+    fields["supplier_email"] = serialized_supplier.get("email") or fields.get("supplier_email") or ""
+    fields["supplier_vat_number"] = supplier.get("vat_number") or fields.get("supplier_vat_number") or ""
+    fields["create_new_supplier"] = False
+    await session.execute(
+        update(submissions)
+        .where(submissions.c.id == submission_id)
+        .values(
+            coding_fields=json.dumps(fields),
+            document_direction="purchase",
+            accounting_destination="epos_native_ap",
+            review_status="purchase_ready_to_publish",
+            routing_history_json=append_submission_route_event(doc.get("routing_history_json"), {"action": "ap_supplier_selected_from_review", "actor_id": str(user.get("id") or ""), "supplier_id": supplier_id}),
+            reviewed_at=utc_now_iso(),
+        )
+    )
+    await add_accounting_audit(session, str(doc["client_id"]), str(user.get("id") or ""), "ap_supplier_selected_from_submission_review", "submitted_items", submission_id, {"supplier_id": supplier_id, "supplier_name": serialized_supplier.get("name")})
+    await session.commit()
+    fresh = await one(session, select(submissions).where(submissions.c.id == submission_id))
+    return {"ok": True, "supplier": serialized_supplier, "submission": serialize_submission(fresh), "review": fields}
 
 
 @api.get("/admin/submissions/{submission_id}/sales-invoice-review")
