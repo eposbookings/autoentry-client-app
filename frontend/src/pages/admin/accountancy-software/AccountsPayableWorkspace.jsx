@@ -1002,16 +1002,6 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
                   <option value="prefix">Prefix based</option>
                 </select>
               </SettingField>
-              <SettingField label="AI matching threshold" help="Minimum confidence percentage before EPOS suggests a supplier or document match. Lower values show more suggestions; higher values reduce false matches. This does not post anything automatically.">
-                <Input type="number" min="0" max="100" value={settingsForm.ai_matching_threshold || ""} onChange={(e) => setSettingsForm((form) => ({ ...form, ai_matching_threshold: e.target.value }))} className="h-9" />
-              </SettingField>
-              <SettingField label="Document matching behaviour" help="Controls how uploaded documents are handled when EPOS thinks they match supplier ledger activity. Review before matching keeps user approval in the workflow.">
-                <select value={settingsForm.document_matching_behaviour || "review"} onChange={(e) => setSettingsForm((form) => ({ ...form, document_matching_behaviour: e.target.value }))} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm">
-                  <option value="review">Review before matching</option>
-                  <option value="suggest">Suggest only</option>
-                  <option value="auto_high_confidence">Auto-match high confidence</option>
-                </select>
-              </SettingField>
               <SettingField label="Payment on account behaviour" help="Controls supplier payments where no invoice exists yet. Holding them keeps the balance available for future allocation without creating an expense.">
                 <select value={settingsForm.payment_on_account_behaviour || "hold"} onChange={(e) => setSettingsForm((form) => ({ ...form, payment_on_account_behaviour: e.target.value }))} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm">
                   <option value="hold">Hold for future allocation</option>
