@@ -266,7 +266,7 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
     const needle = supplierQuery.trim().toLowerCase();
     if (!needle) return true;
     return `${supplier.name || ""} ${supplier.trading_name || ""} ${supplier.supplier_code || ""} ${supplier.email || ""}`.toLowerCase().includes(needle);
-  }
+  });
 
   async function run(action, success) {
     setSaving(true);
