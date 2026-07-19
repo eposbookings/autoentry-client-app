@@ -293,8 +293,10 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
       await action();
       toast.success(success);
       await reloadWorkspace();
+      return true;
     } catch (e) {
       toast.error(formatApiError(e));
+      return false;
     } finally {
       setSaving(false);
     }
@@ -475,9 +477,14 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
     setTransactionDraft(null);
   }
 
-  function saveSupplierDraft() {
+  async function saveSupplierDraft() {
     if (!supplierDraft.name.trim()) return toast.error("Supplier name is required");
-    toast.success("Supplier record saved in this view");
+    if (!selectedSupplier?.id) return toast.error("Supplier record is unavailable");
+    const saved = await run(
+      async () => putJson(`/ap/suppliers/${selectedSupplier.id}`, supplierDraft),
+      "Supplier record saved"
+    );
+    if (!saved) return;
     setSupplierEditMode(false);
   }
 
@@ -660,7 +667,7 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
                     <Button type="button" variant="outline" onClick={() => { setSupplierDraft(normaliseSupplierDraft(selectedSupplier)); setSupplierEditMode(false); }}>
                       <X className="mr-2 h-4 w-4" /> Cancel
                     </Button>
-                    <Button type="button" onClick={saveSupplierDraft}>
+                    <Button type="button" onClick={saveSupplierDraft} disabled={saving || busy}>
                       <Save className="mr-2 h-4 w-4" /> Save
                     </Button>
                   </>
