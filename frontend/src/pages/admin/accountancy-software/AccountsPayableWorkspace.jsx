@@ -97,12 +97,31 @@ function normaliseSupplierDraft(supplier = {}) {
 }
 
 function HelpHint({ text }) {
+  const [open, setOpen] = useState(false);
+
+  if (!text) return null;
+
   return (
-    <HelpCircle
-      className="h-3.5 w-3.5 text-stone-400"
-      aria-label={text}
-      title={text}
-    />
+    <span className="relative inline-flex">
+      <button
+        type="button"
+        className="inline-flex h-4 w-4 items-center justify-center rounded-full text-stone-400 hover:bg-stone-100 hover:text-stone-700"
+        aria-label={text}
+        title={text}
+        onClick={(event) => {
+          event.preventDefault();
+          setOpen((value) => !value);
+        }}
+        onBlur={() => setOpen(false)}
+      >
+        <HelpCircle className="h-3.5 w-3.5" />
+      </button>
+      {open ? (
+        <span className="absolute left-1/2 top-5 z-30 w-72 -translate-x-1/2 rounded-md border border-stone-200 bg-white p-3 text-left text-xs font-normal leading-5 text-stone-700 shadow-lg">
+          {text}
+        </span>
+      ) : null}
+    </span>
   );
 }
 
@@ -958,59 +977,42 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
   return (
     <form onSubmit={saveSettings} className="space-y-4">
       <Panel title="Accounts Payable settings">
-        <div className="grid gap-4 xl:grid-cols-3">
+        <div className="grid gap-4 lg:grid-cols-2">
           <Section title="Workflow controls">
             <div className="space-y-3">
               <SettingCheckbox label="Approval required" checked={settingsForm.approval_required} onChange={(value) => setSettingsForm((form) => ({ ...form, approval_required: value }))} help="Requires supplier transactions to be approved before posting once posting workflow is connected." />
-              <SettingCheckbox label="Duplicate invoice warning" checked={settingsForm.duplicate_invoice_warning} onChange={(value) => setSettingsForm((form) => ({ ...form, duplicate_invoice_warning: value }))} help="Shows a warning when a supplier reference looks like an existing invoice." />
-              <SettingCheckbox label="Allow future posting dates" checked={settingsForm.allow_future_posting_dates} onChange={(value) => setSettingsForm((form) => ({ ...form, allow_future_posting_dates: value }))} help="Allows documents to be dated after today's date." />
-              <SettingCheckbox label="Automatic invoice numbering" checked={settingsForm.automatic_invoice_numbering} onChange={(value) => setSettingsForm((form) => ({ ...form, automatic_invoice_numbering: value }))} help="Lets EPOS suggest supplier invoice references when a supplier document has no clear number." />
-            </div>
-          </Section>
-          <Section title="Defaults">
-            <div className="grid gap-3">
-              <SettingField label="Default payment terms" help="Default number of days used when a new supplier has no terms set.">
-                <Input type="number" value={settingsForm.default_payment_terms_days || ""} onChange={(e) => setSettingsForm((form) => ({ ...form, default_payment_terms_days: e.target.value }))} className="h-9" />
-              </SettingField>
-              <AccountCodeSelect accounts={expenseAccounts} value={settingsForm.default_purchase_account || ""} onChange={(value) => setSettingsForm((form) => ({ ...form, default_purchase_account: value }))} label="Default purchase account" />
-              <SettingField label="Default VAT code" help="Default VAT code suggested for supplier transactions until supplier learning improves it.">
-                <Input value={settingsForm.default_vat_code || ""} onChange={(e) => setSettingsForm((form) => ({ ...form, default_vat_code: e.target.value }))} className="h-9" />
-              </SettingField>
-              <SettingField label="Default currency" help="Currency used for new suppliers and supplier documents when no currency is detected.">
-                <select value={settingsForm.default_currency || "GBP"} onChange={(e) => setSettingsForm((form) => ({ ...form, default_currency: e.target.value }))} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm">
-                  {["GBP", "EUR", "USD"].map((currency) => <option key={currency} value={currency}>{currency}</option>)}
-                </select>
-              </SettingField>
-              <AccountCodeSelect accounts={bankAccounts} value={settingsForm.default_bank_account || ""} onChange={(value) => setSettingsForm((form) => ({ ...form, default_bank_account: value }))} label="Default bank account" />
+              <p className="rounded-lg border border-stone-200 bg-stone-50 p-3 text-xs leading-5 text-stone-600">
+                Duplicate invoice checks are handled by the posting workflow against each supplier ledger. Supplier defaults such as nominal account, VAT, terms, currency and bank details are managed on the supplier record.
+              </p>
             </div>
           </Section>
           <Section title="Behaviour">
             <div className="grid gap-3">
-              <SettingField label="Supplier numbering" help="Controls how supplier codes are suggested for new supplier records.">
+              <SettingField label="Supplier numbering" help="Controls how new supplier records are numbered in the supplier master. Manual means users choose the supplier code. Automatic options can be connected later to a numbering rule.">
                 <select value={settingsForm.supplier_numbering || "manual"} onChange={(e) => setSettingsForm((form) => ({ ...form, supplier_numbering: e.target.value }))} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm">
                   <option value="manual">Manual</option>
                   <option value="automatic">Automatic</option>
                   <option value="prefix">Prefix based</option>
                 </select>
               </SettingField>
-              <SettingField label="AI matching threshold" help="Minimum confidence required before EPOS suggests supplier matches. Informational until AI matching workflow is connected.">
+              <SettingField label="AI matching threshold" help="Minimum confidence percentage before EPOS suggests a supplier or document match. Lower values show more suggestions; higher values reduce false matches. This does not post anything automatically.">
                 <Input type="number" min="0" max="100" value={settingsForm.ai_matching_threshold || ""} onChange={(e) => setSettingsForm((form) => ({ ...form, ai_matching_threshold: e.target.value }))} className="h-9" />
               </SettingField>
-              <SettingField label="Document matching behaviour" help="Controls how submitted supplier documents should be matched to supplier ledger records in future workflows.">
+              <SettingField label="Document matching behaviour" help="Controls how uploaded documents are handled when EPOS thinks they match supplier ledger activity. Review before matching keeps user approval in the workflow.">
                 <select value={settingsForm.document_matching_behaviour || "review"} onChange={(e) => setSettingsForm((form) => ({ ...form, document_matching_behaviour: e.target.value }))} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm">
                   <option value="review">Review before matching</option>
                   <option value="suggest">Suggest only</option>
                   <option value="auto_high_confidence">Auto-match high confidence</option>
                 </select>
               </SettingField>
-              <SettingField label="Payment on account behaviour" help="Controls how supplier payments without invoices should be treated in the supplier ledger UI.">
+              <SettingField label="Payment on account behaviour" help="Controls supplier payments where no invoice exists yet. Holding them keeps the balance available for future allocation without creating an expense.">
                 <select value={settingsForm.payment_on_account_behaviour || "hold"} onChange={(e) => setSettingsForm((form) => ({ ...form, payment_on_account_behaviour: e.target.value }))} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm">
                   <option value="hold">Hold for future allocation</option>
                   <option value="warn">Warn before saving</option>
                   <option value="require_allocation">Require allocation</option>
                 </select>
               </SettingField>
-              <SettingField label="Expense behaviour" help="Controls whether small supplier purchases should default to expense-style ledger entries.">
+              <SettingField label="Expense behaviour" help="Controls whether small supplier purchases can be entered directly as expenses in the supplier ledger instead of creating a creditor invoice.">
                 <select value={settingsForm.expense_behaviour || "allow"} onChange={(e) => setSettingsForm((form) => ({ ...form, expense_behaviour: e.target.value }))} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm">
                   <option value="allow">Allow expense entries</option>
                   <option value="review">Review expense entries</option>
