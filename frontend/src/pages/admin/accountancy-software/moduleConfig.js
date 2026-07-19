@@ -67,7 +67,7 @@ export const MODULE_DETAILS = {
   },
   payables: {
     title: "Accounts Payable",
-    manage: ["Supplier records", "Supplier ledger", "Documents", "Activity"],
+    manage: ["Supplier cards", "Supplier records", "Supplier ledger", "Settings"],
     statLabel: "Supplier balances",
     stat: (workspace) => formatMoney(workspace?.accounts_payable?.dashboard?.outstanding_total || workspace?.summary?.ap_outstanding || 0),
     tabs: ["Dashboard", "Suppliers", "Settings"],
