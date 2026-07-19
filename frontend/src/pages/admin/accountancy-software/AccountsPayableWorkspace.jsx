@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { api, formatApiError } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -306,12 +306,7 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
       .reduce((sum, payment) => sum + asNumber(payment.amount || payment.gross_amount), 0);
   }
 
-  function supplierLastActivity(supplierId) {
-    const rows = supplierLedgerRows(supplierId);
-    return rows.length ? rows[rows.length - 1].date : null;
-  }
-
-  function supplierLedgerRows(supplierId) {
+  const supplierLedgerRows = useCallback((supplierId) => {
     const baseRows = [
       ...invoices
         .filter((invoice) => invoice.supplier_id === supplierId)
@@ -390,6 +385,11 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
       runningBalance += asNumber(row.credit) - asNumber(row.debit);
       return { ...row, runningBalance };
     });
+  }, [creditNotes, expenses, invoices, ledgerDraftRows, payments]);
+
+  function supplierLastActivity(supplierId) {
+    const rows = supplierLedgerRows(supplierId);
+    return rows.length ? rows[rows.length - 1].date : null;
   }
 
   function openTransactionForm(type, row) {
@@ -471,8 +471,10 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
     .sort((a, b) => new Date(b.date) - new Date(a.date))
     .slice(0, 6);
 
-  const selectedLedgerRows = selectedSupplier ? supplierLedgerRows(selectedSupplier.id) : [];
-  const visibleLedgerRows = selectedLedgerRows.filter((row) => {
+  const selectedLedgerRows = useMemo(() => (
+    selectedSupplier ? supplierLedgerRows(selectedSupplier.id) : []
+  ), [selectedSupplier, supplierLedgerRows]);
+  const visibleLedgerRows = useMemo(() => selectedLedgerRows.filter((row) => {
     const typeOk = ledgerTypeFilter === "All" || row.type === ledgerTypeFilter;
     const statusOk = ledgerStatusFilter === "All" || row.status === ledgerStatusFilter;
     const rowDate = toInputDate(row.date);
@@ -481,12 +483,14 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
     const needle = ledgerSearch.trim().toLowerCase();
     const searchOk = !needle || `${row.type} ${row.reference} ${row.description} ${row.status}`.toLowerCase().includes(needle);
     return typeOk && statusOk && fromOk && toOk && searchOk;
-  });
-  const ledgerStatuses = ["All", ...Array.from(new Set(selectedLedgerRows.map((row) => row.status).filter(Boolean)))];
-  const ledgerTotals = visibleLedgerRows.reduce((totals, row) => ({
+  }), [ledgerDateFrom, ledgerDateTo, ledgerSearch, ledgerStatusFilter, ledgerTypeFilter, selectedLedgerRows]);
+  const ledgerStatuses = useMemo(() => (
+    ["All", ...Array.from(new Set(selectedLedgerRows.map((row) => row.status).filter(Boolean)))]
+  ), [selectedLedgerRows]);
+  const ledgerTotals = useMemo(() => visibleLedgerRows.reduce((totals, row) => ({
     debit: totals.debit + asNumber(row.debit),
     credit: totals.credit + asNumber(row.credit),
-  }), { debit: 0, credit: 0 });
+  }), { debit: 0, credit: 0 }), [visibleLedgerRows]);
   const ledgerClosingBalance = visibleLedgerRows.length ? visibleLedgerRows[visibleLedgerRows.length - 1].runningBalance : 0;
 
   function exportLedgerRows() {
@@ -534,13 +538,15 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
     }));
   }, [auditTrail, selectedLedgerRows, selectedSupplier]);
 
-  const auditActions = ["All", ...Array.from(new Set(supplierAuditRows.map((row) => row.action).filter(Boolean)))];
-  const visibleAuditRows = supplierAuditRows.filter((row) => {
+  const auditActions = useMemo(() => (
+    ["All", ...Array.from(new Set(supplierAuditRows.map((row) => row.action).filter(Boolean)))]
+  ), [supplierAuditRows]);
+  const visibleAuditRows = useMemo(() => supplierAuditRows.filter((row) => {
     const actionOk = auditActionFilter === "All" || row.action === auditActionFilter;
     const needle = auditSearch.trim().toLowerCase();
     const searchOk = !needle || `${row.date} ${row.user} ${row.action} ${row.description}`.toLowerCase().includes(needle);
     return actionOk && searchOk;
-  });
+  }), [auditActionFilter, auditSearch, supplierAuditRows]);
 
   function exportAuditRows() {
     const header = "Date,User,Action,Description";
