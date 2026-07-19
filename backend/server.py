@@ -200,6 +200,13 @@ submissions = Table(
     Column("coding_fields", Text),
     Column("ai_client_approved", Boolean, default=False),
     Column("review_status", String(32), default="inbox", index=True),
+    Column("document_direction", String(32), index=True),
+    Column("accounting_destination", String(64), index=True),
+    Column("customer_match_json", Text),
+    Column("duplicate_warning_json", Text),
+    Column("publish_status", String(64), index=True),
+    Column("published_ar_invoice_id", String(36), index=True),
+    Column("routing_history_json", Text),
     Column("reviewed_at", String(64)),
     Column("submitted_at", String(64), index=True),
     Column("client_business_name", String(255)),
@@ -2586,6 +2593,11 @@ def serialize_submission(d: dict) -> dict:
     d["review_status"] = d.get("review_status") or "inbox"
     d["ai_extracted_fields"] = parse_json_object(d.get("ai_extracted_fields")) or {}
     d["coding_fields"] = parse_json_object(d.get("coding_fields")) or {}
+    d["document_direction"] = d.get("document_direction") or ("sales" if d.get("type") == "sales" else "purchase" if d.get("type") == "purchase" else "unclassified")
+    d["accounting_destination"] = d.get("accounting_destination") or ("epos_native_ar" if d.get("type") == "sales" else "")
+    d["customer_match"] = parse_json_object(d.get("customer_match_json")) or {}
+    d["duplicate_warning"] = parse_json_object(d.get("duplicate_warning_json")) or {}
+    d["routing_history"] = parse_json_object(d.get("routing_history_json")) or {"events": []}
     return d
 
 
@@ -7468,7 +7480,7 @@ async def create_ar_invoice_record(session: AsyncSession, client_id: str, payloa
         prefix = str(ar_settings.get("invoice_number_prefix") or "SINV")
         invoice_number = f"{prefix}{next_number:05d}"
         await session.execute(update(accounting_ar_settings).where(accounting_ar_settings.c.client_id == client_id).values(next_invoice_number=next_number + 1, updated_at=utc_now_iso()))
-    elif bool(ar_settings.get("duplicate_invoice_warning", True)):
+    elif bool(ar_settings.get("duplicate_invoice_warning", True)) and not bool(payload.get("allow_duplicate")):
         duplicate = await one(session, select(accounting_ar_invoices).where(accounting_ar_invoices.c.client_id == client_id, accounting_ar_invoices.c.customer_id == customer["id"], func.lower(accounting_ar_invoices.c.invoice_number) == invoice_number.lower()))
         if duplicate:
             raise HTTPException(status_code=400, detail="A sales invoice with this number already exists for this customer.")
@@ -7505,6 +7517,211 @@ async def create_ar_invoice_record(session: AsyncSession, client_id: str, payloa
     await add_accounting_audit(session, client_id, actor_id, "sales_invoice_created", "accounts_receivable", row["id"], {"invoice_number": invoice_number, "status": row["status"]})
     fresh = await accounts_receivable_workspace(session, client_id)
     return next((item for item in fresh["invoices"] if item["id"] == row["id"]), serialize_ar_invoice(row, lines, customer))
+
+
+def sales_submission_fields(submission: dict, reviewed_fields: Optional[dict] = None) -> dict:
+    ai_fields = parse_json_object(submission.get("ai_extracted_fields")) or {}
+    coding_fields = parse_json_object(submission.get("coding_fields")) or {}
+    source = {**ai_fields, **coding_fields, **(reviewed_fields or {})}
+    lines = source.get("lines") if isinstance(source.get("lines"), list) else source.get("line_items")
+    if not isinstance(lines, list):
+        lines = []
+    normalized_lines = []
+    for line in lines[:100]:
+        if not isinstance(line, dict):
+            continue
+        normalized_lines.append(
+            {
+                "description": str(line.get("description") or "").strip(),
+                "quantity": str(line.get("quantity") or line.get("units") or "1").strip(),
+                "unit_price": str(line.get("unit_price") or line.get("price") or "").strip(),
+                "net_amount": str(line.get("net_amount") or line.get("net") or "").strip(),
+                "vat_code": str(line.get("vat_code") or source.get("vat_code") or "").strip(),
+                "vat_amount": str(line.get("vat_amount") or line.get("vat") or "").strip(),
+                "gross_amount": str(line.get("gross_amount") or line.get("gross") or line.get("total") or "").strip(),
+                "nominal_account_code": str(line.get("nominal_account_code") or line.get("sales_account_code") or line.get("account_code") or line.get("category") or source.get("sales_account_code") or source.get("category") or "").strip(),
+                "sales_account_code": str(line.get("sales_account_code") or line.get("nominal_account_code") or line.get("account_code") or line.get("category") or source.get("sales_account_code") or source.get("category") or "").strip(),
+            }
+        )
+    if not normalized_lines and (source.get("net_amount") or source.get("net") or source.get("gross_amount") or source.get("total") or submission.get("amount")):
+        normalized_lines.append(
+            {
+                "description": str(source.get("description") or submission.get("description") or source.get("invoice_number") or "Sales invoice").strip(),
+                "quantity": "1",
+                "unit_price": str(source.get("net_amount") or source.get("net") or source.get("gross_amount") or source.get("total") or submission.get("amount") or "").strip(),
+                "net_amount": str(source.get("net_amount") or source.get("net") or "").strip(),
+                "vat_code": str(source.get("vat_code") or "").strip(),
+                "vat_amount": str(source.get("vat_amount") or source.get("vat") or "").strip(),
+                "gross_amount": str(source.get("gross_amount") or source.get("gross") or source.get("total") or submission.get("amount") or "").strip(),
+                "nominal_account_code": str(source.get("nominal_account_code") or source.get("sales_account_code") or source.get("category") or "").strip(),
+                "sales_account_code": str(source.get("sales_account_code") or source.get("nominal_account_code") or source.get("category") or "").strip(),
+            }
+        )
+    try:
+        payment_terms_days = int(source.get("payment_terms_days") or 30)
+    except (TypeError, ValueError):
+        payment_terms_days = 30
+    fields = {
+        "customer_id": str(source.get("customer_id") or "").strip(),
+        "customer_name": str(source.get("customer_name") or source.get("business_name") or source.get("vendor_name") or "").strip(),
+        "customer_email": str(source.get("customer_email") or source.get("email") or "").strip(),
+        "customer_reference": str(source.get("customer_reference") or source.get("account_code") or source.get("customer_code") or "").strip(),
+        "account_code": str(source.get("account_code") or source.get("customer_reference") or source.get("customer_code") or "").strip(),
+        "create_new_customer": bool(source.get("create_new_customer")),
+        "invoice_number": str(source.get("invoice_number") or source.get("bill_number") or source.get("reference") or "").strip(),
+        "invoice_date": str(source.get("invoice_date") or source.get("date") or submission.get("date") or "").strip(),
+        "due_date": str(source.get("due_date") or "").strip(),
+        "payment_terms_days": payment_terms_days,
+        "currency": str(source.get("currency") or "GBP").strip().upper()[:8] or "GBP",
+        "net_amount": str(source.get("net_amount") or source.get("net") or "").strip(),
+        "vat_amount": str(source.get("vat_amount") or source.get("vat") or "").strip(),
+        "gross_amount": str(source.get("gross_amount") or source.get("gross") or source.get("total") or submission.get("amount") or "").strip(),
+        "vat_code": str(source.get("vat_code") or "").strip(),
+        "sales_account_code": str(source.get("sales_account_code") or source.get("nominal_account_code") or source.get("category") or "").strip(),
+        "description": str(source.get("description") or submission.get("description") or "").strip(),
+        "lines": normalized_lines,
+        "line_items": normalized_lines,
+        "field_confidence_scores": source.get("field_confidence_scores") if isinstance(source.get("field_confidence_scores"), dict) else {},
+        "overall_confidence": source.get("overall_confidence") or submission.get("ai_review_status") or "",
+        "corrected_fields": source.get("corrected_fields") if isinstance(source.get("corrected_fields"), dict) else {},
+        "correction_history": source.get("correction_history") if isinstance(source.get("correction_history"), list) else [],
+        "low_confidence_warnings": source.get("low_confidence_warnings") if isinstance(source.get("low_confidence_warnings"), list) else [],
+        "reviewer_notes": str(source.get("reviewer_notes") or "").strip(),
+        "document_type": "sales_invoice",
+        "document_direction": "sales",
+        "accounting_destination": "epos_native_ar",
+    }
+    return fields
+
+
+def sales_submission_payload_for_ar(submission: dict, fields: dict, allow_duplicate: bool = False) -> dict:
+    return {
+        "customer_id": fields.get("customer_id"),
+        "business_name": fields.get("customer_name"),
+        "name": fields.get("customer_name"),
+        "email": fields.get("customer_email"),
+        "customer_code": fields.get("customer_reference") or fields.get("account_code"),
+        "payment_terms_days": fields.get("payment_terms_days"),
+        "default_sales_account": fields.get("sales_account_code"),
+        "invoice_number": fields.get("invoice_number"),
+        "reference": fields.get("customer_reference") or fields.get("invoice_number"),
+        "invoice_date": fields.get("invoice_date") or submission.get("date"),
+        "due_date": fields.get("due_date"),
+        "currency": fields.get("currency") or "GBP",
+        "net_amount": fields.get("net_amount"),
+        "vat_amount": fields.get("vat_amount"),
+        "gross_amount": fields.get("gross_amount") or submission.get("amount"),
+        "vat_code": fields.get("vat_code"),
+        "description": fields.get("description") or submission.get("description"),
+        "lines": [
+            {
+                "description": line.get("description"),
+                "quantity": line.get("quantity"),
+                "unit_price": line.get("unit_price"),
+                "net_amount": line.get("net_amount"),
+                "vat_amount": line.get("vat_amount"),
+                "gross_amount": line.get("gross_amount"),
+                "vat_code": line.get("vat_code"),
+                "nominal_account_code": line.get("nominal_account_code") or line.get("sales_account_code"),
+            }
+            for line in fields.get("lines", [])
+        ],
+        "source_submission_id": str(submission["id"]),
+        "attachment_path": submission.get("image_filename") or "",
+        "extracted_json": fields,
+        "allow_duplicate": allow_duplicate,
+    }
+
+
+async def sales_customer_match_suggestions(session: AsyncSession, client_id: str, fields: dict, limit: int = 5) -> dict:
+    customer_id = str(fields.get("customer_id") or "").strip()
+    if customer_id:
+        customer = await get_ar_customer_or_404(session, client_id, customer_id)
+        contact = await one(session, select(accounting_contacts).where(accounting_contacts.c.id == customer.get("contact_id")))
+        return {"matched": True, "suggestions": [serialize_ar_customer(customer, contact or {})]}
+    customer_name = str(fields.get("customer_name") or "").strip().lower()
+    customer_email = str(fields.get("customer_email") or "").strip().lower()
+    customer_reference = str(fields.get("customer_reference") or fields.get("account_code") or "").strip().lower()
+    contacts = await many(session, select(accounting_contacts).where(accounting_contacts.c.client_id == client_id, accounting_contacts.c.contact_type == "customer"))
+    profiles = await many(session, select(accounting_ar_customer_profiles).where(accounting_ar_customer_profiles.c.client_id == client_id))
+    contact_by_id = {str(contact.get("id")): contact for contact in contacts}
+    suggestions = []
+    for profile in profiles:
+        contact = contact_by_id.get(str(profile.get("contact_id"))) or {}
+        name = str(contact.get("name") or profile.get("trading_name") or "").lower()
+        email = str(contact.get("email") or "").lower()
+        code = str(contact.get("account_code") or profile.get("customer_code") or "").lower()
+        score = 0
+        reasons = []
+        if customer_reference and customer_reference == code:
+            score += 95
+            reasons.append("account_code")
+        if customer_email and customer_email == email:
+            score += 90
+            reasons.append("email")
+        if customer_name and customer_name == name:
+            score += 85
+            reasons.append("name")
+        elif customer_name and (customer_name in name or name in customer_name):
+            score += 55
+            reasons.append("partial_name")
+        if score:
+            suggestions.append({**serialize_ar_customer(profile, contact), "match_score": min(score, 100), "match_reasons": reasons})
+    suggestions.sort(key=lambda row: int(row.get("match_score") or 0), reverse=True)
+    return {"matched": bool(suggestions and suggestions[0].get("match_score", 0) >= 85), "suggestions": suggestions[:limit]}
+
+
+async def sales_duplicate_warning(session: AsyncSession, client_id: str, fields: dict) -> dict:
+    invoice_number = str(fields.get("invoice_number") or "").strip()
+    customer_id = str(fields.get("customer_id") or "").strip()
+    customer_name = str(fields.get("customer_name") or "").strip().lower()
+    gross_amount = money(fields.get("gross_amount"))
+    if not invoice_number:
+        return {"has_warning": False, "severity": "none", "matches": [], "message": ""}
+    conditions = [
+        accounting_ar_invoices.c.client_id == client_id,
+        func.lower(accounting_ar_invoices.c.invoice_number) == invoice_number.lower(),
+        accounting_ar_invoices.c.status != "void",
+    ]
+    if customer_id:
+        conditions.append(accounting_ar_invoices.c.customer_id == customer_id)
+    candidates = await many(session, select(accounting_ar_invoices).where(and_(*conditions)).limit(20))
+    if not customer_id and customer_name and candidates:
+        customer_ids = list({str(row.get("customer_id")) for row in candidates if row.get("customer_id")})
+        profiles = await many(session, select(accounting_ar_customer_profiles).where(accounting_ar_customer_profiles.c.id.in_(customer_ids))) if customer_ids else []
+        contacts = await many(session, select(accounting_contacts).where(accounting_contacts.c.id.in_([row.get("contact_id") for row in profiles]))) if profiles else []
+        contact_by_id = {str(contact.get("id")): contact for contact in contacts}
+        profile_by_id = {str(profile.get("id")): profile for profile in profiles if customer_name in str((contact_by_id.get(str(profile.get("contact_id"))) or {}).get("name") or profile.get("trading_name") or "").lower()}
+        candidates = [row for row in candidates if str(row.get("customer_id")) in profile_by_id]
+    matches = []
+    for row in candidates:
+        amount_match = gross_amount == Decimal("0.00") or money(row.get("gross_amount")) == gross_amount
+        matches.append(
+            {
+                "invoice_id": row.get("id"),
+                "customer_id": row.get("customer_id"),
+                "invoice_number": row.get("invoice_number"),
+                "gross_amount": row.get("gross_amount"),
+                "invoice_date": row.get("invoice_date"),
+                "status": row.get("status"),
+                "amount_match": amount_match,
+            }
+        )
+    has_warning = bool(matches)
+    return {
+        "has_warning": has_warning,
+        "severity": "warning" if has_warning else "none",
+        "matches": matches,
+        "message": f"Possible duplicate sales invoice {invoice_number} found in Accounts Receivable." if has_warning else "",
+    }
+
+
+def append_submission_route_event(existing_value: Optional[str], event: dict) -> str:
+    history = parse_json_object(existing_value) or {"events": []}
+    events = history.get("events") if isinstance(history.get("events"), list) else []
+    events.append({"at": utc_now_iso(), **event})
+    history["events"] = events[-100:]
+    return json.dumps(history)
 
 
 @api.post("/admin/accounting/clients/{client_id}/ap/suppliers")
@@ -11152,6 +11369,48 @@ async def publish_submission_to_native_accounting(
             "outstanding_amount": ap_invoice.get("outstanding_amount"),
             "created_at": ap_invoice.get("created_at"),
         }
+    existing_ar_invoice = await one(
+        session,
+        select(accounting_ar_invoices).where(
+            accounting_ar_invoices.c.client_id == client_id,
+            accounting_ar_invoices.c.source_submission_id == str(submission["id"]),
+            accounting_ar_invoices.c.status != "void",
+        ),
+    )
+    if existing_ar_invoice:
+        return {
+            "provider": "epos_native",
+            "entity": "SalesInvoice",
+            "id": existing_ar_invoice.get("id"),
+            "reference": existing_ar_invoice.get("invoice_number"),
+            "status": existing_ar_invoice.get("status"),
+            "gross_amount": existing_ar_invoice.get("gross_amount"),
+            "outstanding_amount": existing_ar_invoice.get("outstanding_amount"),
+            "already_posted": True,
+        }
+    sales_fields = sales_submission_fields(submission, coding_fields)
+    if not sales_fields.get("customer_id") and not sales_fields.get("customer_name"):
+        raise HTTPException(status_code=400, detail="Customer is required before publishing to Accounts Receivable.")
+    if not sales_fields.get("invoice_number"):
+        raise HTTPException(status_code=400, detail="Sales invoice number is required before publishing to Accounts Receivable.")
+    if money(sales_fields.get("gross_amount")) == Decimal("0.00") and money(sales_fields.get("net_amount")) == Decimal("0.00"):
+        raise HTTPException(status_code=400, detail="Add a net/gross value before publishing to Accounts Receivable.")
+    ar_invoice = await create_ar_invoice_record(
+        session,
+        client_id,
+        sales_submission_payload_for_ar(submission, sales_fields, bool(coding_fields.get("allow_duplicate"))),
+        actor_id,
+    )
+    return {
+        "provider": "epos_native",
+        "entity": "SalesInvoice",
+        "id": ar_invoice.get("id"),
+        "reference": ar_invoice.get("invoice_number"),
+        "status": ar_invoice.get("status"),
+        "gross_amount": ar_invoice.get("gross_amount"),
+        "outstanding_amount": ar_invoice.get("outstanding_amount"),
+        "created_at": ar_invoice.get("created_at"),
+    }
     contact_type = "customer" if is_sales else "supplier"
     contact_name = coding_fields.get("customer_name") if is_sales else coding_fields.get("vendor_name")
     contact_name = contact_name or coding_fields.get("vendor_name") or coding_fields.get("customer_name") or submission.get("client_business_name") or ""
@@ -13260,6 +13519,7 @@ async def list_submissions(
     type: Optional[str] = None,
     review_status: Optional[str] = None,
     q: Optional[str] = None,
+    segmented: bool = False,
     user: dict = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ):
@@ -13268,13 +13528,17 @@ async def list_submissions(
     conditions = []
     if client_id:
         conditions.append(submissions.c.client_id == client_id)
-    if type in ("purchase", "sales"):
-        conditions.append(submissions.c.type == type)
+    type_map = {"purchase_invoice": "purchase", "sales_invoice": "sales"}
+    normalized_type = type_map.get(str(type or "").strip().lower(), type)
+    if normalized_type in ("purchase", "sales"):
+        conditions.append(submissions.c.type == normalized_type)
+    elif normalized_type in ("unclassified", "needs_review"):
+        conditions.append(or_(submissions.c.type.is_(None), ~submissions.c.type.in_(["purchase", "sales"])))
     if review_status == "inbox":
         conditions.append(or_(submissions.c.review_status == "inbox", submissions.c.review_status.is_(None)))
     elif review_status == "archived":
-        conditions.append(submissions.c.review_status.in_(["archived", "published"]))
-    elif review_status in ("rejected", "published"):
+        conditions.append(submissions.c.review_status.in_(["archived", "published", "published_to_ar"]))
+    elif review_status in ("rejected", "published", "needs_review", "sales_review", "sales_ready_to_publish", "published_to_ar"):
         conditions.append(submissions.c.review_status == review_status)
     if q:
         like = f"%{q}%"
@@ -13293,7 +13557,187 @@ async def list_submissions(
             client_map[cid] = serialize_user(cu) if cu else None
         d["client"] = client_map.get(cid)
         result.append(d)
+    if segmented:
+        return {
+            "purchase_invoices": [item for item in result if item.get("type") == "purchase"],
+            "sales_invoices": [item for item in result if item.get("type") == "sales"],
+            "unclassified": [item for item in result if item.get("type") not in {"purchase", "sales"}],
+        }
     return result
+
+
+async def get_sales_submission_or_404(session: AsyncSession, submission_id: str) -> dict:
+    doc = await one(session, select(submissions).where(submissions.c.id == submission_id))
+    if not doc:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    if doc.get("type") != "sales" and doc.get("document_direction") != "sales" and doc.get("ai_document_type") != "sales_invoice":
+        raise HTTPException(status_code=400, detail="Submitted item is not routed as a sales invoice.")
+    return doc
+
+
+@api.get("/admin/submissions/{submission_id}/sales-invoice-review")
+async def get_sales_invoice_review(
+    submission_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await require_document_processing_module(session)
+    doc = await get_sales_submission_or_404(session, submission_id)
+    fields = sales_submission_fields(doc)
+    match = parse_json_object(doc.get("customer_match_json")) or await sales_customer_match_suggestions(session, str(doc["client_id"]), fields)
+    duplicate = parse_json_object(doc.get("duplicate_warning_json")) or await sales_duplicate_warning(session, str(doc["client_id"]), fields)
+    return {
+        "submission": serialize_submission(doc),
+        "review": fields,
+        "customer_match": match,
+        "duplicate_warning": duplicate,
+        "publish_status": doc.get("publish_status") or ("published_to_ar" if doc.get("published_ar_invoice_id") else "not_published"),
+        "published_ar_invoice_id": doc.get("published_ar_invoice_id") or "",
+    }
+
+
+@api.put("/admin/submissions/{submission_id}/sales-invoice-review")
+async def save_sales_invoice_review(
+    submission_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await require_document_processing_module(session)
+    doc = await get_sales_submission_or_404(session, submission_id)
+    current = sales_submission_fields(doc)
+    reviewed = sales_submission_fields(doc, payload.get("review") if isinstance(payload.get("review"), dict) else payload)
+    corrected = dict(reviewed.get("corrected_fields") or {})
+    for key, value in reviewed.items():
+        if key in {"field_confidence_scores", "correction_history", "low_confidence_warnings"}:
+            continue
+        if current.get(key) != value:
+            corrected[key] = value
+    reviewed["corrected_fields"] = corrected
+    history = reviewed.get("correction_history") or []
+    history.append({"at": utc_now_iso(), "actor_id": str(user.get("id") or ""), "fields": sorted(corrected.keys())})
+    reviewed["correction_history"] = history[-100:]
+    match = await sales_customer_match_suggestions(session, str(doc["client_id"]), reviewed)
+    duplicate = await sales_duplicate_warning(session, str(doc["client_id"]), reviewed)
+    status = str(payload.get("review_status") or ("sales_ready_to_publish" if reviewed.get("invoice_number") and (reviewed.get("customer_id") or reviewed.get("customer_name")) else "sales_review")).strip().lower()
+    if status not in {"inbox", "needs_review", "sales_review", "sales_ready_to_publish", "rejected"}:
+        status = "sales_review"
+    await session.execute(
+        update(submissions)
+        .where(submissions.c.id == submission_id)
+        .values(
+            type="sales",
+            ai_document_type="sales_invoice",
+            ai_extracted_fields=json.dumps(reviewed),
+            coding_fields=json.dumps(reviewed),
+            review_status=status,
+            document_direction="sales",
+            accounting_destination="epos_native_ar",
+            customer_match_json=json.dumps(match),
+            duplicate_warning_json=json.dumps(duplicate),
+            routing_history_json=append_submission_route_event(doc.get("routing_history_json"), {"action": "sales_review_saved", "actor_id": str(user.get("id") or ""), "review_status": status}),
+            reviewed_at=utc_now_iso(),
+        )
+    )
+    await add_accounting_audit(session, str(doc["client_id"]), str(user.get("id") or ""), "sales_submission_review_saved", "submitted_items", submission_id, {"review_status": status, "duplicate_warning": duplicate.get("has_warning")})
+    await session.commit()
+    fresh = await one(session, select(submissions).where(submissions.c.id == submission_id))
+    return {"ok": True, "submission": serialize_submission(fresh), "review": reviewed, "customer_match": match, "duplicate_warning": duplicate}
+
+
+@api.post("/admin/submissions/{submission_id}/sales-invoice-review/customer-match")
+async def match_sales_invoice_customer(
+    submission_id: str,
+    payload: dict = {},
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await require_document_processing_module(session)
+    doc = await get_sales_submission_or_404(session, submission_id)
+    fields = sales_submission_fields(doc, payload)
+    match = await sales_customer_match_suggestions(session, str(doc["client_id"]), fields)
+    await session.execute(update(submissions).where(submissions.c.id == submission_id).values(customer_match_json=json.dumps(match)))
+    await session.commit()
+    return match
+
+
+@api.post("/admin/submissions/{submission_id}/sales-invoice-review/duplicate-check")
+async def check_sales_invoice_duplicate(
+    submission_id: str,
+    payload: dict = {},
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await require_document_processing_module(session)
+    doc = await get_sales_submission_or_404(session, submission_id)
+    fields = sales_submission_fields(doc, payload)
+    duplicate = await sales_duplicate_warning(session, str(doc["client_id"]), fields)
+    await session.execute(update(submissions).where(submissions.c.id == submission_id).values(duplicate_warning_json=json.dumps(duplicate)))
+    await session.commit()
+    return duplicate
+
+
+@api.post("/admin/submissions/{submission_id}/publish-to-ar")
+async def publish_sales_submission_to_ar(
+    submission_id: str,
+    payload: dict = {},
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await require_document_processing_module(session)
+    doc = await get_sales_submission_or_404(session, submission_id)
+    client = await get_user_by_id(session, str(doc["client_id"]))
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="EPOS native accounting is not enabled for this client.")
+    if doc.get("published_ar_invoice_id"):
+        existing = await get_ar_invoice_or_404(session, str(doc["client_id"]), str(doc["published_ar_invoice_id"]))
+        return {"ok": True, "already_published": True, "ar_invoice_id": existing["id"], "invoice": serialize_ar_invoice(existing), "publish_status": "published_to_ar"}
+    fields = sales_submission_fields(doc, payload.get("review") if isinstance(payload.get("review"), dict) else payload)
+    if not fields.get("customer_id") and not fields.get("customer_name"):
+        raise HTTPException(status_code=400, detail="Customer is required before publishing to Accounts Receivable.")
+    if not fields.get("invoice_number"):
+        raise HTTPException(status_code=400, detail="Sales invoice number is required before publishing to Accounts Receivable.")
+    if money(fields.get("gross_amount")) == Decimal("0.00") and money(fields.get("net_amount")) == Decimal("0.00"):
+        raise HTTPException(status_code=400, detail="Sales invoice amount is required before publishing to Accounts Receivable.")
+    duplicate = await sales_duplicate_warning(session, str(doc["client_id"]), fields)
+    allow_duplicate = bool(payload.get("allow_duplicate") or fields.get("allow_duplicate"))
+    if duplicate.get("has_warning") and not allow_duplicate:
+        await session.execute(update(submissions).where(submissions.c.id == submission_id).values(duplicate_warning_json=json.dumps(duplicate), publish_status="duplicate_warning"))
+        await session.commit()
+        raise HTTPException(status_code=409, detail=duplicate)
+    ar_invoice = await create_ar_invoice_record(session, str(doc["client_id"]), sales_submission_payload_for_ar(doc, fields, allow_duplicate), str(user.get("id") or ""))
+    publish_summary = {
+        "provider": "epos_native",
+        "destination": "accounts_receivable",
+        "entity": "SalesInvoice",
+        "id": ar_invoice.get("id"),
+        "invoice_number": ar_invoice.get("invoice_number"),
+        "status": ar_invoice.get("status"),
+        "gross_amount": ar_invoice.get("gross_amount"),
+    }
+    fields["accounting_publish"] = publish_summary
+    fields["native_accounting_publish"] = publish_summary
+    await session.execute(
+        update(submissions)
+        .where(submissions.c.id == submission_id)
+        .values(
+            type="sales",
+            ai_document_type="sales_invoice",
+            ai_extracted_fields=json.dumps(fields),
+            coding_fields=json.dumps(fields),
+            review_status="published_to_ar",
+            document_direction="sales",
+            accounting_destination="epos_native_ar",
+            duplicate_warning_json=json.dumps(duplicate),
+            publish_status="published_to_ar",
+            published_ar_invoice_id=ar_invoice.get("id"),
+            routing_history_json=append_submission_route_event(doc.get("routing_history_json"), {"action": "published_to_ar", "actor_id": str(user.get("id") or ""), "ar_invoice_id": ar_invoice.get("id")}),
+            reviewed_at=utc_now_iso(),
+        )
+    )
+    await add_accounting_audit(session, str(doc["client_id"]), str(user.get("id") or ""), "submitted_item_published_to_ar", "submitted_items", submission_id, {"ar_invoice_id": ar_invoice.get("id"), "invoice_number": ar_invoice.get("invoice_number")})
+    await session.commit()
+    return {"ok": True, "ar_invoice_id": ar_invoice.get("id"), "invoice": ar_invoice, "publish_status": "published_to_ar", "summary": publish_summary}
 
 
 @api.patch("/admin/submissions/{submission_id}/review-status")
@@ -13305,7 +13749,7 @@ async def update_submission_review_status(
 ):
     await require_document_processing_module(session)
     status = payload.review_status.strip().lower()
-    if status not in {"inbox", "archived", "rejected", "published"}:
+    if status not in {"inbox", "archived", "rejected", "published", "needs_review", "sales_review", "sales_ready_to_publish", "published_to_ar"}:
         raise HTTPException(status_code=400, detail="Invalid submission status")
     existing_submission = await one(session, select(submissions).where(submissions.c.id == submission_id))
     if not existing_submission:
@@ -13324,6 +13768,13 @@ async def update_submission_review_status(
                 coding_fields["quickbooks_publish"] = accounting_publish
             if accounting_publish.get("provider") == "epos_native":
                 coding_fields["native_accounting_publish"] = accounting_publish
+                if accounting_publish.get("entity") == "SalesInvoice":
+                    values["review_status"] = "published_to_ar"
+                    values["publish_status"] = "published_to_ar"
+                    values["published_ar_invoice_id"] = accounting_publish.get("id")
+                    values["document_direction"] = "sales"
+                    values["accounting_destination"] = "epos_native_ar"
+                    values["routing_history_json"] = append_submission_route_event(existing_submission.get("routing_history_json"), {"action": "published_to_ar", "actor_id": str(user.get("id") or ""), "ar_invoice_id": accounting_publish.get("id")})
         values["coding_fields"] = json.dumps(coding_fields)
         memory_updated = status == "published"
     result = await session.execute(
@@ -13337,7 +13788,7 @@ async def update_submission_review_status(
     await session.commit()
     return {
         "ok": True,
-        "review_status": status,
+        "review_status": values.get("review_status", status),
         "memory_updated": memory_updated,
         "supplier_name": supplier_name,
         "accounting_publish": accounting_publish,
