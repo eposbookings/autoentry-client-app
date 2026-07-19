@@ -27,7 +27,7 @@ import {
   statusBadgeClass,
 } from "./shared";
 
-const apTabs = ["Dashboard", "Suppliers", "Settings"];
+const apTabs = ["Dashboard", "Suppliers", "Settings", "Supplier Settings"];
 const supplierRecordTabs = ["General", "Ledger", "Audit Trail"];
 const transactionTypes = ["Purchase Invoice", "Credit Note", "Payment on Account", "Expense"];
 const statusOptions = ["Draft", "Posted", "Approved", "Paid", "Allocated", "Open"];
@@ -242,7 +242,7 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
   }, [ap.audit_trail, workspace.audit_trail]);
   const bankAccounts = useMemo(() => accounts.filter((account) => account.purpose === "Bank Account" || account.account_type === "Bank"), [accounts]);
   const expenseAccounts = useMemo(() => accounts.filter((account) => account.category === "Expense" || account.account_type === "Purchases" || account.account_type === "Overheads"), [accounts]);
-  const activeTab = apTabs.includes(tab) ? tab : "Dashboard";
+  const activeTab = tab === "Supplier Settings" ? "Settings" : apTabs.includes(tab) ? tab : "Dashboard";
 
   const [saving, setSaving] = useState(false);
   const [supplierQuery, setSupplierQuery] = useState("");
@@ -314,7 +314,7 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
 
   async function saveSettings(e) {
     e.preventDefault();
-    await run(async () => putJson("/ap/settings", settingsForm), "Accounts Payable settings saved");
+    await run(async () => putJson("/ap/settings", settingsForm), "Supplier settings saved");
   }
 
   function supplierById(id) {
@@ -983,7 +983,7 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
 
   return (
     <form onSubmit={saveSettings} className="space-y-4">
-      <Panel title="Accounts Payable settings">
+      <Panel title="Supplier settings">
         <div className="grid gap-4 lg:grid-cols-2">
           <Section title="Workflow controls">
             <div className="space-y-3">
@@ -1022,7 +1022,7 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
       </Panel>
       <div className="flex justify-end">
         <Button type="submit" disabled={saving || busy}>
-          <Save className="mr-2 h-4 w-4" /> Save AP settings
+          <Save className="mr-2 h-4 w-4" /> Save supplier settings
         </Button>
       </div>
     </form>
