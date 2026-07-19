@@ -27,7 +27,7 @@ import {
   statusBadgeClass,
 } from "./shared";
 
-const apTabs = ["Dashboard", "Suppliers", "Settings", "Supplier Settings"];
+const apTabs = ["Dashboard", "Suppliers"];
 const supplierRecordTabs = ["General", "Ledger", "Audit Trail"];
 const transactionTypes = ["Purchase Invoice", "Credit Note", "Payment on Account", "Expense"];
 const statusOptions = ["Draft", "Posted", "Approved", "Paid", "Allocated", "Open"];
@@ -242,7 +242,7 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
   }, [ap.audit_trail, workspace.audit_trail]);
   const bankAccounts = useMemo(() => accounts.filter((account) => account.purpose === "Bank Account" || account.account_type === "Bank"), [accounts]);
   const expenseAccounts = useMemo(() => accounts.filter((account) => account.category === "Expense" || account.account_type === "Purchases" || account.account_type === "Overheads"), [accounts]);
-  const activeTab = tab === "Supplier Settings" ? "Settings" : apTabs.includes(tab) ? tab : "Dashboard";
+  const activeTab = apTabs.includes(tab) ? tab : "Dashboard";
 
   const [saving, setSaving] = useState(false);
   const [supplierQuery, setSupplierQuery] = useState("");
@@ -481,7 +481,10 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
     if (!supplierDraft.name.trim()) return toast.error("Supplier name is required");
     if (!selectedSupplier?.id) return toast.error("Supplier record is unavailable");
     const saved = await run(
-      async () => putJson(`/ap/suppliers/${selectedSupplier.id}`, supplierDraft),
+      async () => {
+        await putJson(`/ap/suppliers/${selectedSupplier.id}`, supplierDraft);
+        await putJson("/ap/settings", settingsForm);
+      },
       "Supplier record saved"
     );
     if (!saved) return;
@@ -688,6 +691,26 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
                     <EditableField label="Phone" value={supplierDraft.phone} editable={supplierEditMode} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, phone: value }))} />
                     <EditableField label="Website" value={supplierDraft.website} editable={supplierEditMode} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, website: value }))} />
                     <EditableField label="Currency" value={supplierDraft.default_currency} editable={supplierEditMode} options={["GBP", "EUR", "USD"]} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, default_currency: value }))} />
+                  </div>
+                </Section>
+                <Section title="Supplier settings">
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <EditableField label="Approval required" checkbox value={settingsForm.approval_required} editable={supplierEditMode} help="Requires supplier transactions to be approved before posting once posting workflow is connected." onChange={(value) => setSettingsForm((form) => ({ ...form, approval_required: value }))} />
+                    <EditableField label="Supplier numbering" value={settingsForm.supplier_numbering || "manual"} editable={supplierEditMode} options={[
+                      { value: "manual", label: "Manual" },
+                      { value: "automatic", label: "Automatic" },
+                      { value: "prefix", label: "Prefix based" },
+                    ]} help="Controls how new supplier records are numbered in the supplier master." onChange={(value) => setSettingsForm((form) => ({ ...form, supplier_numbering: value }))} />
+                    <EditableField label="Payment on account behaviour" value={settingsForm.payment_on_account_behaviour || "hold"} editable={supplierEditMode} options={[
+                      { value: "hold", label: "Hold for future allocation" },
+                      { value: "warn", label: "Warn before saving" },
+                      { value: "require_allocation", label: "Require allocation" },
+                    ]} help="Controls supplier payments where no invoice exists yet." onChange={(value) => setSettingsForm((form) => ({ ...form, payment_on_account_behaviour: value }))} />
+                    <EditableField label="Expense behaviour" value={settingsForm.expense_behaviour || "allow"} editable={supplierEditMode} options={[
+                      { value: "allow", label: "Allow expense entries" },
+                      { value: "review", label: "Review expense entries" },
+                      { value: "disable", label: "Disable expense entries" },
+                    ]} help="Controls whether small supplier purchases can be entered directly as expenses in the supplier ledger." onChange={(value) => setSettingsForm((form) => ({ ...form, expense_behaviour: value }))} />
                   </div>
                 </Section>
                 <Section title="Addresses">
