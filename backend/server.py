@@ -56,7 +56,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from starlette.middleware.cors import CORSMiddleware
 
 # ---------- Config ----------
@@ -1676,6 +1676,30 @@ async def ensure_schema_columns(conn):
                 logger.info("Widened column %s.%s to TEXT", table.name, column.name)
 
 
+async def ensure_table_columns(conn, tables: tuple[Table, ...]):
+    dialect_name = conn.dialect.name
+    for table in tables:
+        existing_column_info = await conn.run_sync(
+            lambda sync_conn, table_name=table.name: {
+                col["name"]: col for col in inspect(sync_conn).get_columns(table_name)
+            }
+        )
+        existing_columns = set(existing_column_info)
+        for column in table.columns:
+            if column.primary_key or column.name in existing_columns:
+                continue
+            column_def = f"{quote_ident(column.name, dialect_name)} {column_sql_type(column)}"
+            if column.name == "status":
+                column_def += " DEFAULT 'active'"
+            await conn.execute(
+                text(
+                    f"ALTER TABLE {quote_ident(table.name, dialect_name)} "
+                    f"ADD COLUMN {column_def}"
+                )
+            )
+            logger.info("Added missing column %s.%s", table.name, column.name)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     for attempt in range(1, 31):
@@ -3050,6 +3074,34 @@ def parse_date_or_today(value: Any) -> date:
     return datetime.now(timezone.utc).date()
 
 
+def parse_ap_document_date(value: Any, field_label: str) -> date:
+    raw = str(value or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail=f"{field_label} is required.")
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d %b %Y", "%d %B %Y"):
+        try:
+            return datetime.strptime(raw[:32], fmt).date()
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(raw[:10]).date()
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"{field_label} must be a valid date.")
+
+
+def nominal_account_code_value(value: Any, default_account: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return str(default_account or "5000").strip()[:32]
+    if " - " in raw:
+        raw = raw.split(" - ", 1)[0].strip()
+    else:
+        match = re.match(r"^([A-Za-z0-9_.-]+)\s+", raw)
+        if match:
+            raw = match.group(1)
+    return raw[:32]
+
+
 def ap_line_values(raw_line: dict, default_account: str = "5000") -> dict:
     quantity = money(raw_line.get("quantity"), "1.00")
     unit_price = money(raw_line.get("unit_price") if raw_line.get("unit_price") not in (None, "") else raw_line.get("price"))
@@ -3060,7 +3112,7 @@ def ap_line_values(raw_line: dict, default_account: str = "5000") -> dict:
     gross_amount = money(raw_line.get("gross_amount")) if raw_line.get("gross_amount") not in (None, "") else net_amount + vat_amount
     return {
         "description": str(raw_line.get("description") or "").strip(),
-        "nominal_account_code": str(raw_line.get("nominal_account_code") or raw_line.get("account_code") or default_account or "5000").strip(),
+        "nominal_account_code": nominal_account_code_value(raw_line.get("nominal_account_code") or raw_line.get("account_code") or raw_line.get("sales_account_code") or raw_line.get("category"), default_account or "5000"),
         "quantity": money_str(quantity),
         "unit_price": money_str(unit_price),
         "discount_amount": money_str(discount),
@@ -7344,6 +7396,8 @@ async def create_ap_invoice_record(
     payload: dict,
     actor_id: Optional[str] = None,
 ) -> dict:
+    conn = await session.connection()
+    await ensure_table_columns(conn, (accounting_ap_invoices, accounting_ap_invoice_lines, accounting_ap_credit_notes, accounting_ap_payments))
     client = await get_client_or_404(session, client_id)
     if not is_native_accounting_client(client):
         raise HTTPException(status_code=400, detail="Enable EPOS native accounting before adding purchase invoices.")
@@ -7394,10 +7448,10 @@ async def create_ap_invoice_record(
     )
     if duplicate and bool(ap_settings.get("duplicate_invoice_warning", True)):
         raise HTTPException(status_code=409, detail={"has_warning": True, "message": f"Possible duplicate: supplier already has invoice {invoice_number}.", "matches": [serialize_ap_invoice(duplicate)]})
-    invoice_date = parse_date_or_today(payload.get("invoice_date") or payload.get("date")).isoformat()
+    invoice_date = parse_ap_document_date(payload.get("invoice_date") or payload.get("date"), "Invoice date").isoformat()
     due_date_raw = payload.get("due_date")
     if due_date_raw:
-        due_date = parse_date_or_today(due_date_raw).isoformat()
+        due_date = parse_ap_document_date(due_date_raw, "Due date").isoformat()
     else:
         due_date = (date.fromisoformat(invoice_date) + timedelta(days=int(supplier.get("payment_terms_days") or ap_settings.get("default_payment_terms_days") or 30))).isoformat()
     try:
@@ -14110,7 +14164,15 @@ async def update_submission_review_status(
         coding_fields = payload_fields if payload.coding_fields is not None else dict(stored_fields)
         supplier_name = str(coding_fields.get("vendor_name") or "").strip()
         if status in {"published_to_ap", "published_to_ar"}:
-            accounting_publish = await publish_submission_to_accounting_destination(session, existing_submission, coding_fields, str(user.get("id")))
+            try:
+                accounting_publish = await publish_submission_to_accounting_destination(session, existing_submission, coding_fields, str(user.get("id")))
+            except HTTPException:
+                raise
+            except SQLAlchemyError as exc:
+                await session.rollback()
+                logger.exception("Submitted Items publish failed for submission %s", submission_id)
+                destination_label = "Accounts Receivable" if route == "sales" else "Accounts Payable"
+                raise HTTPException(status_code=400, detail=f"Unable to publish invoice to {destination_label}: {str(exc.__cause__ or exc)[:300]}")
             accounting_publish = accounting_publish_contract(accounting_publish)
             coding_fields["accounting_publish"] = accounting_publish
             if accounting_publish.get("provider") == "quickbooks":
