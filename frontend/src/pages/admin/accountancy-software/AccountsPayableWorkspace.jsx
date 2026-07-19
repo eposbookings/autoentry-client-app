@@ -591,7 +591,7 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
     URL.revokeObjectURL(url);
   }
 
-  if (activeTab === "Dashboard") {
+  if (activeTab === "Dashboard" && !selectedSupplier) {
     return (
       <div className="space-y-4">
         <div className="grid gap-3 md:grid-cols-5">
@@ -635,7 +635,7 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
     );
   }
 
-  if (activeTab === "Suppliers") {
+  if (activeTab === "Suppliers" || (activeTab === "Dashboard" && selectedSupplier)) {
     if (selectedSupplier) {
       return (
         <div className="space-y-4">
