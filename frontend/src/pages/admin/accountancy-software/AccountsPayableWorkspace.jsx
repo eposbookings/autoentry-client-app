@@ -29,7 +29,7 @@ import {
 
 const apTabs = ["Dashboard", "Suppliers"];
 const supplierRecordTabs = ["General", "Ledger", "Audit Trail"];
-const transactionTypes = ["Purchase Invoice", "Credit Note", "Payment on Account", "Expense"];
+const transactionTypes = ["Purchase Invoice", "Supplier Credit Note", "Supplier Payment", "Payment on Account"];
 const statusOptions = ["Draft", "Posted", "Approved", "Paid", "Allocated", "Open"];
 
 const emptySupplierForm = {
@@ -63,6 +63,66 @@ function toInputDate(value) {
 function asNumber(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
+}
+
+function formatAmount(value) {
+  const n = asNumber(value);
+  return n ? n.toFixed(2) : "";
+}
+
+function purchaseDocumentLine(description = "", amount = "") {
+  return {
+    description,
+    purchase_nominal: "",
+    vat_code: "",
+    quantity: "1",
+    unit_price: amount,
+    net: amount,
+    vat: "",
+    gross: amount,
+  };
+}
+
+function documentNumberLabel(type) {
+  return type === "Supplier Credit Note" ? "Credit note number" : "Invoice / bill number";
+}
+
+function documentDateLabel(type) {
+  return type === "Supplier Credit Note" ? "Credit note date" : "Invoice date";
+}
+
+function isCreditDocument(type) {
+  return type === "Supplier Credit Note" || type === "Credit Note";
+}
+
+function isPaymentDocument(type) {
+  return type === "Supplier Payment" || type === "Payment on Account";
+}
+
+function isReadOnlyTransaction(draft) {
+  return !["draft", "awaiting approval"].includes(String(draft?.status || "Draft").toLowerCase());
+}
+
+function transactionLineTotals(lines = []) {
+  return lines.reduce((totals, line) => {
+    totals.net += asNumber(line.net);
+    totals.vat += asNumber(line.vat);
+    totals.gross += asNumber(line.gross);
+    return totals;
+  }, { net: 0, vat: 0, gross: 0 });
+}
+
+function ledgerImpactFor(type) {
+  if (isCreditDocument(type)) {
+    return {
+      debit: "Debit creditors control",
+      credit: "Credit purchase nominal/VAT",
+    };
+  }
+  return {
+    debit: "Debit purchase nominal/VAT",
+    credit: "Credit creditors control",
+  };
 }
 
 function normaliseSupplierDraft(supplier = {}) {
@@ -321,7 +381,7 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
           supplier_id: supplierId,
           source: "credit_note",
           date: note.credit_note_date || note.date || note.created_at,
-          type: "Credit Note",
+          type: "Supplier Credit Note",
           reference: note.credit_note_number || note.reference || "-",
           description: note.description || "Supplier credit note",
           debit: asNumber(note.gross_amount || note.total || note.amount),
@@ -385,55 +445,84 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
   function openTransactionForm(type, row) {
     setTransactionErrors({});
     const source = row?.source || "frontend";
+    const documentType = row?.type === "Credit Note" ? "Supplier Credit Note" : row?.type || type;
+    const gross = row?.gross || row?.gross_amount || row?.total || (row?.credit || row?.debit) || "";
+    const net = row?.net || row?.net_amount || "";
+    const vat = row?.vat || row?.vat_amount || "";
     setTransactionDraft({
       id: row?.id || "",
       ledgerKey: row?.ledgerKey || "",
       originalKey: source === "frontend" ? row?.originalKey || "" : row?.ledgerKey || "",
       supplier_id: row?.supplier_id || selectedSupplier?.id || selectedSupplierId,
+      supplier_name: selectedSupplier?.name || "",
+      supplier_code: selectedSupplier?.supplier_code || "",
       source,
-      type: row?.type || type,
+      type: documentType,
       date: toInputDate(row?.date) || todayInput(),
+      due_date: toInputDate(row?.due_date) || toInputDate(row?.date) || todayInput(),
+      payment_terms: row?.payment_terms || row?.payment_terms_days || selectedSupplier?.payment_terms_days || "30",
+      currency: row?.currency || selectedSupplier?.default_currency || "GBP",
+      document_number: row?.document_number || row?.invoice_number || row?.credit_note_number || (row?.reference === "-" ? "" : row?.reference || ""),
       reference: row?.reference === "-" ? "" : row?.reference || "",
       description: row?.description || "",
+      purchase_nominal: row?.purchase_nominal || row?.default_purchase_account || selectedSupplier?.default_purchase_account || "",
+      vat_code: row?.vat_code || row?.default_vat_code || selectedSupplier?.default_vat_code || "",
+      net: formatAmount(net),
+      vat: formatAmount(vat),
+      gross: formatAmount(gross),
       debit: row?.debit ? String(row.debit) : "",
       credit: row?.credit ? String(row.credit) : "",
       status: row?.status || "Draft",
+      attachment_name: row?.attachment_name || row?.attachment_url || row?.document_url || "",
+      payment_allocation: row?.payment_allocation || row?.bank_reference || "",
+      line_items: Array.isArray(row?.line_items) && row.line_items.length
+        ? row.line_items
+        : [purchaseDocumentLine(row?.description || "", formatAmount(net || gross))],
       notes: "",
     });
   }
 
   function validateTransaction() {
     const errors = {};
-    const debit = asNumber(transactionDraft?.debit);
-    const credit = asNumber(transactionDraft?.credit);
     if (!transactionDraft?.type) errors.type = "Transaction type is required";
+    if (!transactionDraft?.supplier_id) errors.supplier = "Supplier is required";
     if (!transactionDraft?.date) errors.date = "Date is required";
-    if (!transactionDraft?.reference?.trim()) errors.reference = "Reference is required";
+    if (!isPaymentDocument(transactionDraft?.type) && !transactionDraft?.document_number?.trim()) errors.document_number = `${documentNumberLabel(transactionDraft?.type)} is required`;
     if (!transactionDraft?.description?.trim()) errors.description = "Description is required";
-    if (debit < 0 || credit < 0) errors.amount = "Amounts cannot be negative";
-    if (!debit && !credit) errors.amount = "Debit or credit is required";
-    if (debit && credit) errors.amount = "Use either debit or credit, not both";
+    if (!isPaymentDocument(transactionDraft?.type) && !transactionDraft?.purchase_nominal?.trim()) errors.purchase_nominal = "Purchase nominal is required";
+    if (!isPaymentDocument(transactionDraft?.type) && asNumber(transactionDraft?.gross) <= 0) errors.amount = "Gross amount is required";
+    if (transactionDraft?.line_items?.some((line) => !String(line.description || "").trim())) errors.line_items = "Every line needs a description";
     if (!transactionDraft?.status) errors.status = "Status is required";
     setTransactionErrors(errors);
     return Object.keys(errors).length === 0;
   }
 
-  function saveTransactionDraft(e) {
+  function saveTransactionDraft(e, nextStatus = "Draft") {
     e.preventDefault();
     if (!validateTransaction()) return;
     const supplierId = transactionDraft.supplier_id || selectedSupplier?.id || selectedSupplierId;
     const isExistingFrontendRow = transactionDraft.source === "frontend" && transactionDraft.ledgerKey;
     const ledgerKey = isExistingFrontendRow ? transactionDraft.ledgerKey : `frontend-${Date.now()}`;
+    const status = nextStatus;
+    const gross = asNumber(transactionDraft.gross);
+    const debit = isCreditDocument(transactionDraft.type) || isPaymentDocument(transactionDraft.type) ? gross : 0;
+    const credit = !isCreditDocument(transactionDraft.type) && !isPaymentDocument(transactionDraft.type) ? gross : 0;
     const row = {
       ...transactionDraft,
       id: transactionDraft.id || ledgerKey,
       ledgerKey,
       supplier_id: supplierId,
       source: "frontend",
-      debit: asNumber(transactionDraft.debit),
-      credit: asNumber(transactionDraft.credit),
-      reference: transactionDraft.reference.trim(),
+      debit,
+      credit,
+      status,
+      reference: (transactionDraft.reference || transactionDraft.document_number).trim(),
+      document_number: transactionDraft.document_number.trim(),
       description: transactionDraft.description.trim(),
+      gross,
+      total: gross,
+      net: asNumber(transactionDraft.net),
+      vat: asNumber(transactionDraft.vat),
     };
     setLedgerDraftRows((rows) => {
       const replaceKey = row.originalKey || row.ledgerKey;
@@ -442,8 +531,27 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
         row,
       ];
     });
-    toast.success(row.originalKey ? "Transaction edit staged in this ledger" : "Transaction added to this ledger");
+    toast.success(status === "Posted" ? "Purchase document posted to Accounts Payable in this ledger" : row.originalKey ? "Purchase document saved in this ledger" : "Purchase document draft added");
     setTransactionDraft(null);
+  }
+
+  function postTransactionDraft(e) {
+    const impact = ledgerImpactFor(transactionDraft?.type);
+    const summary = [
+      "Post this purchase document to Accounts Payable?",
+      "",
+      `Supplier: ${selectedSupplier?.name || transactionDraft?.supplier_name || "Not set"}`,
+      `Type: ${transactionDraft?.type || "Not set"}`,
+      `${documentNumberLabel(transactionDraft?.type)}: ${transactionDraft?.document_number || "Not set"}`,
+      `Date: ${transactionDraft?.date || "Not set"}`,
+      !isCreditDocument(transactionDraft?.type) ? `Due date: ${transactionDraft?.due_date || "Not set"}` : "",
+      `Net / VAT / Gross: ${transactionDraft?.net || "0.00"} / ${transactionDraft?.vat || "0.00"} / ${transactionDraft?.gross || "0.00"}`,
+      "Destination: Accounts Payable",
+      "Ledger impact:",
+      impact.debit,
+      impact.credit,
+    ].filter(Boolean).join("\n");
+    if (window.confirm(summary)) saveTransactionDraft(e, "Posted");
   }
 
   async function saveSupplierDraft() {
@@ -736,11 +844,15 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
               </div>
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div className="flex flex-wrap gap-2">
-                  {transactionTypes.map((type) => (
-                    <Button key={type} type="button" variant="outline" onClick={() => openTransactionForm(type)}>
-                      <Plus className="mr-2 h-4 w-4" /> {type}
-                    </Button>
-                  ))}
+                  <Button type="button" variant="outline" onClick={() => openTransactionForm("Purchase Invoice")}>
+                    <Plus className="mr-2 h-4 w-4" /> Add purchase document
+                  </Button>
+                  <Button type="button" variant="outline" onClick={() => openTransactionForm("Supplier Credit Note")}>
+                    <Plus className="mr-2 h-4 w-4" /> Add supplier credit note
+                  </Button>
+                  <Button type="button" variant="outline" onClick={() => openTransactionForm("Payment on Account")}>
+                    <Plus className="mr-2 h-4 w-4" /> Add payment
+                  </Button>
                 </div>
                 <div className="flex min-w-72 flex-1 flex-wrap justify-end gap-2">
                   <div className="relative max-w-sm flex-1">
@@ -859,61 +971,16 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
           ) : null}
 
           {transactionDraft ? (
-            <div className="fixed inset-y-0 right-0 z-40 w-full max-w-xl border-l border-stone-200 bg-white p-4 shadow-2xl">
-              <div className="mb-4 flex items-start justify-between gap-3">
-                <div>
-                  <h3 className="font-display text-lg font-semibold text-stone-900">{transactionDraft.id ? "Edit transaction" : "Add transaction"}</h3>
-                  <p className="text-sm text-stone-500">Frontend form only. Posting will be wired later.</p>
-                </div>
-                <Button type="button" variant="outline" size="sm" onClick={() => setTransactionDraft(null)}>
-                  <X className="h-4 w-4" />
-                </Button>
-              </div>
-              <form onSubmit={saveTransactionDraft} className="space-y-3">
-                {transactionDraft.originalKey ? (
-                  <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                    Editing this transaction stages the change in the supplier ledger only.
-                  </div>
-                ) : null}
-                <div className="grid gap-3 md:grid-cols-2">
-                  <FieldControl label="Type" error={transactionErrors.type}>
-                    <select value={transactionDraft.type} onChange={(e) => setTransactionDraft((draft) => ({ ...draft, type: e.target.value }))} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm">
-                      {[...transactionTypes, "Supplier Payment"].map((type) => <option key={type} value={type}>{type}</option>)}
-                    </select>
-                  </FieldControl>
-                  <FieldControl label="Date" error={transactionErrors.date}>
-                    <Input type="date" value={transactionDraft.date} onChange={(e) => setTransactionDraft((draft) => ({ ...draft, date: e.target.value }))} className="h-9" />
-                  </FieldControl>
-                  <FieldControl label="Reference" error={transactionErrors.reference}>
-                    <Input value={transactionDraft.reference} onChange={(e) => setTransactionDraft((draft) => ({ ...draft, reference: e.target.value }))} className="h-9" />
-                  </FieldControl>
-                  <FieldControl label="Status">
-                    <select value={transactionDraft.status} onChange={(e) => setTransactionDraft((draft) => ({ ...draft, status: e.target.value }))} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm">
-                      {statusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
-                    </select>
-                  </FieldControl>
-                  <FieldControl label="Debit" error={transactionErrors.amount}>
-                    <Input type="number" step="0.01" value={transactionDraft.debit} onChange={(e) => setTransactionDraft((draft) => ({ ...draft, debit: e.target.value }))} className="h-9" />
-                  </FieldControl>
-                  <FieldControl label="Credit" error={!transactionDraft.debit ? transactionErrors.amount : ""}>
-                    <Input type="number" step="0.01" value={transactionDraft.credit} onChange={(e) => setTransactionDraft((draft) => ({ ...draft, credit: e.target.value }))} className="h-9" />
-                  </FieldControl>
-                </div>
-                <div className="rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-600">
-                  Ledger movement: <span className="font-semibold text-stone-900">{formatMoney(asNumber(transactionDraft.credit) - asNumber(transactionDraft.debit))}</span>
-                </div>
-                <FieldControl label="Description" error={transactionErrors.description}>
-                  <textarea value={transactionDraft.description} onChange={(e) => setTransactionDraft((draft) => ({ ...draft, description: e.target.value }))} className="min-h-24 w-full rounded-md border border-stone-200 px-3 py-2 text-sm" />
-                </FieldControl>
-                <FieldControl label="Notes">
-                  <textarea value={transactionDraft.notes} onChange={(e) => setTransactionDraft((draft) => ({ ...draft, notes: e.target.value }))} className="min-h-20 w-full rounded-md border border-stone-200 px-3 py-2 text-sm" />
-                </FieldControl>
-                <div className="flex justify-end gap-2 pt-2">
-                  <Button type="button" variant="outline" onClick={() => setTransactionDraft(null)}>Cancel</Button>
-                  <Button type="submit">Save form</Button>
-                </div>
-              </form>
-            </div>
+            <ManualPurchaseDocumentDrawer
+              draft={transactionDraft}
+              setDraft={setTransactionDraft}
+              errors={transactionErrors}
+              supplier={selectedSupplier}
+              expenseAccounts={expenseAccounts}
+              onClose={() => setTransactionDraft(null)}
+              onSave={saveTransactionDraft}
+              onPost={postTransactionDraft}
+            />
           ) : null}
         </div>
       );
@@ -974,6 +1041,269 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
   }
 
   return null;
+}
+
+function ManualPurchaseDocumentDrawer({
+  draft,
+  setDraft,
+  errors,
+  supplier,
+  expenseAccounts,
+  onClose,
+  onSave,
+  onPost,
+}) {
+  const readOnly = isReadOnlyTransaction(draft);
+  const isCredit = isCreditDocument(draft.type);
+  const isPayment = isPaymentDocument(draft.type);
+  const lineTotals = transactionLineTotals(draft.line_items);
+  const impact = ledgerImpactFor(draft.type);
+  const set = (key, value) => setDraft((current) => ({ ...current, [key]: value }));
+  const setLine = (index, key, value) => {
+    setDraft((current) => ({
+      ...current,
+      line_items: current.line_items.map((line, i) => (i === index ? { ...line, [key]: value } : line)),
+    }));
+  };
+  const addLine = () => {
+    setDraft((current) => ({
+      ...current,
+      line_items: [...current.line_items, purchaseDocumentLine()],
+    }));
+  };
+  const removeLine = (index) => {
+    setDraft((current) => {
+      const lines = current.line_items.filter((_, i) => i !== index);
+      return { ...current, line_items: lines.length ? lines : [purchaseDocumentLine()] };
+    });
+  };
+
+  return (
+    <div className="fixed inset-y-0 right-0 z-40 w-full max-w-[1180px] overflow-hidden border-l border-stone-200 bg-white shadow-2xl">
+      <div className="flex h-full min-h-0 flex-col">
+        <header className="border-b border-stone-200 bg-stone-50 px-4 py-3">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="font-display text-lg font-semibold text-stone-900">{supplier?.name || draft.supplier_name || "Supplier"}</h3>
+                <Badge variant="secondary">{supplier?.supplier_code || draft.supplier_code || "No supplier code"}</Badge>
+                <Badge className={statusBadgeClass(draft.status)}>{draft.status || "Draft"}</Badge>
+              </div>
+              <p className="mt-1 text-sm text-stone-500">
+                Manual Accounts Payable purchase document entry. Supplier is locked from the open supplier account.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {draft.originalKey ? <Button type="button" variant="outline" onClick={() => set("showImpact", !draft.showImpact)}>View ledger impact</Button> : null}
+              {draft.originalKey ? <Button type="button" variant="outline" onClick={() => set("showAudit", !draft.showAudit)}>View audit trail</Button> : null}
+              <Button type="button" variant="outline" onClick={onClose}>Cancel / close</Button>
+              {!readOnly ? <Button type="button" variant="outline" onClick={(event) => onSave(event, "Draft")}>Save draft</Button> : null}
+              {!readOnly && !isPayment ? <Button type="button" onClick={onPost} style={{ background: "var(--brand)" }}>Post to AP</Button> : null}
+              <Button type="button" variant="outline" size="sm" onClick={onClose}><X className="h-4 w-4" /></Button>
+            </div>
+          </div>
+        </header>
+
+        <div className="grid min-h-0 flex-1 gap-0 lg:grid-cols-[minmax(620px,1fr)_380px]">
+          <form onSubmit={(event) => onSave(event, draft.status || "Draft")} className="min-h-0 overflow-auto p-4">
+            {readOnly ? (
+              <div className="mb-3 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-600">
+                Posted, paid and allocated supplier ledger transactions are view only. Corrections should be entered as a supplier credit note or reversal flow.
+              </div>
+            ) : null}
+            {errors.supplier ? <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{errors.supplier}</div> : null}
+
+            <section className="rounded-md border border-stone-200 bg-white p-3">
+              <h4 className="mb-3 text-sm font-semibold text-stone-900">Coding / accounting fields</h4>
+              <div className="grid gap-3 md:grid-cols-3">
+                <FieldControl label="Supplier ID">
+                  <Input value={draft.supplier_id || ""} readOnly className="h-9 bg-stone-50" />
+                </FieldControl>
+                <FieldControl label="Supplier name">
+                  <Input value={supplier?.name || draft.supplier_name || ""} readOnly className="h-9 bg-stone-50" />
+                </FieldControl>
+                <FieldControl label="Supplier code">
+                  <Input value={supplier?.supplier_code || draft.supplier_code || ""} readOnly className="h-9 bg-stone-50" />
+                </FieldControl>
+                <FieldControl label="Type" error={errors.type}>
+                  <select value={draft.type} disabled={readOnly} onChange={(e) => set("type", e.target.value)} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm disabled:bg-stone-50">
+                    {transactionTypes.map((type) => <option key={type} value={type}>{type === "Purchase Invoice" ? "Purchase Invoice / Bill" : type}</option>)}
+                  </select>
+                </FieldControl>
+                {!isPayment ? (
+                  <FieldControl label={documentNumberLabel(draft.type)} error={errors.document_number}>
+                    <Input value={draft.document_number || ""} readOnly={readOnly} onChange={(e) => set("document_number", e.target.value)} className="h-9" />
+                  </FieldControl>
+                ) : null}
+                <FieldControl label="Reference">
+                  <Input value={draft.reference || ""} readOnly={readOnly} onChange={(e) => set("reference", e.target.value)} className="h-9" />
+                </FieldControl>
+                <FieldControl label={documentDateLabel(draft.type)} error={errors.date}>
+                  <Input type="date" value={draft.date || ""} readOnly={readOnly} onChange={(e) => set("date", e.target.value)} className="h-9" />
+                </FieldControl>
+                {!isCredit && !isPayment ? (
+                  <>
+                    <FieldControl label="Due date">
+                      <Input type="date" value={draft.due_date || ""} readOnly={readOnly} onChange={(e) => set("due_date", e.target.value)} className="h-9" />
+                    </FieldControl>
+                    <FieldControl label="Payment terms">
+                      <Input value={draft.payment_terms || ""} readOnly={readOnly} onChange={(e) => set("payment_terms", e.target.value)} className="h-9" />
+                    </FieldControl>
+                  </>
+                ) : null}
+                <FieldControl label="Currency">
+                  <Input value={draft.currency || "GBP"} readOnly={readOnly} onChange={(e) => set("currency", e.target.value)} className="h-9" />
+                </FieldControl>
+                {!isPayment ? (
+                  <>
+                    <FieldControl label="Purchase nominal / category" error={errors.purchase_nominal}>
+                      <select value={draft.purchase_nominal || ""} disabled={readOnly} onChange={(e) => set("purchase_nominal", e.target.value)} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm disabled:bg-stone-50">
+                        <option value="">Select purchase nominal</option>
+                        {expenseAccounts.map((account) => <option key={account.code} value={account.code}>{account.code} - {account.name}</option>)}
+                      </select>
+                    </FieldControl>
+                    <FieldControl label="VAT code">
+                      <Input value={draft.vat_code || ""} readOnly={readOnly} onChange={(e) => set("vat_code", e.target.value)} className="h-9" />
+                    </FieldControl>
+                  </>
+                ) : null}
+              </div>
+              <div className="mt-3">
+                <FieldControl label="Description" error={errors.description}>
+                  <textarea value={draft.description || ""} readOnly={readOnly} onChange={(e) => set("description", e.target.value)} className="min-h-20 w-full rounded-md border border-stone-200 px-3 py-2 text-sm read-only:bg-stone-50" />
+                </FieldControl>
+              </div>
+            </section>
+
+            {!isPayment ? (
+              <section className="mt-3 rounded-md border border-stone-200 bg-white p-3">
+                <h4 className="mb-3 text-sm font-semibold text-stone-900">Amounts</h4>
+                <div className="grid gap-3 md:grid-cols-4">
+                  <FieldControl label="Net amount" error={errors.amount}>
+                    <Input type="number" step="0.01" value={draft.net || ""} readOnly={readOnly} onChange={(e) => set("net", e.target.value)} className="h-9" />
+                  </FieldControl>
+                  <FieldControl label="VAT amount">
+                    <Input type="number" step="0.01" value={draft.vat || ""} readOnly={readOnly} onChange={(e) => set("vat", e.target.value)} className="h-9" />
+                  </FieldControl>
+                  <FieldControl label="Gross amount">
+                    <Input type="number" step="0.01" value={draft.gross || ""} readOnly={readOnly} onChange={(e) => set("gross", e.target.value)} className="h-9" />
+                  </FieldControl>
+                  <div className="rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-600">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-stone-500">Lines gross</div>
+                    <div className="mt-1 font-display text-lg font-semibold text-stone-900">{formatMoney(lineTotals.gross)}</div>
+                  </div>
+                </div>
+              </section>
+            ) : (
+              <section className="mt-3 rounded-md border border-stone-200 bg-white p-3">
+                <h4 className="mb-3 text-sm font-semibold text-stone-900">Supplier payment</h4>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <FieldControl label="Payment date" error={errors.date}>
+                    <Input type="date" value={draft.date || ""} readOnly={readOnly} onChange={(e) => set("date", e.target.value)} className="h-9" />
+                  </FieldControl>
+                  <FieldControl label="Bank reference">
+                    <Input value={draft.reference || ""} readOnly={readOnly} onChange={(e) => set("reference", e.target.value)} className="h-9" />
+                  </FieldControl>
+                  <FieldControl label="Amount paid" error={errors.amount}>
+                    <Input type="number" step="0.01" value={draft.gross || ""} readOnly={readOnly} onChange={(e) => set("gross", e.target.value)} className="h-9" />
+                  </FieldControl>
+                </div>
+              </section>
+            )}
+
+            {!isPayment ? (
+              <section className="mt-3 rounded-md border border-stone-200 bg-white p-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <h4 className="text-sm font-semibold text-stone-900">Line items</h4>
+                  {!readOnly ? <Button type="button" variant="outline" size="sm" onClick={addLine}>Add line item</Button> : null}
+                </div>
+                {errors.line_items ? <div className="mb-2 text-xs font-medium text-red-600">{errors.line_items}</div> : null}
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[900px] text-xs">
+                    <thead className="border-b border-stone-200 text-left text-[10px] uppercase tracking-wider text-stone-500">
+                      <tr>
+                        <th className="py-1 pr-1.5">Description</th>
+                        <th className="py-1 pr-1.5">Purchase nominal/account code</th>
+                        <th className="py-1 pr-1.5">VAT code</th>
+                        <th className="py-1 pr-1.5">Quantity / units</th>
+                        <th className="py-1 pr-1.5">Unit price</th>
+                        <th className="py-1 pr-1.5">Net</th>
+                        <th className="py-1 pr-1.5">VAT</th>
+                        <th className="py-1">Gross</th>
+                        <th className="py-1 pl-1.5"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {draft.line_items.map((line, index) => (
+                        <tr key={index}>
+                          <td className="py-0.5 pr-1.5"><Input value={line.description || ""} readOnly={readOnly} onChange={(e) => setLine(index, "description", e.target.value)} className="h-7 min-w-40 px-1.5 text-xs" /></td>
+                          <td className="py-0.5 pr-1.5"><Input value={line.purchase_nominal || ""} readOnly={readOnly} onChange={(e) => setLine(index, "purchase_nominal", e.target.value)} className="h-7 min-w-32 px-1.5 text-xs" /></td>
+                          <td className="py-0.5 pr-1.5"><Input value={line.vat_code || ""} readOnly={readOnly} onChange={(e) => setLine(index, "vat_code", e.target.value)} className="h-7 min-w-24 px-1.5 text-xs" /></td>
+                          <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.quantity || ""} readOnly={readOnly} onChange={(e) => setLine(index, "quantity", e.target.value)} className="h-7 min-w-20 px-1.5 text-xs" /></td>
+                          <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.unit_price || ""} readOnly={readOnly} onChange={(e) => setLine(index, "unit_price", e.target.value)} className="h-7 min-w-20 px-1.5 text-xs" /></td>
+                          <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.net || ""} readOnly={readOnly} onChange={(e) => setLine(index, "net", e.target.value)} className="h-7 min-w-20 px-1.5 text-xs" /></td>
+                          <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.vat || ""} readOnly={readOnly} onChange={(e) => setLine(index, "vat", e.target.value)} className="h-7 min-w-20 px-1.5 text-xs" /></td>
+                          <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.gross || ""} readOnly={readOnly} onChange={(e) => setLine(index, "gross", e.target.value)} className="h-7 min-w-20 px-1.5 text-xs" /></td>
+                          <td className="py-0.5 pl-1.5">
+                            {!readOnly ? <Button type="button" variant="ghost" size="icon" onClick={() => removeLine(index)} className="h-7 w-7 text-stone-500 hover:text-red-600"><X className="h-3.5 w-3.5" /></Button> : null}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            ) : null}
+          </form>
+
+          <aside className="min-h-0 overflow-auto border-t border-stone-200 bg-stone-50 p-4 lg:border-l lg:border-t-0">
+            <section className="rounded-md border border-stone-200 bg-white p-3">
+              <h4 className="text-sm font-semibold text-stone-900">Optional attachment preview</h4>
+              <div className="mt-3 flex min-h-56 items-center justify-center rounded-md border border-dashed border-stone-300 bg-stone-50 p-4 text-center text-sm text-stone-500">
+                {draft.attachment_name ? draft.attachment_name : "No attachment linked to this manual AP entry"}
+              </div>
+            </section>
+
+            <section className="mt-3 rounded-md border border-stone-200 bg-white p-3">
+              <h4 className="text-sm font-semibold text-stone-900">Totals</h4>
+              <div className="mt-3 space-y-2 text-sm">
+                <div className="flex justify-between"><span className="text-stone-500">Net</span><span className="font-semibold">{formatMoney(asNumber(draft.net))}</span></div>
+                <div className="flex justify-between"><span className="text-stone-500">VAT</span><span className="font-semibold">{formatMoney(asNumber(draft.vat))}</span></div>
+                <div className="flex justify-between"><span className="text-stone-500">Gross</span><span className="font-semibold">{formatMoney(asNumber(draft.gross))}</span></div>
+              </div>
+            </section>
+
+            <section className="mt-3 rounded-md border border-stone-200 bg-white p-3">
+              <h4 className="text-sm font-semibold text-stone-900">Ledger impact</h4>
+              <div className="mt-3 space-y-2 text-sm text-stone-700">
+                <div>{impact.debit}</div>
+                <div>{impact.credit}</div>
+                <div className="rounded-md bg-stone-50 px-3 py-2 text-xs text-stone-500">Destination: Accounts Payable</div>
+              </div>
+            </section>
+
+            {draft.payment_allocation || String(draft.status || "").toLowerCase().includes("paid") ? (
+              <section className="mt-3 rounded-md border border-stone-200 bg-white p-3">
+                <h4 className="text-sm font-semibold text-stone-900">Payment allocation</h4>
+                <p className="mt-2 text-sm text-stone-600">{draft.payment_allocation || "Payment allocation exists for this supplier ledger item."}</p>
+              </section>
+            ) : null}
+
+            {draft.showAudit ? (
+              <section className="mt-3 rounded-md border border-stone-200 bg-white p-3">
+                <h4 className="text-sm font-semibold text-stone-900">Audit trail</h4>
+                <div className="mt-2 space-y-1 text-sm text-stone-600">
+                  <div>Opened from supplier ledger</div>
+                  <div>Status: {draft.status || "Draft"}</div>
+                  <div>Source: {draft.source === "frontend" ? "Manual AP entry" : "Accounts Payable ledger"}</div>
+                </div>
+              </section>
+            ) : null}
+          </aside>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function FieldControl({ label, error, children }) {
