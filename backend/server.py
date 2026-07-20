@@ -68,12 +68,13 @@ DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(25 * 1024 * 1024)))
 SUPPORTED_DOCUMENT_TYPES = {
     "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
     "image/png": ".png",
     "image/webp": ".webp",
     "application/pdf": ".pdf",
 }
 SUPPORTED_DOCUMENT_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".pdf"}
-SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
+SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
 SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 UNSUPPORTED_HEIC_TYPES = {"image/heic", "image/heif", "image/heic-sequence", "image/heif-sequence"}
 UNSUPPORTED_HEIC_SUFFIXES = {".heic", ".heif"}
@@ -13078,6 +13079,10 @@ def write_original_upload(raw: bytes, fpath: Path) -> None:
         f.write(raw)
 
 
+def bounded_text(value: Optional[str], limit: int) -> str:
+    return str(value or "")[:limit]
+
+
 def verified_ai_warning_review(user: dict, raw: Optional[bytes], ai_review_token: Optional[str], client_approved_ai_warning: bool) -> Optional[dict]:
     if not client_approved_ai_warning or not ai_review_token or not raw:
         return None
@@ -13107,21 +13112,28 @@ async def run_pre_submission_ai_review(
     item: dict,
     raw: bytes,
     file: UploadFile,
+    correlation_id: str = "",
 ) -> dict:
-    ai_settings = await get_openai_runtime_settings(session)
-    coding_history = await get_coding_history(session, str(user["id"]), item["type"])
-    coding_choices = await get_submitted_items_coding_context(session, str(user["id"]), item["type"])
-    return await review_document_with_openai(
-        raw,
-        upload_content_type(file),
-        item,
-        user,
-        ai_settings["api_key"],
-        ai_settings["model"],
-        file.filename,
-        coding_history,
-        coding_choices,
-    )
+    try:
+        ai_settings = await get_openai_runtime_settings(session)
+        coding_history = await get_coding_history(session, str(user["id"]), item["type"])
+        coding_choices = await get_submitted_items_coding_context(session, str(user["id"]), item["type"])
+        return await review_document_with_openai(
+            raw,
+            upload_content_type(file),
+            item,
+            user,
+            ai_settings["api_key"],
+            ai_settings["model"],
+            file.filename,
+            coding_history,
+            coding_choices,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Pre-submission AI review failed correlation_id=%s upload=%s", correlation_id, upload_log_context(file, raw))
+        raise HTTPException(status_code=400, detail="The uploaded document could not be reviewed. Please try a PDF/JPG scan or contact the practice.")
 
 
 def save_submission_upload_with_stamp_fallback(
@@ -13190,26 +13202,31 @@ async def create_pending_client_upload(
     file: UploadFile,
     comment: str,
     ai_review: Optional[dict] = None,
+    correlation_id: str = "",
 ) -> dict:
     pending_id = new_id()
     suffix = upload_extension(file, ".bin")
     stored_filename = f"pending_{pending_id}{suffix}"
-    write_original_upload(raw, UPLOAD_DIR / stored_filename)
+    try:
+        write_original_upload(raw, UPLOAD_DIR / stored_filename)
+    except Exception:
+        logger.exception("Pending upload file write failed correlation_id=%s endpoint=%s upload=%s", correlation_id, endpoint, upload_log_context(file, raw))
+        raise HTTPException(status_code=400, detail="The uploaded file could not be saved. Please try again.")
     now = datetime.now(timezone.utc)
     row = {
         "id": pending_id,
-        "client_id": str(user["id"]),
-        "endpoint": endpoint,
-        "item_id": item.get("id") if endpoint == "item" else None,
-        "type": item.get("type") or "purchase",
+        "client_id": bounded_text(str(user["id"]), 36),
+        "endpoint": bounded_text(endpoint, 32),
+        "item_id": bounded_text(item.get("id"), 36) if endpoint == "item" else None,
+        "type": bounded_text(item.get("type") or "purchase", 32),
         "description": item.get("description") or "",
         "date": item.get("date") or "",
         "amount": item.get("amount") or "",
         "comment": comment,
-        "original_filename": file.filename or "",
-        "stored_filename": stored_filename,
-        "content_type": upload_content_type(file),
-        "suffix": Path(file.filename or "").suffix.lower(),
+        "original_filename": bounded_text(Path(file.filename or "").name or file.filename or "", 255),
+        "stored_filename": bounded_text(stored_filename, 255),
+        "content_type": bounded_text(upload_content_type(file), 255),
+        "suffix": bounded_text(Path(file.filename or "").suffix.lower(), 32),
         "size_bytes": len(raw),
         "file_sha256": hashlib.sha256(raw).hexdigest(),
         "ai_review_json": json.dumps(ai_review or {}) if ai_review else None,
@@ -13218,8 +13235,24 @@ async def create_pending_client_upload(
         "expires_at": (now + timedelta(hours=4)).isoformat(),
         "final_submission_id": None,
     }
-    await session.execute(insert(pending_client_uploads).values(**row))
-    await session.commit()
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(lambda sync_conn: pending_client_uploads.create(sync_conn, checkfirst=True))
+            await ensure_table_columns(conn, (pending_client_uploads,))
+        await session.execute(insert(pending_client_uploads).values(**row))
+        await session.commit()
+    except SQLAlchemyError:
+        await session.rollback()
+        logger.exception(
+            "Pending upload persistence failed correlation_id=%s endpoint=%s pending_upload_id=%s upload=%s filename_len=%s content_type_len=%s",
+            correlation_id,
+            endpoint,
+            pending_id,
+            upload_log_context(file, raw),
+            len(row["original_filename"] or ""),
+            len(row["content_type"] or ""),
+        )
+        raise HTTPException(status_code=500, detail=f"Upload could not be prepared for AI review. Reference {correlation_id}.")
     return row
 
 
@@ -13227,14 +13260,21 @@ async def get_pending_upload_or_400(session: AsyncSession, user: dict, pending_u
     pending_id = str(pending_upload_id or "").strip()
     if not pending_id:
         raise HTTPException(status_code=400, detail="Pending upload id is required to submit after approving an AI warning.")
-    row = await one(
-        session,
-        select(pending_client_uploads).where(
-            pending_client_uploads.c.id == pending_id,
-            pending_client_uploads.c.client_id == str(user["id"]),
-            pending_client_uploads.c.endpoint == endpoint,
-        ),
-    )
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(lambda sync_conn: pending_client_uploads.create(sync_conn, checkfirst=True))
+            await ensure_table_columns(conn, (pending_client_uploads,))
+        row = await one(
+            session,
+            select(pending_client_uploads).where(
+                pending_client_uploads.c.id == pending_id,
+                pending_client_uploads.c.client_id == str(user["id"]),
+                pending_client_uploads.c.endpoint == endpoint,
+            ),
+        )
+    except SQLAlchemyError:
+        logger.exception("Pending upload lookup failed endpoint=%s pending_upload_id=%s", endpoint, pending_id)
+        raise HTTPException(status_code=500, detail="Pending upload could not be loaded. Please upload the document again.")
     if not row or row.get("status") != "pending":
         raise HTTPException(status_code=400, detail="This pending upload is no longer available. Please upload the document again.")
     if item_id and str(row.get("item_id") or "") != str(item_id):
@@ -14398,7 +14438,7 @@ async def submit_item(
             logger.info("Client submit start correlation_id=%s endpoint=item mode=photo item_id=%s upload=%s", correlation_id, item_id, upload_log_context(file, raw))
             validate_supported_upload(file)
             validate_upload_size(raw)
-            pending_upload = await create_pending_client_upload(session, user, "item", item, raw, file, comment)
+            pending_upload = await create_pending_client_upload(session, user, "item", item, raw, file, comment, correlation_id=correlation_id)
             if user.get("ai_analysis_enabled") and (is_image_document(file) or is_pdf_document(file)):
                 if client_approved_ai_warning:
                     accepted_ai_review = verified_ai_warning_review(user, raw, ai_review_token, True)
@@ -14407,7 +14447,7 @@ async def submit_item(
                     ai_review = accepted_ai_review
                     ai_client_approved = True
                 else:
-                    ai_review = await run_pre_submission_ai_review(session, user, item, raw, file)
+                    ai_review = await run_pre_submission_ai_review(session, user, item, raw, file, correlation_id)
                     if ai_review.get("status") in ("needs_review", "rejected"):
                         await session.execute(update(pending_client_uploads).where(pending_client_uploads.c.id == pending_upload["id"]).values(ai_review_json=json.dumps(ai_review)))
                         await session.commit()
@@ -14570,7 +14610,7 @@ async def submit_additional(
             logger.info("Client submit start correlation_id=%s endpoint=additional mode=photo upload=%s", correlation_id, upload_log_context(file, raw))
             validate_supported_upload(file)
             validate_upload_size(raw)
-            pending_upload = await create_pending_client_upload(session, user, "additional", item, raw, file, comment)
+            pending_upload = await create_pending_client_upload(session, user, "additional", item, raw, file, comment, correlation_id=correlation_id)
             if user.get("ai_analysis_enabled") and (is_image_document(file) or is_pdf_document(file)):
                 if client_approved_ai_warning:
                     accepted_ai_review = verified_ai_warning_review(user, raw, ai_review_token, True)
@@ -14579,7 +14619,7 @@ async def submit_additional(
                     ai_review = accepted_ai_review
                     ai_client_approved = True
                 else:
-                    ai_review = await run_pre_submission_ai_review(session, user, item, raw, file)
+                    ai_review = await run_pre_submission_ai_review(session, user, item, raw, file, correlation_id)
                     if ai_review.get("status") in ("needs_review", "rejected"):
                         await session.execute(update(pending_client_uploads).where(pending_client_uploads.c.id == pending_upload["id"]).values(ai_review_json=json.dumps(ai_review)))
                         await session.commit()
