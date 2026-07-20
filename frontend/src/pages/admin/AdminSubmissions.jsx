@@ -28,7 +28,8 @@ export default function AdminSubmissions() {
   const [previewError, setPreviewError] = useState("");
   const [busy, setBusy] = useState(false);
   const [moduleDisabled, setModuleDisabled] = useState(false);
-  const [integrationRecords, setIntegrationRecords] = useState({});
+  const [clientCodingContext, setClientCodingContext] = useState(null);
+  const [submissionCodingContext, setSubmissionCodingContext] = useState(null);
 
   const load = useCallback(async () => {
     try {
@@ -81,7 +82,8 @@ export default function AdminSubmissions() {
 
   const selected = submissions.find((row) => row.id === selectedId) || null;
   const previewUrl = previewObjectUrl;
-  const integrationOptions = useMemo(() => buildIntegrationOptions(integrationRecords), [integrationRecords]);
+  const activeCodingContext = submissionCodingContext || clientCodingContext || {};
+  const codingOptions = useMemo(() => buildCodingContextOptions(activeCodingContext), [activeCodingContext]);
 
   useEffect(() => {
     setSelectedArchiveIds([]);
@@ -89,21 +91,36 @@ export default function AdminSubmissions() {
   }, [clientId, tab, documentFilter]);
 
   useEffect(() => {
-    setIntegrationRecords({});
-  }, [clientId]);
-
-  useEffect(() => {
     if (!clientId) return undefined;
     let cancelled = false;
-    api.get(`/admin/integrations/clients/${clientId}`)
+    const documentType = documentFilter === "sales" ? "sales" : "purchase";
+    setClientCodingContext(null);
+    api.get(`/admin/submissions/coding-context?client_id=${encodeURIComponent(clientId)}&document_type=${documentType}`)
       .then(({ data }) => {
-        if (!cancelled) setIntegrationRecords(data?.records || {});
+        if (!cancelled) setClientCodingContext(data || null);
       })
       .catch(() => {
-        if (!cancelled) setIntegrationRecords({});
+        if (!cancelled) setClientCodingContext(null);
       });
     return () => { cancelled = true; };
-  }, [clientId]);
+  }, [clientId, documentFilter]);
+
+  useEffect(() => {
+    if (!selectedId) {
+      setSubmissionCodingContext(null);
+      return undefined;
+    }
+    let cancelled = false;
+    setSubmissionCodingContext(null);
+    api.get(`/admin/submissions/${selectedId}/coding-context`)
+      .then(({ data }) => {
+        if (!cancelled) setSubmissionCodingContext(data || null);
+      })
+      .catch(() => {
+        if (!cancelled) setSubmissionCodingContext(null);
+      });
+    return () => { cancelled = true; };
+  }, [selectedId]);
 
   useEffect(() => {
     setDraft(makeDraft(selected));
@@ -154,6 +171,21 @@ export default function AdminSubmissions() {
     setSelectedId("");
   }
 
+  async function refreshCodingContext() {
+    if (selectedId) {
+      const { data } = await api.get(`/admin/submissions/${selectedId}/coding-context`);
+      setSubmissionCodingContext(data || null);
+      return data || null;
+    }
+    if (clientId) {
+      const documentType = documentFilter === "sales" ? "sales" : "purchase";
+      const { data } = await api.get(`/admin/submissions/coding-context?client_id=${encodeURIComponent(clientId)}&document_type=${documentType}`);
+      setClientCodingContext(data || null);
+      return data || null;
+    }
+    return null;
+  }
+
   async function moveSelected(reviewStatus) {
     if (!selected) return;
     const isSalesInvoice = submittedDocumentFlow(selected) === "sales";
@@ -171,8 +203,10 @@ export default function AdminSubmissions() {
           }));
         }
         toast.success("Published to Accounts Receivable");
-      } else if (reviewStatus === "published" && data?.quickbooks_publish?.id) {
-        toast.success(`Sent to QuickBooks Bill ${data.quickbooks_publish.doc_number || data.quickbooks_publish.id} and archived`);
+      } else if (reviewStatus === "published" && activeCodingContext?.source === "epos_native") {
+        toast.success("Published to Accounts Payable");
+      } else if (reviewStatus === "published" && activeCodingContext?.source === "external") {
+        toast.success(`Published to ${codingProviderLabel(activeCodingContext)}`);
       } else if (reviewStatus === "published" && data?.memory_updated) {
         toast.success("Published to archive and future AI examples updated");
       } else {
@@ -243,23 +277,40 @@ export default function AdminSubmissions() {
       toast.error("Enter a vendor name first");
       return;
     }
-    const supplierCode = window.prompt("Optional supplier account/code for QuickBooks", String(draft.vendor_account || "").trim());
+    const supplierCode = window.prompt("Optional supplier account/code", String(draft.vendor_account || "").trim());
     if (supplierCode === null) return;
     setBusy(true);
     try {
-      await api.post(`/admin/integrations/clients/${clientId}/records`, {
-        record_type: "supplier",
-        name: supplierName,
-        code: String(supplierCode || "").trim(),
-        external_id: "",
-        email: null,
-        description: "Created from invoice review",
-        active: true,
-      });
-      const { data } = await api.get(`/admin/integrations/clients/${clientId}`);
-      setIntegrationRecords(data?.records || {});
-      setDraft((current) => ({ ...current, vendor_account: String(supplierCode || "").trim() }));
-      toast.success("Supplier created and added to this client profile");
+      if (activeCodingContext?.source === "epos_native") {
+        const { data } = await api.post(`/admin/accounting/clients/${clientId}/ap/suppliers`, {
+          name: supplierName,
+          supplier_code: String(supplierCode || "").trim(),
+          email: null,
+        });
+        const supplier = data?.supplier || data || {};
+        setDraft((current) => ({
+          ...current,
+          supplier_id: supplier.id || supplier._id || current.supplier_id,
+          vendor_name: supplier.name || supplierName,
+          vendor_account: supplier.supplier_code || supplier.code || String(supplierCode || "").trim(),
+          supplier_code: supplier.supplier_code || supplier.code || String(supplierCode || "").trim(),
+        }));
+        await refreshCodingContext();
+        toast.success("Supplier created in EPOS Native Accounts Payable");
+      } else {
+        await api.post(`/admin/integrations/clients/${clientId}/records`, {
+          record_type: "supplier",
+          name: supplierName,
+          code: String(supplierCode || "").trim(),
+          external_id: "",
+          email: null,
+          description: "Created from invoice review",
+          active: true,
+        });
+        await refreshCodingContext();
+        setDraft((current) => ({ ...current, vendor_account: String(supplierCode || "").trim() }));
+        toast.success("Supplier created and added to this client profile");
+      }
     } catch (e) {
       toast.error(formatApiError(e));
     } finally {
@@ -352,7 +403,8 @@ export default function AdminSubmissions() {
           suggestLinesFromPattern={suggestLinesFromPattern}
           moveSelected={moveSelected}
           createSupplierFromDraft={createSupplierFromDraft}
-          integrationOptions={integrationOptions}
+          codingContext={activeCodingContext}
+          codingOptions={codingOptions}
           busy={busy}
         />
       )}
@@ -600,7 +652,8 @@ function DetailLayer({
   suggestLinesFromPattern,
   moveSelected,
   createSupplierFromDraft,
-  integrationOptions,
+  codingContext,
+  codingOptions,
   busy,
 }) {
   if (!row) {
@@ -624,7 +677,8 @@ function DetailLayer({
         previewError={previewError}
         prefillSelected={prefillSelected}
         moveSelected={moveSelected}
-        integrationOptions={integrationOptions}
+        codingContext={codingContext}
+        codingOptions={codingOptions}
         busy={busy}
       />
     );
@@ -640,6 +694,7 @@ function DetailLayer({
             <h1 className="truncate font-display text-lg font-bold text-stone-900">{row.description || "Submitted document"}</h1>
             <p className="truncate text-xs text-stone-500">{row.image_filename || "No file"} {row.comment ? `- ${row.comment}` : ""}</p>
           </div>
+          <CodingSourceBadge context={codingContext} />
         </div>
         <div className="flex flex-wrap gap-2">
           <Button type="button" variant="outline" onClick={prefillSelected} disabled={busy} className="h-8 gap-2 px-3">
@@ -648,7 +703,7 @@ function DetailLayer({
           <Button type="button" variant="outline" onClick={() => moveSelected("archived")} disabled={busy} className="h-8 gap-2 px-3">
             <Archive className="h-4 w-4" /> Archive
           </Button>
-          <Button type="button" onClick={() => moveSelected("published")} disabled={busy} className="h-8 gap-2 px-3" style={{ background: "var(--brand)" }}>
+          <Button type="button" onClick={() => moveSelected("published")} disabled={busy || (codingContext?.source === "epos_native" && !draft.supplier_id)} className="h-8 gap-2 px-3" style={{ background: "var(--brand)" }}>
             <CheckCircle2 className="h-4 w-4" /> Publish and Next
           </Button>
         </div>
@@ -663,7 +718,8 @@ function DetailLayer({
             setActiveField={setActiveField}
             suggestLinesFromPattern={suggestLinesFromPattern}
             createSupplierFromDraft={createSupplierFromDraft}
-            integrationOptions={integrationOptions}
+            codingContext={codingContext}
+            codingOptions={codingOptions}
             busy={busy}
           />
         </section>
@@ -720,7 +776,8 @@ function SalesInvoiceDetailLayer({
   previewError,
   prefillSelected,
   moveSelected,
-  integrationOptions,
+  codingContext,
+  codingOptions,
   busy,
 }) {
   const publishSalesInvoice = () => {
@@ -749,6 +806,7 @@ function SalesInvoiceDetailLayer({
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="truncate font-display text-lg font-bold text-stone-900">Sales invoice review</h1>
               <ConfidenceBadge value={aiConfidence(row)} />
+              <CodingSourceBadge context={codingContext} />
               <Badge className="bg-sky-100 text-sky-800 hover:bg-sky-100">Accounts Receivable</Badge>
               <Badge variant="secondary" className="capitalize">{row.review_status || "inbox"}</Badge>
             </div>
@@ -782,7 +840,8 @@ function SalesInvoiceDetailLayer({
             setDraft={setDraft}
             activeField={activeField}
             setActiveField={setActiveField}
-            integrationOptions={integrationOptions}
+            codingContext={codingContext}
+            codingOptions={codingOptions}
             busy={busy}
           />
         </section>
@@ -825,8 +884,8 @@ function SalesInvoiceDetailLayer({
   );
 }
 
-function SalesInvoiceReviewForm({ row, draft, setDraft, activeField, setActiveField, integrationOptions, busy }) {
-  const options = integrationOptions || {};
+function SalesInvoiceReviewForm({ row, draft, setDraft, activeField, setActiveField, codingContext, codingOptions, busy }) {
+  const options = codingOptions || {};
   const lineTotals = useMemo(() => calculateLineTotals(draft.line_items), [draft.line_items]);
   const headerTotals = {
     net: parseAmount(draft.net),
@@ -880,7 +939,7 @@ function SalesInvoiceReviewForm({ row, draft, setDraft, activeField, setActiveFi
 
         <ReviewSection title="Customer">
           <div className="grid gap-2 lg:grid-cols-3">
-            <DatalistField id="customer_name" label="Customer name" value={draft.customer_name} options={options.customerOptions} onChange={(v) => set("customer_name", v)} activeField={activeField} setActiveField={setActiveField} />
+            <DatalistField id="customer_name" label="Customer name" value={draft.customer_name} options={options.customerOptions} onChange={(v) => setCustomerDraftFromOption(v, options.customerOptions, setDraft)} activeField={activeField} setActiveField={setActiveField} />
             <ConfidenceField row={row} field="customer_name" draft={draft} />
             <TextField id="customer_match_status" label="Customer match / suggested customer" value={draft.customer_match_status} onChange={(v) => set("customer_match_status", v)} activeField={activeField} setActiveField={setActiveField} />
             <label className="flex h-8 items-center gap-2 text-sm font-medium text-stone-700">
@@ -1007,9 +1066,10 @@ function ReviewSection({ title, children }) {
   );
 }
 
-function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLinesFromPattern, createSupplierFromDraft, integrationOptions, busy }) {
+function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLinesFromPattern, createSupplierFromDraft, codingContext, codingOptions, busy }) {
   const [patternLineIndex, setPatternLineIndex] = useState(0);
-  const options = integrationOptions || {};
+  const options = codingOptions || {};
+  const nativeContext = codingContext?.source === "epos_native";
   const lineTotals = useMemo(() => calculateLineTotals(draft.line_items), [draft.line_items]);
   const headerTotals = {
     net: parseAmount(draft.net),
@@ -1062,7 +1122,7 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
 
       <div className="min-h-0 flex-1 overflow-auto p-2.5">
         <div className="grid gap-2 lg:grid-cols-3">
-          <DatalistField id="vendor_name" label="Vendor Name" value={draft.vendor_name} options={options.supplierOptions} onChange={(v) => set("vendor_name", v)} activeField={activeField} setActiveField={setActiveField} />
+          <DatalistField id="vendor_name" label="Vendor Name" value={draft.vendor_name} options={options.supplierOptions} onChange={(v) => setSupplierDraftFromOption(v, options.supplierOptions, setDraft)} activeField={activeField} setActiveField={setActiveField} />
           <div>
             <Label className="text-xs font-semibold text-stone-700">Type</Label>
             <div className="mt-1 flex h-8 items-center gap-3 text-sm">
@@ -1083,7 +1143,7 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
               Create missing supplier
             </Button>
             {!options.supplierOptions?.length && (
-              <span className="ml-3 text-xs text-stone-500">No QuickBooks suppliers synced for this client yet.</span>
+              <span className="ml-3 text-xs text-stone-500">{nativeContext ? "No EPOS Native AP suppliers found for this client yet." : "No external suppliers synced for this client yet."}</span>
             )}
           </div>
           <DatalistField id="category" label="Category" value={draft.category} options={options.categoryOptions} onChange={(v) => set("category", v)} activeField={activeField} setActiveField={setActiveField} />
@@ -1262,7 +1322,7 @@ function DatalistField({ id, label, value, options = [], onChange, activeField, 
         className={`mt-0.5 h-8 px-2 text-sm ${active ? "border-emerald-500 ring-2 ring-emerald-100" : ""}`}
       />
       <datalist id={listId}>
-        {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        {options.map((option) => <option key={option.value} value={option.value} label={option.label}>{option.label}</option>)}
       </datalist>
     </div>
   );
@@ -1332,6 +1392,8 @@ function makeDraft(row) {
   const base = {
     vendor_name: row?.client_business_name || row?.client?.business_name || "",
     vendor_account: "",
+    supplier_id: "",
+    supplier_code: "",
     category: "",
     date: row?.date || "",
     due_date: row?.date || "",
@@ -1349,6 +1411,7 @@ function makeDraft(row) {
     bank_account: "",
     price_is: "Tax Exclusive",
     customer_name: "",
+    customer_id: "",
     customer_match_status: "",
     create_new_customer: false,
     customer_email: "",
@@ -1363,6 +1426,8 @@ function makeDraft(row) {
     ...base,
     ...suggested,
     vendor_name: suggested.vendor_name || row?.client_business_name || row?.client?.business_name || "",
+    supplier_id: suggested.supplier_id || suggested.vendor_id || "",
+    supplier_code: suggested.supplier_code || suggested.vendor_account || "",
     description: suggested.description || description,
     date: suggested.date || row?.date || "",
     due_date: suggested.due_date || suggested.date || row?.date || "",
@@ -1372,6 +1437,7 @@ function makeDraft(row) {
     payment_method: displayPaymentMethod(suggested.payment_method) || paymentMethodLabel(row?.ai_payment_method),
     document_type: suggested.document_type || (submittedDocumentFlow(row) === "sales" ? "sales_invoice" : "bill"),
     customer_name: suggested.customer_name || suggested.customer || suggested.client_name || "",
+    customer_id: suggested.customer_id || "",
     customer_match_status: suggested.customer_match_status || suggested.suggested_customer || "",
     create_new_customer: Boolean(suggested.create_new_customer),
     customer_email: suggested.customer_email || suggested.email || "",
@@ -1707,42 +1773,37 @@ function salesFieldLabel(key) {
   return labels[key] || key;
 }
 
-function buildIntegrationOptions(records = {}) {
-  const accounts = Array.isArray(records.account) ? records.account.filter(isActiveIntegrationRecord) : [];
-  const suppliers = Array.isArray(records.supplier) ? records.supplier.filter(isActiveIntegrationRecord) : [];
-  const customers = Array.isArray(records.customer) ? records.customer.filter(isActiveIntegrationRecord) : [];
-  const taxCodes = Array.isArray(records.tax_code) ? records.tax_code.filter(isActiveIntegrationRecord) : [];
-  const supplierOptions = uniqueOptions(suppliers.map((record) => ({
-    value: record.name || record.code || record.external_id || "",
-    label: [record.code, record.name].filter(Boolean).join(" - ") || record.name || record.code || "",
+function buildCodingContextOptions(context = {}) {
+  const native = context.source === "epos_native";
+  const supplierOptions = uniqueOptions((context.suppliers || []).map((record) => ({
+    value: native ? record.supplier_id || record.id || record._id || "" : record.supplier_id || record.external_id || record.id || record.name || "",
+    label: [record.supplier_code || record.code, record.name].filter(Boolean).join(" - ") || record.name || record.supplier_id || record.external_id || "",
+    supplier_id: record.supplier_id || record.id || record._id || "",
+    supplier_name: record.name || "",
+    supplier_code: record.supplier_code || record.code || "",
+    external_id: record.external_id || "",
   })));
-  const supplierAccountOptions = uniqueOptions(suppliers.map((record) => ({
-    value: record.code || record.name || record.external_id || "",
-    label: [record.code, record.name].filter(Boolean).join(" - ") || record.name || record.code || "",
+  const supplierAccountOptions = uniqueOptions((context.suppliers || []).map((record) => ({
+    value: record.supplier_code || record.code || record.supplier_id || record.id || record.external_id || "",
+    label: [record.supplier_code || record.code, record.name].filter(Boolean).join(" - ") || record.name || "",
   })));
-  const categoryOptions = uniqueOptions(accounts.map((record) => ({
-    value: [record.code, record.name].filter(Boolean).join(" - ") || record.name || record.code || "",
-    label: [record.code, record.name, record.description].filter(Boolean).join(" - "),
+  const categoryOptions = uniqueOptions((context.purchase_accounts || []).map(accountOption));
+  const customerOptions = uniqueOptions((context.customers || []).map((record) => ({
+    value: native ? record.customer_id || record.id || record._id || "" : record.customer_id || record.external_id || record.id || record.name || "",
+    label: [record.customer_code || record.code, record.name].filter(Boolean).join(" - ") || record.name || record.customer_id || record.external_id || "",
+    customer_id: record.customer_id || record.id || record._id || "",
+    customer_name: record.name || "",
+    customer_code: record.customer_code || record.code || "",
+    external_id: record.external_id || "",
   })));
-  const customerOptions = uniqueOptions(customers.map((record) => ({
-    value: record.name || record.code || record.external_id || "",
-    label: [record.code, record.name].filter(Boolean).join(" - ") || record.name || record.code || "",
+  const salesAccountOptions = uniqueOptions((context.sales_accounts || []).map(accountOption));
+  const bankAccountOptions = uniqueOptions((context.bank_accounts || []).map((record) => ({
+    value: record.code || record.account_code || record.nominal_code || record.bank_account_id || record.id || "",
+    label: [record.code || record.account_code || record.nominal_code, record.name].filter(Boolean).join(" - ") || record.name || record.code || "",
   })));
-  const salesAccountOptions = uniqueOptions(accounts
-    .filter(isSalesAccountRecord)
-    .map((record) => ({
-      value: [record.code, record.name].filter(Boolean).join(" - ") || record.name || record.code || "",
-      label: [record.code, record.name, record.description].filter(Boolean).join(" - "),
-    })));
-  const bankAccountOptions = uniqueOptions(accounts
-    .filter(isBankAccountRecord)
-    .map((record) => ({
-      value: [record.code, record.name].filter(Boolean).join(" - ") || record.name || record.code || "",
-      label: [record.code, record.name, record.description].filter(Boolean).join(" - "),
-    })));
-  const syncedVatOptions = uniqueOptions(taxCodes.map((record) => ({
-    value: record.code || record.name || "",
-    label: [record.code, record.name, record.description].filter(Boolean).join(" - "),
+  const syncedVatOptions = uniqueOptions((context.vat_codes || []).map((record) => ({
+    value: record.code || record.vat_code || record.id || "",
+    label: [record.code || record.vat_code, record.name || record.description || record.rate].filter(Boolean).join(" - ") || record.code || record.vat_code || "",
   })));
   return {
     supplierOptions,
@@ -1752,31 +1813,54 @@ function buildIntegrationOptions(records = {}) {
     salesAccountOptions,
     bankAccountOptions,
     vatOptions: syncedVatOptions,
-    vatSource: "integration",
+    vatSource: context.source || "",
   };
 }
 
-function isInactiveValue(value) {
-  if (value === false) return true;
-  if (typeof value === "string") {
-    return ["false", "0", "inactive", "disabled", "deleted", "no"].includes(value.trim().toLowerCase());
-  }
-  return false;
+function accountOption(record = {}) {
+  return {
+    value: record.code || record.account_code || record.nominal_code || record.id || "",
+    label: [record.code || record.account_code || record.nominal_code, record.name || record.description].filter(Boolean).join(" - ") || record.name || record.code || "",
+  };
 }
 
-function isActiveIntegrationRecord(record) {
-  if (!record) return false;
-  if (isInactiveValue(record.active)) return false;
-  const raw = safeJson(record.raw_json);
-  if (isInactiveValue(raw.Active) || isInactiveValue(raw.active)) return false;
-  const status = String(raw.Status || raw.status || record.status || "").trim().toLowerCase();
-  return !["inactive", "disabled", "deleted"].includes(status);
+function CodingSourceBadge({ context }) {
+  if (!context?.source) return null;
+  return <Badge variant="secondary">{codingProviderLabel(context)}</Badge>;
+}
+
+function codingProviderLabel(context = {}) {
+  if (context.source === "epos_native") return "EPOS Native";
+  return context.provider || context.destination || "External";
+}
+
+function setSupplierDraftFromOption(value, options = [], setDraft) {
+  const option = options.find((item) => item.value === value || item.label === value);
+  setDraft((current) => ({
+    ...current,
+    supplier_id: option?.supplier_id || current.supplier_id || "",
+    supplier_code: option?.supplier_code || current.supplier_code || "",
+    vendor_account: option?.supplier_code || current.vendor_account || "",
+    vendor_name: option?.supplier_name || value,
+  }));
+}
+
+function setCustomerDraftFromOption(value, options = [], setDraft) {
+  const option = options.find((item) => item.value === value || item.label === value);
+  setDraft((current) => ({
+    ...current,
+    customer_id: option?.customer_id || current.customer_id || "",
+    customer_account_code: option?.customer_code || current.customer_account_code || "",
+    customer_name: option?.customer_name || value,
+    customer_match_status: option ? "Matched" : current.customer_match_status,
+  }));
 }
 
 function uniqueOptions(options) {
   const seen = new Set();
   return options
     .map((option) => ({
+      ...option,
       value: String(option.value || "").trim(),
       label: String(option.label || option.value || "").trim(),
     }))
@@ -1791,44 +1875,11 @@ function uniqueOptions(options) {
 
 function supplierExists(value, options = []) {
   const needle = String(value || "").trim().toLowerCase();
-  return !!needle && options.some((option) => String(option.value || "").trim().toLowerCase() === needle);
-}
-
-function isBankAccountRecord(record) {
-  const raw = safeJson(record.raw_json);
-  const text = [
-    record.name,
-    record.code,
-    record.description,
-    raw.AccountType,
-    raw.AccountSubType,
-    raw.Classification,
-    raw.FullyQualifiedName,
-  ].filter(Boolean).join(" ").toLowerCase();
-  return ["bank", "cash", "credit card", "current account", "undeposited funds", "paypal"].some((needle) => text.includes(needle));
-}
-
-function isSalesAccountRecord(record) {
-  const raw = safeJson(record.raw_json);
-  const text = [
-    record.name,
-    record.code,
-    record.description,
-    raw.AccountType,
-    raw.AccountSubType,
-    raw.Classification,
-    raw.FullyQualifiedName,
-  ].filter(Boolean).join(" ").toLowerCase();
-  return ["sales", "income", "revenue", "turnover"].some((needle) => text.includes(needle));
-}
-
-function safeJson(value) {
-  if (!value) return {};
-  if (typeof value === "object") return value;
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
+  return !!needle && options.some((option) => [
+    option.value,
+    option.label,
+    option.supplier_id,
+    option.supplier_name,
+    option.supplier_code,
+  ].some((candidate) => String(candidate || "").trim().toLowerCase() === needle));
 }

@@ -13362,18 +13362,247 @@ def integration_choice_label(record: dict, include_description: bool = False) ->
     return " - ".join([str(part).strip() for part in parts if str(part or "").strip()]) or str(record.get("name") or record.get("code") or "").strip()
 
 
-async def get_quickbooks_coding_choices(session: AsyncSession, client_id: str) -> dict:
+def coding_option_label(code: Optional[str], name: Optional[str], description: Optional[str] = None) -> str:
+    parts = [code, name]
+    if description:
+        parts.append(description)
+    return " - ".join([str(part).strip() for part in parts if str(part or "").strip()])
+
+
+def coding_choice_text(value: Any, name_only: bool = False) -> str:
+    if isinstance(value, dict):
+        if name_only:
+            return str(value.get("name") or value.get("supplier_name") or value.get("customer_name") or value.get("label") or "").strip()
+        return str(value.get("label") or coding_option_label(value.get("code"), value.get("name"), value.get("description")) or value.get("name") or value.get("code") or "").strip()
+    return str(value or "").strip()
+
+
+def coding_choice_texts(values: Optional[list], name_only: bool = False) -> list[str]:
+    seen = set()
+    labels: list[str] = []
+    for value in values or []:
+        label = coding_choice_text(value, name_only)
+        key = normalize_lookup_value(label)
+        if not label or key in seen:
+            continue
+        seen.add(key)
+        labels.append(label)
+    return labels
+
+
+def native_account_choice(account: dict) -> dict:
+    code = str(account.get("code") or "").strip()
+    name = str(account.get("name") or "").strip()
+    return {
+        "id": account.get("id"),
+        "code": code,
+        "name": name,
+        "label": coding_option_label(code, name),
+        "category": account.get("category") or "",
+        "account_type": account.get("account_type") or "",
+        "purpose": account.get("purpose") or "",
+        "active": bool(account.get("active", True)),
+    }
+
+
+def native_vat_choice(row: dict) -> dict:
+    code = str(row.get("code") or "").strip()
+    description = str(row.get("description") or "").strip()
+    return {
+        "id": row.get("id"),
+        "code": code,
+        "name": code,
+        "label": coding_option_label(code, description),
+        "description": description,
+        "percentage": money_str(money(row.get("percentage"))),
+        "purchase_behavior": row.get("purchase_behavior") or "",
+        "sales_behavior": row.get("sales_behavior") or "",
+        "active": bool(row.get("active", True)),
+    }
+
+
+def external_record_choice(record: dict) -> dict:
+    code = str(record.get("code") or "").strip()
+    name = str(record.get("name") or "").strip()
+    description = str(record.get("description") or "").strip()
+    return {
+        "id": record.get("external_id") or record.get("id"),
+        "external_id": record.get("external_id") or "",
+        "code": code,
+        "name": name,
+        "label": integration_choice_label(record, True),
+        "email": record.get("email") or "",
+        "description": description,
+        "active": bool(record.get("active", True)),
+        "provider": record.get("provider") or "",
+    }
+
+
+def ap_supplier_coding_choice(supplier: dict) -> dict:
+    code = str(supplier.get("supplier_code") or supplier.get("account_code") or "").strip()
+    name = str(supplier.get("name") or supplier.get("trading_name") or code).strip()
+    return {
+        "id": supplier.get("id"),
+        "supplier_id": supplier.get("id"),
+        "code": code,
+        "supplier_code": code,
+        "name": name,
+        "supplier_name": name,
+        "label": coding_option_label(code, name),
+        "email": supplier.get("email") or "",
+        "vat_number": supplier.get("vat_number") or "",
+        "default_purchase_account": supplier.get("default_purchase_account") or "",
+        "default_vat_code": supplier.get("default_vat_code") or "",
+        "status": supplier.get("status") or "",
+    }
+
+
+def ar_customer_coding_choice(customer: dict) -> dict:
+    code = str(customer.get("customer_code") or customer.get("account_code") or "").strip()
+    name = str(customer.get("name") or customer.get("trading_name") or code).strip()
+    return {
+        "id": customer.get("id"),
+        "customer_id": customer.get("id"),
+        "code": code,
+        "customer_code": code,
+        "name": name,
+        "customer_name": name,
+        "label": coding_option_label(code, name),
+        "email": customer.get("email") or "",
+        "vat_number": customer.get("vat_number") or "",
+        "default_sales_account": customer.get("default_sales_account") or "",
+        "default_vat_code": customer.get("default_vat_code") or "",
+        "status": customer.get("status") or "",
+    }
+
+
+def bank_account_coding_choice(account: dict) -> dict:
+    code = str(account.get("nominal_account_code") or "").strip()
+    name = str(account.get("account_name") or "").strip()
+    return {
+        "id": account.get("id"),
+        "code": code,
+        "name": name,
+        "label": coding_option_label(code, name),
+        "currency": account.get("currency") or "GBP",
+        "bank_name": account.get("bank_name") or "",
+        "default_account": bool(account.get("default_account", False)),
+        "active": bool(account.get("active", True)),
+    }
+
+
+def native_purchase_account_filter(account: dict) -> bool:
+    if not bool(account.get("active", True)) or bool(account.get("control_account")) or bool(account.get("is_control_account")):
+        return False
+    text = " ".join(str(account.get(key) or "").lower() for key in ("code", "name", "category", "account_type", "purpose"))
+    return any(term in text for term in ("expense", "purchase", "cost of sales", "cost of goods", "overhead", "direct cost")) or str(account.get("code") or "").startswith(("5", "6", "7"))
+
+
+def native_sales_account_filter(account: dict) -> bool:
+    if not bool(account.get("active", True)) or bool(account.get("control_account")) or bool(account.get("is_control_account")):
+        return False
+    text = " ".join(str(account.get(key) or "").lower() for key in ("code", "name", "category", "account_type", "purpose"))
+    return any(term in text for term in ("income", "revenue", "sales", "turnover")) or str(account.get("code") or "").startswith("4")
+
+
+def submitted_items_destination(document_type: Optional[str], native: bool) -> str:
+    if not native:
+        return "external"
+    doc_type = str(document_type or "purchase").lower()
+    return "accounts_receivable" if doc_type == "sales" else "accounts_payable"
+
+
+async def get_submitted_items_coding_context(session: AsyncSession, client_id: str, document_type: Optional[str] = "purchase") -> dict:
+    client = await get_user_by_id(session, client_id)
+    native = is_native_accounting_client(client)
+    if native:
+        accounts = await ensure_native_accounting_client(session, client_id)
+        vat_codes = await ensure_vat_codes(session, client_id)
+        await ensure_default_bank_account(session, client_id, accounts)
+        contacts = await many(session, select(accounting_contacts).where(accounting_contacts.c.client_id == client_id))
+        contact_by_id = {str(contact.get("id")): contact for contact in contacts}
+        supplier_profiles = await many(
+            session,
+            select(accounting_ap_supplier_profiles)
+            .where(accounting_ap_supplier_profiles.c.client_id == client_id)
+            .order_by(accounting_ap_supplier_profiles.c.supplier_code.asc(), accounting_ap_supplier_profiles.c.created_at.asc()),
+        )
+        customer_profiles = await many(
+            session,
+            select(accounting_ar_customer_profiles)
+            .where(accounting_ar_customer_profiles.c.client_id == client_id)
+            .order_by(accounting_ar_customer_profiles.c.customer_code.asc(), accounting_ar_customer_profiles.c.created_at.asc()),
+        )
+        bank_accounts = await many(
+            session,
+            select(accounting_bank_accounts)
+            .where(accounting_bank_accounts.c.client_id == client_id, accounting_bank_accounts.c.active == True)  # noqa: E712
+            .order_by(accounting_bank_accounts.c.default_account.desc(), accounting_bank_accounts.c.account_name.asc()),
+        )
+        purchase_accounts = [native_account_choice(account) for account in accounts if native_purchase_account_filter(account)]
+        sales_accounts = [native_account_choice(account) for account in accounts if native_sales_account_filter(account)]
+        suppliers = [
+            ap_supplier_coding_choice(serialize_ap_supplier(profile, contact_by_id.get(str(profile.get("contact_id"))) or {}))
+            for profile in supplier_profiles
+            if str(profile.get("status") or "active").lower() != "inactive"
+        ]
+        customers = [
+            ar_customer_coding_choice(serialize_ar_customer(profile, contact_by_id.get(str(profile.get("contact_id"))) or {}))
+            for profile in customer_profiles
+            if str(profile.get("status") or "active").lower() != "inactive"
+        ]
+        context = {
+            "source": "epos_native",
+            "provider": "epos_native",
+            "destination": submitted_items_destination(document_type, True),
+            "suppliers": suppliers[:500],
+            "customers": customers[:500],
+            "purchase_accounts": purchase_accounts[:500],
+            "sales_accounts": sales_accounts[:500],
+            "vat_codes": [native_vat_choice(row) for row in vat_codes if bool(row.get("active", True))][:200],
+            "bank_accounts": [bank_account_coding_choice(row) for row in bank_accounts][:200],
+        }
+        account_options = context["sales_accounts"] if context["destination"] == "accounts_receivable" else context["purchase_accounts"]
+        context["categories"] = coding_choice_texts(account_options)
+        context["supplier_names"] = coding_choice_texts(context["suppliers"], True)
+        context["customer_names"] = coding_choice_texts(context["customers"], True)
+        return context
+
     try:
+        integration = await one(session, select(client_integrations).where(client_integrations.c.client_id == client_id))
+        provider = str((integration or {}).get("provider") or "quickbooks").strip().lower() or "quickbooks"
         accounts = await get_active_integration_records(session, client_id, "account")
         suppliers = await get_active_integration_records(session, client_id, "supplier")
+        customers = await get_active_integration_records(session, client_id, "customer")
         tax_codes = await get_active_integration_records(session, client_id, "tax_code")
+        bank_accounts = await get_active_integration_records(session, client_id, "bank_account")
     except Exception:
-        return {"categories": [], "suppliers": [], "vat_codes": []}
-    return {
-        "categories": [integration_choice_label(record, True) for record in accounts if record.get("external_id")][:500],
-        "suppliers": [str(record.get("name") or "").strip() for record in suppliers if record.get("external_id") and record.get("name")][:500],
-        "vat_codes": [integration_choice_label(record, True) for record in tax_codes if record.get("external_id")][:200],
+        provider = "quickbooks"
+        accounts = []
+        suppliers = []
+        customers = []
+        tax_codes = []
+        bank_accounts = []
+    account_options = [external_record_choice(record) for record in accounts if record.get("external_id")]
+    context = {
+        "source": "external",
+        "provider": provider,
+        "destination": "external",
+        "suppliers": [external_record_choice(record) for record in suppliers if record.get("external_id")][:500],
+        "customers": [external_record_choice(record) for record in customers if record.get("external_id")][:500],
+        "purchase_accounts": account_options[:500],
+        "sales_accounts": account_options[:500],
+        "vat_codes": [external_record_choice(record) for record in tax_codes if record.get("external_id")][:200],
+        "bank_accounts": [external_record_choice(record) for record in bank_accounts if record.get("external_id")][:200],
     }
+    context["categories"] = coding_choice_texts(account_options)
+    context["supplier_names"] = coding_choice_texts(context["suppliers"], True)
+    context["customer_names"] = coding_choice_texts(context["customers"], True)
+    return context
+
+
+async def get_quickbooks_coding_choices(session: AsyncSession, client_id: str) -> dict:
+    return await get_submitted_items_coding_context(session, client_id)
 
 
 def choice_match_score(value: str, choice: str) -> float:
@@ -13458,9 +13687,9 @@ def apply_synced_coding_choices(review: dict, coding_choices: Optional[dict], is
     fields = review.get("coding_fields") or {}
     if not isinstance(fields, dict):
         return review
-    categories = coding_choices.get("categories") or []
-    vat_codes = coding_choices.get("vat_codes") or []
-    suppliers = coding_choices.get("suppliers") or []
+    categories = coding_choice_texts(coding_choices.get("categories") or coding_choices.get("purchase_accounts") or coding_choices.get("sales_accounts") or [])
+    vat_codes = coding_choice_texts(coding_choices.get("vat_codes") or [])
+    suppliers = coding_choice_texts(coding_choices.get("supplier_names") or coding_choices.get("suppliers") or [], True)
 
     supplier_match = best_choice(fields.get("vendor_name"), suppliers, 0.76)
     if supplier_match:
@@ -13572,12 +13801,12 @@ async def review_document_with_openai(
         "method style and line item approach. Do not copy old dates or amounts from examples. "
         "Always leave bank_account blank. The accountant will choose the bank account at publish time; that "
         "published choice is stored for future history but should not be prefilled by AI yet. "
-        "For VAT clients, evaluate VAT evidence and choose the closest synced active VAT code. For non-VAT "
-        "clients, treat VAT as 0.00 and choose the closest synced active zero/no-VAT VAT code. "
-        "For supplier, category, line category, VAT code and line VAT code, use the synced QuickBooks choices below "
-        "when possible. Do not invent category/account names or VAT codes. If no synced option is a reasonable match, "
+        "For VAT clients, evaluate VAT evidence and choose the closest available active VAT code. For non-VAT "
+        "clients, treat VAT as 0.00 and choose the closest available active zero/no-VAT VAT code. "
+        "For supplier, customer, category, line category, VAT code and line VAT code, use the available accounting choices below "
+        "when possible. Do not invent category/account names or VAT codes. If no available option is a reasonable match, "
         "leave that field blank for the accountant to choose. "
-        f"Synced QuickBooks choices: {json.dumps(coding_choices or {})[:7000]}. "
+        f"Available accounting choices: {json.dumps(coding_choices or {})[:7000]}. "
         f"Published correction examples for this client/type: {json.dumps(coding_history or [])[:5000]}"
     )
     line_item_schema = {
@@ -13879,7 +14108,7 @@ async def submit_item(
             if ai_review is None:
                 ai_settings = await get_openai_runtime_settings(session)
                 coding_history = await get_coding_history(session, str(user["id"]), item["type"])
-                coding_choices = await get_quickbooks_coding_choices(session, str(user["id"]))
+                coding_choices = await get_submitted_items_coding_context(session, str(user["id"]), item["type"])
                 ai_review = await review_document_with_openai(
                     raw,
                     upload_content_type(file),
@@ -14002,7 +14231,7 @@ async def submit_additional(
             if ai_review is None:
                 ai_settings = await get_openai_runtime_settings(session)
                 coding_history = await get_coding_history(session, str(user["id"]), type)
-                coding_choices = await get_quickbooks_coding_choices(session, str(user["id"]))
+                coding_choices = await get_submitted_items_coding_context(session, str(user["id"]), item["type"])
                 ai_review = await review_document_with_openai(
                     raw,
                     upload_content_type(file),
@@ -14162,6 +14391,33 @@ def purchase_submission_fields(submission: dict, reviewed_fields: Optional[dict]
     fields["supplier_address"] = source.get("supplier_address") or ""
     fields["create_new_supplier"] = bool(source.get("create_new_supplier"))
     return fields
+
+
+@api.get("/admin/submissions/coding-context")
+async def get_admin_submitted_items_coding_context(
+    client_id: str,
+    document_type: str = "purchase",
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await require_document_processing_module(session)
+    client = await get_user_by_id(session, client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client was not found")
+    return await get_submitted_items_coding_context(session, client_id, document_type)
+
+
+@api.get("/admin/submissions/{submission_id}/coding-context")
+async def get_submission_coding_context(
+    submission_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await require_document_processing_module(session)
+    doc = await one(session, select(submissions).where(submissions.c.id == submission_id))
+    if not doc:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    return await get_submitted_items_coding_context(session, str(doc["client_id"]), doc.get("type") or doc.get("document_direction") or "purchase")
 
 
 @api.get("/admin/submissions/{submission_id}/purchase-invoice-review")
@@ -14583,7 +14839,7 @@ async def extract_submission_fields(
         "additional": bool(doc.get("is_additional")),
     }
     coding_history = await get_coding_history(session, str(doc["client_id"]), doc.get("type") or "purchase")
-    coding_choices = await get_quickbooks_coding_choices(session, str(doc["client_id"]))
+    coding_choices = await get_submitted_items_coding_context(session, str(doc["client_id"]), doc.get("type") or "purchase")
     ai_review = await review_document_with_openai(
         raw,
         content_type,
