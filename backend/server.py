@@ -13058,6 +13058,29 @@ def client_approved_warning_note(comment: str, accepted_ai_review: Optional[dict
     return "\n".join(lines)
 
 
+async def run_pre_submission_ai_review(
+    session: AsyncSession,
+    user: dict,
+    item: dict,
+    raw: bytes,
+    file: UploadFile,
+) -> dict:
+    ai_settings = await get_openai_runtime_settings(session)
+    coding_history = await get_coding_history(session, str(user["id"]), item["type"])
+    coding_choices = await get_submitted_items_coding_context(session, str(user["id"]), item["type"])
+    return await review_document_with_openai(
+        raw,
+        upload_content_type(file),
+        item,
+        user,
+        ai_settings["api_key"],
+        ai_settings["model"],
+        file.filename,
+        coding_history,
+        coding_choices,
+    )
+
+
 def save_submission_upload_with_stamp_fallback(
     raw: bytes,
     file: UploadFile,
@@ -13101,92 +13124,6 @@ def upload_log_context(file: Optional[UploadFile], raw: Optional[bytes] = None) 
         "suffix": Path(file.filename or "").suffix.lower(),
         "size": len(raw) if raw is not None else 0,
     }
-
-
-async def apply_ai_review_after_persistence(
-    session: AsyncSession,
-    submission_id: str,
-    user: dict,
-    item: dict,
-    raw: Optional[bytes],
-    file: Optional[UploadFile],
-    ai_review_token: Optional[str],
-    client_approved_ai_warning: bool,
-    correlation_id: str,
-) -> dict:
-    if not user.get("ai_analysis_enabled") or not raw or not file or not (is_image_document(file) or is_pdf_document(file)):
-        return {"ai_review_status": None, "ai_warning": None, "ai_client_approved": False}
-    image_hash = hashlib.sha256(raw).hexdigest()
-    ai_review = None
-    ai_client_approved = False
-    try:
-        ai_token_verified = False
-        if client_approved_ai_warning and ai_review_token:
-            ai_review = verify_ai_review_token(ai_review_token, str(user["id"]), image_hash)
-            ai_token_verified = ai_review is not None
-            if not ai_token_verified:
-                warning = "Client approved the AI warning, but the review token could not be verified. The submission remains in Submitted Items for manual review."
-                await session.execute(
-                    update(submissions)
-                    .where(submissions.c.id == submission_id)
-                    .values(ai_review_status="needs_review", ai_review_message=warning, ai_client_approved=False)
-                )
-                await session.commit()
-                logger.warning("Client-approved AI review token was not verified after persistence correlation_id=%s submission_id=%s upload=%s", correlation_id, submission_id, upload_log_context(file, raw))
-                return {"ai_review_status": "needs_review", "ai_review_message": warning, "ai_warning": warning, "ai_client_approved": False}
-        if client_approved_ai_warning:
-            if ai_review is not None:
-                ai_client_approved = True
-            else:
-                return {"ai_review_status": None, "ai_review_message": None, "ai_warning": None, "ai_client_approved": False}
-        if ai_review is None:
-            ai_settings = await get_openai_runtime_settings(session)
-            coding_history = await get_coding_history(session, str(user["id"]), item["type"])
-            coding_choices = await get_submitted_items_coding_context(session, str(user["id"]), item["type"])
-            ai_review = await review_document_with_openai(
-                raw,
-                upload_content_type(file),
-                item,
-                user,
-                ai_settings["api_key"],
-                ai_settings["model"],
-                file.filename,
-                coding_history,
-                coding_choices,
-            )
-        ai_client_approved = ai_client_approved or (ai_review.get("status") in ("needs_review", "rejected") and ai_token_verified)
-        await session.execute(
-            update(submissions)
-            .where(submissions.c.id == submission_id)
-            .values(
-                ai_review_status=ai_review.get("status") or "needs_review",
-                ai_review_message=ai_review.get("message"),
-                ai_document_type=ai_review.get("document_type"),
-                ai_extracted_fields=json.dumps(ai_review.get("coding_fields") or {}),
-                ai_client_approved=ai_client_approved,
-            )
-        )
-        await session.commit()
-        return {"ai_review_status": ai_review.get("status"), "ai_review_message": ai_review.get("message"), "ai_warning": None, "ai_client_approved": ai_client_approved}
-    except Exception as exc:
-        await session.rollback()
-        logger.exception("Submission AI review failed after persistence correlation_id=%s submission_id=%s upload=%s", correlation_id, submission_id, upload_log_context(file, raw))
-        warning = "Submission was recorded, but AI review could not be completed. It remains in Submitted Items for manual review."
-        try:
-            await session.execute(
-                update(submissions)
-                .where(submissions.c.id == submission_id)
-                .values(
-                    ai_review_status="needs_review",
-                    ai_review_message=warning,
-                    ai_client_approved=False,
-                )
-            )
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            logger.exception("Failed to mark submission AI review warning correlation_id=%s submission_id=%s", correlation_id, submission_id)
-        return {"ai_review_status": "needs_review", "ai_warning": warning, "ai_client_approved": False}
 
 
 CODING_FIELD_KEYS = (
@@ -14281,6 +14218,7 @@ async def submit_item(
 
     comment = (comment or "").strip()
     image_path = None
+    ai_review = None
     ai_client_approved = False
     accepted_ai_review = None
     stamp_warning = None
@@ -14304,9 +14242,25 @@ async def submit_item(
         logger.info("Client submit start correlation_id=%s endpoint=item mode=photo item_id=%s upload=%s", correlation_id, item_id, upload_log_context(file, raw))
         validate_supported_upload(file)
         validate_upload_size(raw)
-        accepted_ai_review = verified_ai_warning_review(user, raw, ai_review_token, client_approved_ai_warning)
-        ai_client_approved = bool(accepted_ai_review)
-        watermark_comment = client_approved_warning_note(comment, accepted_ai_review, ai_client_approved)
+        if user.get("ai_analysis_enabled") and (is_image_document(file) or is_pdf_document(file)):
+            if client_approved_ai_warning:
+                accepted_ai_review = verified_ai_warning_review(user, raw, ai_review_token, True)
+                if not accepted_ai_review:
+                    raise HTTPException(status_code=400, detail="The AI review approval has expired or does not match this file. Please upload again so we can re-check it.")
+                ai_review = accepted_ai_review
+                ai_client_approved = True
+            else:
+                ai_review = await run_pre_submission_ai_review(session, user, item, raw, file)
+                if ai_review.get("status") in ("needs_review", "rejected"):
+                    image_hash = hashlib.sha256(raw).hexdigest()
+                    return {
+                        "ok": False,
+                        "ai_review": {
+                            **ai_review,
+                            "token": create_ai_review_token(str(user["id"]), image_hash, ai_review),
+                        },
+                    }
+        watermark_comment = client_approved_warning_note(comment, ai_review, True) if ai_client_approved else build_submission_note(comment, ai_review, False)
         base_name = f"{user['id']}_{item_id}_{int(now.timestamp())}"
         fpath, stamped, stamp_warning = save_submission_upload_with_stamp_fallback(raw, file, base_name, watermark_comment, now, correlation_id)
         image_path = str(fpath)
@@ -14322,13 +14276,13 @@ async def submit_item(
             description=item.get("description", ""),
             date=item.get("date", ""),
             amount=item.get("amount", ""),
-            comment=client_approved_warning_note(comment, accepted_ai_review, ai_client_approved) + (f"\n{stamp_warning}" if stamp_warning else ""),
+            comment=(client_approved_warning_note(comment, ai_review, True) if ai_client_approved else comment) + (f"\n{stamp_warning}" if stamp_warning else ""),
             image_filename=Path(image_path).name if image_path else None,
             is_additional=False,
-            ai_review_status=accepted_ai_review.get("status") if accepted_ai_review else None,
-            ai_review_message=accepted_ai_review.get("message") if accepted_ai_review else None,
-            ai_document_type=accepted_ai_review.get("document_type") if accepted_ai_review else None,
-            ai_extracted_fields=json.dumps(accepted_ai_review.get("coding_fields") or {}) if accepted_ai_review else None,
+            ai_review_status=ai_review.get("status") if ai_review else None,
+            ai_review_message=ai_review.get("message") if ai_review else None,
+            ai_document_type=ai_review.get("document_type") if ai_review else None,
+            ai_extracted_fields=json.dumps(ai_review.get("coding_fields") or {}) if ai_review else None,
             ai_client_approved=ai_client_approved,
             review_status="inbox",
             submitted_at=utc_now_iso(),
@@ -14339,7 +14293,6 @@ async def submit_item(
     )
     await session.execute(delete(outstanding_items).where(outstanding_items.c.id == item_id))
     await session.commit()
-    ai_result = await apply_ai_review_after_persistence(session, submission_id, user, item, raw, file, ai_review_token, client_approved_ai_warning, correlation_id)
     email_sent = True
     email_warning = None
     try:
@@ -14357,10 +14310,9 @@ async def submit_item(
         "submission_id": submission_id,
         "email_sent": email_sent,
         "email_warning": email_warning,
-        "ai_client_approved": bool(ai_client_approved or ai_result.get("ai_client_approved")),
-        "ai_review_status": ai_result.get("ai_review_status") or (accepted_ai_review or {}).get("status"),
-        "ai_review_message": ai_result.get("ai_review_message") or (accepted_ai_review or {}).get("message"),
-        "ai_warning": ai_result.get("ai_warning"),
+        "ai_client_approved": ai_client_approved,
+        "ai_review_status": ai_review.get("status") if ai_review else None,
+        "ai_review_message": ai_review.get("message") if ai_review else None,
         "stamped": stamped,
         "stamp_warning": stamp_warning,
     }
@@ -14390,6 +14342,7 @@ async def submit_additional(
     now = datetime.now(timezone.utc)
     fname = f"{user['id']}_additional_{int(now.timestamp())}.jpg"
     fpath = UPLOAD_DIR / fname
+    ai_review = None
     ai_client_approved = False
     accepted_ai_review = None
     stamp_warning = None
@@ -14411,9 +14364,25 @@ async def submit_additional(
         validate_supported_upload(file)
         validate_upload_size(raw)
         item = {"description": description, "date": "", "amount": "", "type": type, "additional": True}
-        accepted_ai_review = verified_ai_warning_review(user, raw, ai_review_token, client_approved_ai_warning)
-        ai_client_approved = bool(accepted_ai_review)
-        watermark_comment = client_approved_warning_note(comment, accepted_ai_review, ai_client_approved)
+        if user.get("ai_analysis_enabled") and (is_image_document(file) or is_pdf_document(file)):
+            if client_approved_ai_warning:
+                accepted_ai_review = verified_ai_warning_review(user, raw, ai_review_token, True)
+                if not accepted_ai_review:
+                    raise HTTPException(status_code=400, detail="The AI review approval has expired or does not match this file. Please upload again so we can re-check it.")
+                ai_review = accepted_ai_review
+                ai_client_approved = True
+            else:
+                ai_review = await run_pre_submission_ai_review(session, user, item, raw, file)
+                if ai_review.get("status") in ("needs_review", "rejected"):
+                    image_hash = hashlib.sha256(raw).hexdigest()
+                    return {
+                        "ok": False,
+                        "ai_review": {
+                            **ai_review,
+                            "token": create_ai_review_token(str(user["id"]), image_hash, ai_review),
+                        },
+                    }
+        watermark_comment = client_approved_warning_note(comment, ai_review, True) if ai_client_approved else build_submission_note(comment, ai_review, False)
         base_name = f"{user['id']}_additional_{int(now.timestamp())}"
         fpath, stamped, stamp_warning = save_submission_upload_with_stamp_fallback(raw, file, base_name, watermark_comment, now, correlation_id)
         fname = fpath.name
@@ -14432,13 +14401,13 @@ async def submit_additional(
             description=description,
             date="",
             amount="",
-            comment=client_approved_warning_note(comment, accepted_ai_review, ai_client_approved) + (f"\n{stamp_warning}" if stamp_warning else ""),
+            comment=(client_approved_warning_note(comment, ai_review, True) if ai_client_approved else comment) + (f"\n{stamp_warning}" if stamp_warning else ""),
             image_filename=fname,
             is_additional=True,
-            ai_review_status=accepted_ai_review.get("status") if accepted_ai_review else None,
-            ai_review_message=accepted_ai_review.get("message") if accepted_ai_review else None,
-            ai_document_type=accepted_ai_review.get("document_type") if accepted_ai_review else None,
-            ai_extracted_fields=json.dumps(accepted_ai_review.get("coding_fields") or {}) if accepted_ai_review else None,
+            ai_review_status=ai_review.get("status") if ai_review else None,
+            ai_review_message=ai_review.get("message") if ai_review else None,
+            ai_document_type=ai_review.get("document_type") if ai_review else None,
+            ai_extracted_fields=json.dumps(ai_review.get("coding_fields") or {}) if ai_review else None,
             ai_client_approved=ai_client_approved,
             review_status="inbox",
             submitted_at=now.isoformat(),
@@ -14448,7 +14417,6 @@ async def submit_additional(
         )
     )
     await session.commit()
-    ai_result = await apply_ai_review_after_persistence(session, submission_id, user, item, raw, file, ai_review_token, client_approved_ai_warning, correlation_id)
     email_sent = True
     email_warning = None
     try:
@@ -14466,10 +14434,9 @@ async def submit_additional(
         "submission_id": submission_id,
         "email_sent": email_sent,
         "email_warning": email_warning,
-        "ai_client_approved": bool(ai_client_approved or ai_result.get("ai_client_approved")),
-        "ai_review_status": ai_result.get("ai_review_status") or (accepted_ai_review or {}).get("status"),
-        "ai_review_message": ai_result.get("ai_review_message") or (accepted_ai_review or {}).get("message"),
-        "ai_warning": ai_result.get("ai_warning"),
+        "ai_client_approved": ai_client_approved,
+        "ai_review_status": ai_review.get("status") if ai_review else None,
+        "ai_review_message": ai_review.get("message") if ai_review else None,
         "stamped": stamped,
         "stamp_warning": stamp_warning,
     }
