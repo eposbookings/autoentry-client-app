@@ -523,6 +523,19 @@ export default function AdminClientDetail() {
     }
   }
 
+  async function refreshNativeAccounting() {
+    setIntegrationBusy(true);
+    try {
+      const { data } = await api.get(`/admin/accounting/clients/${id}`);
+      setNativeAccountingDetail(data);
+      toast.success("Native accounting records refreshed");
+    } catch (e) {
+      toast.error(formatApiError(e));
+    } finally {
+      setIntegrationBusy(false);
+    }
+  }
+
   async function connectAccountingSoftware() {
     const providerName = providerLabel(integrationSettings.provider);
     if (integrationSettings.provider !== "quickbooks") {
@@ -729,7 +742,7 @@ export default function AdminClientDetail() {
             quickBooksConfig={quickBooksConfig}
             busy={integrationBusy}
             saveSettings={saveIntegrationSettings}
-            refreshNative={load}
+            refreshNative={refreshNativeAccounting}
             connect={connectAccountingSoftware}
             sync={syncAccountingSoftware}
             deleteRecord={deleteIntegrationRecord}

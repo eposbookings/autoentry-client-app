@@ -2170,6 +2170,8 @@ def money_str(value: Decimal) -> str:
 
 def clean_accounting_destination(value: Optional[str], native_enabled: bool = False) -> str:
     destination = (value or "").strip().lower()
+    if native_enabled:
+        return "native"
     if destination not in {"external", "native"}:
         destination = "native" if native_enabled else "external"
     return destination
@@ -2588,8 +2590,8 @@ def serialize_user(u: dict) -> dict:
         "sales_autoentry_email": u.get("sales_autoentry_email"),
         "is_vat_client": bool(u.get("is_vat_client")),
         "ai_analysis_enabled": bool(u.get("ai_analysis_enabled")),
-        "accounting_destination": u.get("accounting_destination") or ("native" if u.get("native_accounting_enabled") else "external"),
         "native_accounting_enabled": bool(u.get("native_accounting_enabled")),
+        "accounting_destination": "native" if u.get("native_accounting_enabled") else clean_accounting_destination(u.get("accounting_destination")),
         "native_accounting_created_at": u.get("native_accounting_created_at"),
         "status": u.get("status", "active"),
     }
