@@ -35,7 +35,7 @@ import jwt
 from cryptography.fernet import Fernet
 from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import (
     Boolean,
@@ -12961,9 +12961,10 @@ def render_image_with_note_pdf(image_bytes: bytes, comment: str, submitted_at: d
     from reportlab.lib.utils import ImageReader
     from reportlab.pdfgen import canvas
 
-    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    image = ImageOps.exif_transpose(Image.open(io.BytesIO(image_bytes))).convert("RGB")
+    image.thumbnail((1800, 1800))
     image_buffer = io.BytesIO()
-    image.save(image_buffer, format="JPEG", quality=90)
+    image.save(image_buffer, format="JPEG", quality=82, optimize=True)
     image_buffer.seek(0)
 
     packet = io.BytesIO()
@@ -13125,8 +13126,7 @@ def write_submission_upload(raw: bytes, file: UploadFile, fpath: Path, watermark
                 with open(fpath, "wb") as f:
                     f.write(render_image_with_note_pdf(raw, watermark_comment, submitted_at))
             else:
-                img = Image.open(io.BytesIO(raw)).convert("RGB")
-                img.save(fpath, format="JPEG", quality=88)
+                write_original_upload(raw, fpath)
         else:
             with open(fpath, "wb") as f:
                 f.write(append_submission_note_page(raw, watermark_comment, submitted_at) if watermark_comment else raw)
@@ -13207,8 +13207,8 @@ def save_submission_upload_with_stamp_fallback(
 ) -> tuple[Path, bool, Optional[str]]:
     image_upload = is_image_document(file)
     if not watermark_comment:
-        fpath = UPLOAD_DIR / f"{base_name}{'.jpg' if image_upload else upload_extension(file, '.pdf')}"
-        write_submission_upload(raw, file, fpath, "", submitted_at)
+        fpath = UPLOAD_DIR / f"{base_name}{upload_extension(file, '.bin')}"
+        write_original_upload(raw, fpath)
         return fpath, False, None
 
     stamped_path = UPLOAD_DIR / f"{base_name}.pdf"
