@@ -33,7 +33,7 @@ import bcrypt
 import httpx
 import jwt
 from cryptography.fernet import Fernet
-from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, EmailStr
@@ -214,6 +214,31 @@ submissions = Table(
     Column("client_business_name", String(255)),
     Column("client_first_name", String(255)),
     Column("client_last_name", String(255)),
+)
+
+pending_client_uploads = Table(
+    "pending_client_uploads",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("endpoint", String(32), index=True),
+    Column("item_id", String(36), index=True),
+    Column("type", String(32), index=True),
+    Column("description", Text),
+    Column("date", String(32)),
+    Column("amount", String(64)),
+    Column("comment", Text),
+    Column("original_filename", String(255)),
+    Column("stored_filename", String(255)),
+    Column("content_type", String(255)),
+    Column("suffix", String(32)),
+    Column("size_bytes", Integer, default=0),
+    Column("file_sha256", String(64), index=True),
+    Column("ai_review_json", Text),
+    Column("status", String(32), default="pending", index=True),
+    Column("created_at", String(64), index=True),
+    Column("expires_at", String(64), index=True),
+    Column("final_submission_id", String(36), index=True),
 )
 
 settings = Table(
@@ -1570,6 +1595,7 @@ async def ensure_schema_columns(conn):
         users,
         outstanding_items,
         submissions,
+        pending_client_uploads,
         settings,
         client_integrations,
         integration_records,
@@ -13143,6 +13169,103 @@ def upload_log_context(file: Optional[UploadFile], raw: Optional[bytes] = None) 
     }
 
 
+def pending_upload_log_context(row: Optional[dict]) -> dict:
+    if not row:
+        return {"pending_upload_id": "", "filename": "", "content_type": "", "suffix": "", "size": 0}
+    return {
+        "pending_upload_id": row.get("id") or "",
+        "filename": row.get("original_filename") or "",
+        "content_type": row.get("content_type") or "",
+        "suffix": row.get("suffix") or "",
+        "size": int(row.get("size_bytes") or 0),
+    }
+
+
+async def create_pending_client_upload(
+    session: AsyncSession,
+    user: dict,
+    endpoint: str,
+    item: dict,
+    raw: bytes,
+    file: UploadFile,
+    comment: str,
+    ai_review: Optional[dict] = None,
+) -> dict:
+    pending_id = new_id()
+    suffix = upload_extension(file, ".bin")
+    stored_filename = f"pending_{pending_id}{suffix}"
+    write_original_upload(raw, UPLOAD_DIR / stored_filename)
+    now = datetime.now(timezone.utc)
+    row = {
+        "id": pending_id,
+        "client_id": str(user["id"]),
+        "endpoint": endpoint,
+        "item_id": item.get("id") if endpoint == "item" else None,
+        "type": item.get("type") or "purchase",
+        "description": item.get("description") or "",
+        "date": item.get("date") or "",
+        "amount": item.get("amount") or "",
+        "comment": comment,
+        "original_filename": file.filename or "",
+        "stored_filename": stored_filename,
+        "content_type": upload_content_type(file),
+        "suffix": Path(file.filename or "").suffix.lower(),
+        "size_bytes": len(raw),
+        "file_sha256": hashlib.sha256(raw).hexdigest(),
+        "ai_review_json": json.dumps(ai_review or {}) if ai_review else None,
+        "status": "pending",
+        "created_at": now.isoformat(),
+        "expires_at": (now + timedelta(hours=4)).isoformat(),
+        "final_submission_id": None,
+    }
+    await session.execute(insert(pending_client_uploads).values(**row))
+    await session.commit()
+    return row
+
+
+async def get_pending_upload_or_400(session: AsyncSession, user: dict, pending_upload_id: str, endpoint: str, item_id: Optional[str] = None) -> dict:
+    pending_id = str(pending_upload_id or "").strip()
+    if not pending_id:
+        raise HTTPException(status_code=400, detail="Pending upload id is required to submit after approving an AI warning.")
+    row = await one(
+        session,
+        select(pending_client_uploads).where(
+            pending_client_uploads.c.id == pending_id,
+            pending_client_uploads.c.client_id == str(user["id"]),
+            pending_client_uploads.c.endpoint == endpoint,
+        ),
+    )
+    if not row or row.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="This pending upload is no longer available. Please upload the document again.")
+    if item_id and str(row.get("item_id") or "") != str(item_id):
+        raise HTTPException(status_code=400, detail="This pending upload does not match the selected item. Please upload the document again.")
+    if not (UPLOAD_DIR / Path(row.get("stored_filename") or "").name).exists():
+        raise HTTPException(status_code=400, detail="The pending upload file could not be found. Please upload the document again.")
+    return row
+
+
+def upload_proxy_from_pending(row: dict) -> Any:
+    class PendingUploadFile:
+        filename = row.get("original_filename") or row.get("stored_filename") or "upload.bin"
+        content_type = row.get("content_type") or "application/octet-stream"
+
+    return PendingUploadFile()
+
+
+def pending_ai_review(row: dict) -> Optional[dict]:
+    review = parse_json_object(row.get("ai_review_json"))
+    return review if review else None
+
+
+async def send_submission_email_background(client_user: dict, item: dict, comment: str, image_path: Optional[str], submission_id: str) -> None:
+    try:
+        await send_submission_email(client_user, item, comment, image_path)
+    except HTTPException as exc:
+        logger.warning("Submission %s was recorded but background email delivery failed: %s", submission_id, exc.detail)
+    except Exception:
+        logger.exception("Submission %s was recorded but background email delivery failed", submission_id)
+
+
 CODING_FIELD_KEYS = (
     "vendor_name",
     "vendor_account",
@@ -14216,10 +14339,12 @@ async def send_submission_email(client_user: dict, item: dict, comment: str, ima
 async def submit_item(
     item_id: str,
     request: Request,
+    background_tasks: BackgroundTasks,
     comment: str = Form(""),
-    mode: str = Form(...),
+    mode: str = Form("photo"),
     client_approved_ai_warning: bool = Form(False),
     ai_review_token: Optional[str] = Form(None),
+    pending_upload_id: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     user: dict = Depends(require_client),
     session: AsyncSession = Depends(get_db),
@@ -14241,6 +14366,7 @@ async def submit_item(
     stamp_warning = None
     stamped = False
     raw: Optional[bytes] = None
+    pending_upload = None
     now = datetime.now(timezone.utc)
     correlation_id = getattr(request.state, "correlation_id", "")
     if mode == "no_photo":
@@ -14253,30 +14379,52 @@ async def submit_item(
             f.write(render_document_page(item.get("description", ""), comment, now))
         image_path = str(fpath)
     elif mode == "photo":
-        if not file:
+        if client_approved_ai_warning and pending_upload_id:
+            pending_upload = await get_pending_upload_or_400(session, user, pending_upload_id, "item", item_id)
+            if not comment:
+                comment = str(pending_upload.get("comment") or "")
+            raw = (UPLOAD_DIR / Path(pending_upload.get("stored_filename") or "").name).read_bytes()
+            file = upload_proxy_from_pending(pending_upload)
+            logger.info("Client submit resume pending upload correlation_id=%s endpoint=item item_id=%s upload=%s", correlation_id, item_id, pending_upload_log_context(pending_upload))
+            accepted_ai_review = verify_ai_review_token(ai_review_token or "", str(user["id"]), str(pending_upload.get("file_sha256") or ""))
+            if not accepted_ai_review:
+                raise HTTPException(status_code=400, detail="The AI review approval has expired or does not match this pending upload. Please upload again so we can re-check it.")
+            ai_review = accepted_ai_review
+            ai_client_approved = True
+        elif not file:
             raise HTTPException(status_code=400, detail="Document file is required")
-        raw = await file.read()
-        logger.info("Client submit start correlation_id=%s endpoint=item mode=photo item_id=%s upload=%s", correlation_id, item_id, upload_log_context(file, raw))
-        validate_supported_upload(file)
-        validate_upload_size(raw)
-        if user.get("ai_analysis_enabled") and (is_image_document(file) or is_pdf_document(file)):
-            if client_approved_ai_warning:
-                accepted_ai_review = verified_ai_warning_review(user, raw, ai_review_token, True)
-                if not accepted_ai_review:
-                    raise HTTPException(status_code=400, detail="The AI review approval has expired or does not match this file. Please upload again so we can re-check it.")
-                ai_review = accepted_ai_review
-                ai_client_approved = True
-            else:
-                ai_review = await run_pre_submission_ai_review(session, user, item, raw, file)
-                if ai_review.get("status") in ("needs_review", "rejected"):
-                    image_hash = hashlib.sha256(raw).hexdigest()
-                    return {
-                        "ok": False,
-                        "ai_review": {
-                            **ai_review,
-                            "token": create_ai_review_token(str(user["id"]), image_hash, ai_review),
-                        },
-                    }
+        else:
+            raw = await file.read()
+            logger.info("Client submit start correlation_id=%s endpoint=item mode=photo item_id=%s upload=%s", correlation_id, item_id, upload_log_context(file, raw))
+            validate_supported_upload(file)
+            validate_upload_size(raw)
+            pending_upload = await create_pending_client_upload(session, user, "item", item, raw, file, comment)
+            if user.get("ai_analysis_enabled") and (is_image_document(file) or is_pdf_document(file)):
+                if client_approved_ai_warning:
+                    accepted_ai_review = verified_ai_warning_review(user, raw, ai_review_token, True)
+                    if not accepted_ai_review:
+                        raise HTTPException(status_code=400, detail="The AI review approval has expired or does not match this file. Please upload again so we can re-check it.")
+                    ai_review = accepted_ai_review
+                    ai_client_approved = True
+                else:
+                    ai_review = await run_pre_submission_ai_review(session, user, item, raw, file)
+                    if ai_review.get("status") in ("needs_review", "rejected"):
+                        await session.execute(update(pending_client_uploads).where(pending_client_uploads.c.id == pending_upload["id"]).values(ai_review_json=json.dumps(ai_review)))
+                        await session.commit()
+                        image_hash = hashlib.sha256(raw).hexdigest()
+                        return {
+                            "ok": False,
+                            "pending_upload_id": pending_upload["id"],
+                            "ai_review": {
+                                **ai_review,
+                                "token": create_ai_review_token(str(user["id"]), image_hash, ai_review),
+                            },
+                        }
+            if client_approved_ai_warning and ai_review:
+                await session.execute(update(pending_client_uploads).where(pending_client_uploads.c.id == pending_upload["id"]).values(ai_review_json=json.dumps(ai_review)))
+                await session.commit()
+        if user.get("ai_analysis_enabled") and not ai_review and client_approved_ai_warning:
+            raise HTTPException(status_code=400, detail="The AI review approval could not be verified. Please upload again so we can re-check it.")
         watermark_comment = client_approved_warning_note(comment, ai_review, True) if ai_client_approved else build_submission_note(comment, ai_review, False)
         base_name = f"{user['id']}_{item_id}_{int(now.timestamp())}"
         fpath, stamped, stamp_warning = save_submission_upload_with_stamp_fallback(raw, file, base_name, watermark_comment, now, correlation_id)
@@ -14330,6 +14478,8 @@ async def submit_item(
     try:
         await session.execute(insert(submissions).values(**submission_values))
         await session.execute(delete(outstanding_items).where(outstanding_items.c.id == item_id))
+        if pending_upload:
+            await session.execute(update(pending_client_uploads).where(pending_client_uploads.c.id == pending_upload["id"]).values(status="finalized", final_submission_id=submission_id))
         await session.commit()
     except SQLAlchemyError as exc:
         await session.rollback()
@@ -14341,23 +14491,12 @@ async def submit_item(
             submission_values.get("image_filename"),
         )
         raise HTTPException(status_code=500, detail=f"Submission could not be recorded. Reference {correlation_id}.")
-    email_sent = True
-    email_warning = None
-    try:
-        await send_submission_email(user, item, comment, image_path)
-    except HTTPException as exc:
-        email_sent = False
-        email_warning = exc.detail
-        logger.warning("Submission %s was recorded but email delivery failed: %s", submission_id, exc.detail)
-    except Exception as exc:
-        email_sent = False
-        email_warning = "Submission was recorded, but email delivery failed. The practice can still see it in Submitted Items."
-        logger.exception("Submission %s was recorded but email delivery failed", submission_id)
+    background_tasks.add_task(send_submission_email_background, user, item, comment, image_path, submission_id)
     return {
         "ok": True,
         "submission_id": submission_id,
-        "email_sent": email_sent,
-        "email_warning": email_warning,
+        "email_queued": True,
+        "pending_upload_id": pending_upload.get("id") if pending_upload else None,
         "ai_client_approved": ai_client_approved,
         "ai_review_status": ai_review.get("status") if ai_review else None,
         "ai_review_message": ai_review.get("message") if ai_review else None,
@@ -14369,17 +14508,26 @@ async def submit_item(
 @api.post("/client/submit-additional")
 async def submit_additional(
     request: Request,
-    type: str = Form(...),
-    description: str = Form(...),
+    background_tasks: BackgroundTasks,
+    type: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
     comment: str = Form(""),
-    mode: str = Form(...),
+    mode: str = Form("photo"),
     client_approved_ai_warning: bool = Form(False),
     ai_review_token: Optional[str] = Form(None),
+    pending_upload_id: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     user: dict = Depends(require_client),
     session: AsyncSession = Depends(get_db),
 ):
     """Submit an invoice that is NOT in the client's outstanding list."""
+    pending_upload = None
+    if client_approved_ai_warning and pending_upload_id:
+        pending_upload = await get_pending_upload_or_400(session, user, pending_upload_id, "additional")
+        type = type or pending_upload.get("type")
+        description = description or pending_upload.get("description")
+        if not comment:
+            comment = str(pending_upload.get("comment") or "")
     if type not in ("purchase", "sales"):
         raise HTTPException(status_code=400, detail="Invalid invoice type")
     description = (description or "").strip()
@@ -14405,31 +14553,48 @@ async def submit_additional(
         with open(fpath, "wb") as f:
             f.write(render_document_page(description, comment, now))
     elif mode == "photo":
-        if not file:
-            raise HTTPException(status_code=400, detail="Document file is required")
-        raw = await file.read()
-        logger.info("Client submit start correlation_id=%s endpoint=additional mode=photo upload=%s", correlation_id, upload_log_context(file, raw))
-        validate_supported_upload(file)
-        validate_upload_size(raw)
         item = {"description": description, "date": "", "amount": "", "type": type, "additional": True}
-        if user.get("ai_analysis_enabled") and (is_image_document(file) or is_pdf_document(file)):
-            if client_approved_ai_warning:
-                accepted_ai_review = verified_ai_warning_review(user, raw, ai_review_token, True)
-                if not accepted_ai_review:
-                    raise HTTPException(status_code=400, detail="The AI review approval has expired or does not match this file. Please upload again so we can re-check it.")
-                ai_review = accepted_ai_review
-                ai_client_approved = True
-            else:
-                ai_review = await run_pre_submission_ai_review(session, user, item, raw, file)
-                if ai_review.get("status") in ("needs_review", "rejected"):
-                    image_hash = hashlib.sha256(raw).hexdigest()
-                    return {
-                        "ok": False,
-                        "ai_review": {
-                            **ai_review,
-                            "token": create_ai_review_token(str(user["id"]), image_hash, ai_review),
-                        },
-                    }
+        if client_approved_ai_warning and pending_upload_id:
+            raw = (UPLOAD_DIR / Path(pending_upload.get("stored_filename") or "").name).read_bytes()
+            file = upload_proxy_from_pending(pending_upload)
+            logger.info("Client submit resume pending upload correlation_id=%s endpoint=additional upload=%s", correlation_id, pending_upload_log_context(pending_upload))
+            accepted_ai_review = verify_ai_review_token(ai_review_token or "", str(user["id"]), str(pending_upload.get("file_sha256") or ""))
+            if not accepted_ai_review:
+                raise HTTPException(status_code=400, detail="The AI review approval has expired or does not match this pending upload. Please upload again so we can re-check it.")
+            ai_review = accepted_ai_review
+            ai_client_approved = True
+        elif not file:
+            raise HTTPException(status_code=400, detail="Document file is required")
+        else:
+            raw = await file.read()
+            logger.info("Client submit start correlation_id=%s endpoint=additional mode=photo upload=%s", correlation_id, upload_log_context(file, raw))
+            validate_supported_upload(file)
+            validate_upload_size(raw)
+            pending_upload = await create_pending_client_upload(session, user, "additional", item, raw, file, comment)
+            if user.get("ai_analysis_enabled") and (is_image_document(file) or is_pdf_document(file)):
+                if client_approved_ai_warning:
+                    accepted_ai_review = verified_ai_warning_review(user, raw, ai_review_token, True)
+                    if not accepted_ai_review:
+                        raise HTTPException(status_code=400, detail="The AI review approval has expired or does not match this file. Please upload again so we can re-check it.")
+                    ai_review = accepted_ai_review
+                    ai_client_approved = True
+                else:
+                    ai_review = await run_pre_submission_ai_review(session, user, item, raw, file)
+                    if ai_review.get("status") in ("needs_review", "rejected"):
+                        await session.execute(update(pending_client_uploads).where(pending_client_uploads.c.id == pending_upload["id"]).values(ai_review_json=json.dumps(ai_review)))
+                        await session.commit()
+                        image_hash = hashlib.sha256(raw).hexdigest()
+                        return {
+                            "ok": False,
+                            "pending_upload_id": pending_upload["id"],
+                            "ai_review": {
+                                **ai_review,
+                                "token": create_ai_review_token(str(user["id"]), image_hash, ai_review),
+                            },
+                        }
+            if client_approved_ai_warning and ai_review:
+                await session.execute(update(pending_client_uploads).where(pending_client_uploads.c.id == pending_upload["id"]).values(ai_review_json=json.dumps(ai_review)))
+                await session.commit()
         watermark_comment = client_approved_warning_note(comment, ai_review, True) if ai_client_approved else build_submission_note(comment, ai_review, False)
         base_name = f"{user['id']}_additional_{int(now.timestamp())}"
         fpath, stamped, stamp_warning = save_submission_upload_with_stamp_fallback(raw, file, base_name, watermark_comment, now, correlation_id)
@@ -14485,6 +14650,8 @@ async def submit_additional(
     )
     try:
         await session.execute(insert(submissions).values(**submission_values))
+        if pending_upload:
+            await session.execute(update(pending_client_uploads).where(pending_client_uploads.c.id == pending_upload["id"]).values(status="finalized", final_submission_id=submission_id))
         await session.commit()
     except SQLAlchemyError:
         await session.rollback()
@@ -14496,23 +14663,12 @@ async def submit_additional(
             submission_values.get("image_filename"),
         )
         raise HTTPException(status_code=500, detail=f"Submission could not be recorded. Reference {correlation_id}.")
-    email_sent = True
-    email_warning = None
-    try:
-        await send_submission_email(user, item, comment, image_path)
-    except HTTPException as exc:
-        email_sent = False
-        email_warning = exc.detail
-        logger.warning("Additional submission %s was recorded but email delivery failed: %s", submission_id, exc.detail)
-    except Exception as exc:
-        email_sent = False
-        email_warning = "Submission was recorded, but email delivery failed. The practice can still see it in Submitted Items."
-        logger.exception("Additional submission %s was recorded but email delivery failed", submission_id)
+    background_tasks.add_task(send_submission_email_background, user, item, comment, image_path, submission_id)
     return {
         "ok": True,
         "submission_id": submission_id,
-        "email_sent": email_sent,
-        "email_warning": email_warning,
+        "email_queued": True,
+        "pending_upload_id": pending_upload.get("id") if pending_upload else None,
         "ai_client_approved": ai_client_approved,
         "ai_review_status": ai_review.get("status") if ai_review else None,
         "ai_review_message": ai_review.get("message") if ai_review else None,
