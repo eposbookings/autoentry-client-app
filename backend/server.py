@@ -14514,7 +14514,9 @@ async def submit_item(
                     ai_review = accepted_ai_review
                     ai_client_approved = True
                 else:
+                    await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "item_ai_review_start", {"pending_upload_id": pending_upload.get("id"), **upload_log_context(file, raw)}, user_id=str(user.get("id") or ""))
                     ai_review = await run_pre_submission_ai_review(session, user, item, raw, file, correlation_id)
+                    await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "item_ai_review_finished", {"pending_upload_id": pending_upload.get("id"), "status": ai_review.get("status"), "message": ai_review.get("message")}, user_id=str(user.get("id") or ""))
                     if ai_review.get("status") in ("needs_review", "rejected"):
                         await session.execute(update(pending_client_uploads).where(pending_client_uploads.c.id == pending_upload["id"]).values(ai_review_json=json.dumps(ai_review)))
                         await session.commit()
@@ -14535,7 +14537,16 @@ async def submit_item(
             raise HTTPException(status_code=400, detail="The AI review approval could not be verified. Please upload again so we can re-check it.")
         watermark_comment = client_approved_warning_note(comment, ai_review, True) if ai_client_approved else build_submission_note(comment, ai_review, False)
         base_name = f"{user['id']}_{item_id}_{int(now.timestamp())}"
-        fpath, stamped, stamp_warning = save_submission_upload_with_stamp_fallback(raw, file, base_name, watermark_comment, now, correlation_id)
+        await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "item_file_finalize_start", {"base_name": base_name, "has_watermark": bool(watermark_comment), "accepted_warning": ai_client_approved, **upload_log_context(file, raw)}, user_id=str(user.get("id") or ""))
+        try:
+            fpath, stamped, stamp_warning = save_submission_upload_with_stamp_fallback(raw, file, base_name, watermark_comment, now, correlation_id)
+        except HTTPException as exc:
+            await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "item_file_finalize_http_error", {"detail": exc.detail, "base_name": base_name, **upload_log_context(file, raw)}, status_code=exc.status_code, user_id=str(user.get("id") or ""))
+            raise
+        except Exception as exc:
+            logger.exception("Client submit file finalisation failed correlation_id=%s endpoint=item upload=%s", correlation_id, upload_log_context(file, raw))
+            await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "item_file_finalize_unhandled_error", {"error": repr(exc), "base_name": base_name, **upload_log_context(file, raw)}, status_code=500, user_id=str(user.get("id") or ""))
+            raise HTTPException(status_code=500, detail=f"Uploaded file could not be finalized. Reference {correlation_id}.")
         image_path = str(fpath)
         await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "item_file_finalized", {"image_filename": Path(image_path).name, "stamped": stamped, "stamp_warning": stamp_warning, "accepted_warning": ai_client_approved}, user_id=str(user.get("id") or ""))
         if client_approved_ai_warning:
@@ -14696,7 +14707,9 @@ async def submit_additional(
                     ai_review = accepted_ai_review
                     ai_client_approved = True
                 else:
+                    await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "additional_ai_review_start", {"pending_upload_id": pending_upload.get("id"), **upload_log_context(file, raw)}, user_id=str(user.get("id") or ""))
                     ai_review = await run_pre_submission_ai_review(session, user, item, raw, file, correlation_id)
+                    await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "additional_ai_review_finished", {"pending_upload_id": pending_upload.get("id"), "status": ai_review.get("status"), "message": ai_review.get("message")}, user_id=str(user.get("id") or ""))
                     if ai_review.get("status") in ("needs_review", "rejected"):
                         await session.execute(update(pending_client_uploads).where(pending_client_uploads.c.id == pending_upload["id"]).values(ai_review_json=json.dumps(ai_review)))
                         await session.commit()
@@ -14715,7 +14728,16 @@ async def submit_additional(
                 await session.commit()
         watermark_comment = client_approved_warning_note(comment, ai_review, True) if ai_client_approved else build_submission_note(comment, ai_review, False)
         base_name = f"{user['id']}_additional_{int(now.timestamp())}"
-        fpath, stamped, stamp_warning = save_submission_upload_with_stamp_fallback(raw, file, base_name, watermark_comment, now, correlation_id)
+        await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "additional_file_finalize_start", {"base_name": base_name, "has_watermark": bool(watermark_comment), "accepted_warning": ai_client_approved, **upload_log_context(file, raw)}, user_id=str(user.get("id") or ""))
+        try:
+            fpath, stamped, stamp_warning = save_submission_upload_with_stamp_fallback(raw, file, base_name, watermark_comment, now, correlation_id)
+        except HTTPException as exc:
+            await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "additional_file_finalize_http_error", {"detail": exc.detail, "base_name": base_name, **upload_log_context(file, raw)}, status_code=exc.status_code, user_id=str(user.get("id") or ""))
+            raise
+        except Exception as exc:
+            logger.exception("Client submit file finalisation failed correlation_id=%s endpoint=additional upload=%s", correlation_id, upload_log_context(file, raw))
+            await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "additional_file_finalize_unhandled_error", {"error": repr(exc), "base_name": base_name, **upload_log_context(file, raw)}, status_code=500, user_id=str(user.get("id") or ""))
+            raise HTTPException(status_code=500, detail=f"Uploaded file could not be finalized. Reference {correlation_id}.")
         fname = fpath.name
         await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "additional_file_finalized", {"image_filename": fname, "stamped": stamped, "stamp_warning": stamp_warning, "accepted_warning": ai_client_approved}, user_id=str(user.get("id") or ""))
         if client_approved_ai_warning:
