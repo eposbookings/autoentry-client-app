@@ -142,6 +142,14 @@ const INTEGRATION_RECORD_TABS = [
   { key: "tax_code", label: "VAT Codes", icon: Percent, empty: "No VAT codes synced or added yet." },
 ];
 
+const NATIVE_RECORD_TABS = [
+  { key: "account", label: "Native Chart of Accounts", icon: BookOpen, empty: "No native chart of accounts records yet." },
+  { key: "supplier", label: "AP Suppliers", icon: Store, empty: "No AP suppliers created yet." },
+  { key: "customer", label: "AR Customers", icon: UsersRound, empty: "No AR customers created yet." },
+  { key: "tax_code", label: "Native VAT Codes", icon: Percent, empty: "No native VAT codes configured yet." },
+  { key: "bank_account", label: "Native Bank Accounts", icon: Building2, empty: "No native bank accounts configured yet." },
+];
+
 const DEFAULT_INTEGRATION_SETTINGS = {
   provider: "quickbooks",
   status: "not_connected",
@@ -168,8 +176,10 @@ export default function AdminClientDetail() {
   const [companyResults, setCompanyResults] = useState([]);
   const [companyBusy, setCompanyBusy] = useState(false);
   const [integrationDetail, setIntegrationDetail] = useState({ integration: null, records: {}, counts: {} });
+  const [nativeAccountingDetail, setNativeAccountingDetail] = useState(null);
   const [integrationSettings, setIntegrationSettings] = useState(DEFAULT_INTEGRATION_SETTINGS);
   const [integrationTab, setIntegrationTab] = useState("account");
+  const [savedAccountingDestination, setSavedAccountingDestination] = useState("");
   const [quickBooksConfig, setQuickBooksConfig] = useState({ configured: false, enabled: true, environment: "sandbox" });
   const [integrationBusy, setIntegrationBusy] = useState(false);
   const [serviceCatalog, setServiceCatalog] = useState(DEFAULT_SERVICES);
@@ -177,19 +187,22 @@ export default function AdminClientDetail() {
 
   const load = useCallback(async () => {
     try {
-      const [c, p, s, integration, quickBooks, services, accountancyClientTypes] = await Promise.all([
+      const [c, p, s, integration, nativeAccounting, quickBooks, services, accountancyClientTypes] = await Promise.all([
         api.get(`/admin/clients/${id}`),
         api.get(`/admin/clients/${id}/items`, { params: { type: "purchase" } }),
         api.get(`/admin/clients/${id}/items`, { params: { type: "sales" } }),
         api.get(`/admin/integrations/clients/${id}`),
+        api.get(`/admin/accounting/clients/${id}`).catch(() => ({ data: null })),
         api.get("/admin/integrations/quickbooks/config"),
         api.get("/admin/accountancy/services").catch(() => ({ data: { services: DEFAULT_SERVICES } })),
         api.get("/admin/accountancy/client-types").catch(() => ({ data: { client_types: DEFAULT_CLIENT_TYPES.map(([key, label]) => ({ key, label, service_keys: [] })) } })),
       ]);
       setClient(c.data);
+      setSavedAccountingDestination(accountingDestinationForClient(c.data));
       setCompanyQuery(c.data?.business_name || "");
       setItems({ purchase: p.data, sales: s.data });
       setIntegrationDetail(integration.data);
+      setNativeAccountingDetail(nativeAccounting.data);
       setIntegrationSettings({ ...DEFAULT_INTEGRATION_SETTINGS, ...(integration.data.integration || {}) });
       setQuickBooksConfig(quickBooks.data);
       const nextServices = Array.isArray(services.data.services) && services.data.services.length ? services.data.services : DEFAULT_SERVICES;
@@ -250,6 +263,12 @@ export default function AdminClientDetail() {
 
   async function saveClient() {
     try {
+      const nextDestination = accountingDestinationForClient(client);
+      const destinationChanged = savedAccountingDestination && savedAccountingDestination !== nextDestination;
+      if (destinationChanged && destinationChangeMayAffectPublishedDocuments(client)) {
+        const confirmed = window.confirm("Changing accounting destination could affect published documents. Save this destination change?");
+        if (!confirmed) return;
+      }
       const practicePayload = Object.fromEntries(PRACTICE_FIELDS.map((field) => [field, client[field] || null]));
       await api.put(`/admin/clients/${id}`, {
         first_name: client.first_name,
@@ -261,8 +280,8 @@ export default function AdminClientDetail() {
         status: client.status,
         is_vat_client: !!client.is_vat_client,
         ai_analysis_enabled: !!client.ai_analysis_enabled,
-        accounting_destination: client.accounting_destination || (client.native_accounting_enabled ? "native" : "external"),
-        native_accounting_enabled: !!client.native_accounting_enabled || client.accounting_destination === "native",
+        accounting_destination: nextDestination,
+        native_accounting_enabled: nextDestination === "native",
         ...practicePayload,
       });
       toast.success("Client updated");
@@ -702,6 +721,7 @@ export default function AdminClientDetail() {
             client={client}
             setClientField={setField}
             detail={integrationDetail}
+            nativeDetail={nativeAccountingDetail}
             settings={integrationSettings}
             setSettings={setIntegrationSettings}
             recordTab={integrationTab}
@@ -709,6 +729,7 @@ export default function AdminClientDetail() {
             quickBooksConfig={quickBooksConfig}
             busy={integrationBusy}
             saveSettings={saveIntegrationSettings}
+            refreshNative={load}
             connect={connectAccountingSoftware}
             sync={syncAccountingSoftware}
             deleteRecord={deleteIntegrationRecord}
@@ -1040,6 +1061,7 @@ function AccountancySoftwarePanel({
   client,
   setClientField,
   detail,
+  nativeDetail,
   settings,
   setSettings,
   recordTab,
@@ -1047,11 +1069,13 @@ function AccountancySoftwarePanel({
   quickBooksConfig,
   busy,
   saveSettings,
+  refreshNative,
   connect,
   sync,
   deleteRecord,
 }) {
   const records = detail.records || {};
+  const nativeRecords = nativeRecordsFromDetail(nativeDetail);
   const providerName = providerLabel(settings.provider);
   const accountOptions = (records.account || []).map((record) => recordLabel(record));
   const taxOptions = (records.tax_code || []).map((record) => recordLabel(record, true));
@@ -1059,14 +1083,23 @@ function AccountancySoftwarePanel({
   const globallyDisabled = isQuickBooks && quickBooksConfig.enabled === false;
   const globallyMissing = isQuickBooks && !quickBooksConfig.configured;
   const connectedEnvironment = settings.sandbox ? "sandbox" : "production";
-  const accountingDestination = client.accounting_destination || (client.native_accounting_enabled ? "native" : "external");
-  const nativeEnabled = accountingDestination === "native" || !!client.native_accounting_enabled;
+  const accountingDestination = accountingDestinationForClient(client);
+  const nativeEnabled = accountingDestination === "native";
+  const destinationLocked = accountingDestinationLocked(client);
+  const recordTabs = nativeEnabled ? NATIVE_RECORD_TABS : INTEGRATION_RECORD_TABS;
+  const visibleRecordTab = recordTabs.some((tab) => tab.key === recordTab) ? recordTab : recordTabs[0].key;
+  const visibleRecords = nativeEnabled ? nativeRecords : records;
+  const visibleCounts = nativeEnabled ? recordCounts(nativeRecords) : (detail.counts || {});
+  const sourceMessage = nativeEnabled
+    ? "Using EPOS Native Accounting records."
+    : `Synced from ${providerName}. Missing suppliers can be created from invoice review.`;
 
   function updateSetting(key, value) {
     setSettings((current) => ({ ...current, [key]: value }));
   }
 
   function setAccountingDestination(value) {
+    if (destinationLocked) return;
     setClientField("accounting_destination", value);
     setClientField("native_accounting_enabled", value === "native");
   }
@@ -1089,28 +1122,60 @@ function AccountancySoftwarePanel({
           <div className="grid gap-3 sm:grid-cols-2">
             <button
               type="button"
+              disabled={destinationLocked}
               onClick={() => setAccountingDestination("external")}
-              className={`rounded-md border p-3 text-left text-sm transition ${!nativeEnabled ? "border-emerald-500 bg-emerald-50 text-emerald-950" : "border-stone-200 bg-stone-50 text-stone-700 hover:border-stone-300"}`}
+              className={`rounded-md border p-3 text-left text-sm transition disabled:cursor-not-allowed disabled:opacity-60 ${!nativeEnabled ? "border-emerald-500 bg-emerald-50 text-emerald-950" : "border-stone-200 bg-stone-50 text-stone-700 hover:border-stone-300"}`}
             >
               <span className="block font-semibold">External software</span>
               <span className="mt-1 block text-xs opacity-80">Use QuickBooks now, with Sage/Xero profiles ready later.</span>
             </button>
             <button
               type="button"
+              disabled={destinationLocked}
               onClick={() => setAccountingDestination("native")}
-              className={`rounded-md border p-3 text-left text-sm transition ${nativeEnabled ? "border-emerald-500 bg-emerald-50 text-emerald-950" : "border-stone-200 bg-stone-50 text-stone-700 hover:border-stone-300"}`}
+              className={`rounded-md border p-3 text-left text-sm transition disabled:cursor-not-allowed disabled:opacity-60 ${nativeEnabled ? "border-emerald-500 bg-emerald-50 text-emerald-950" : "border-stone-200 bg-stone-50 text-stone-700 hover:border-stone-300"}`}
             >
               <span className="block font-semibold">EPOS native accounting</span>
               <span className="mt-1 block text-xs opacity-80">Post into EPOS ledgers, VAT, suppliers, customers, and reports.</span>
             </button>
           </div>
-          {nativeEnabled && (
+          {destinationLocked && (
+            <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              Accounting destination is locked because this client has published accounting transactions.
+            </p>
+          )}
+          {nativeEnabled && !destinationLocked && (
             <p className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
               This client will appear in Accountancy software after saving.
             </p>
           )}
         </div>
 
+        {nativeEnabled && (
+          <details className="rounded-md border border-stone-200 bg-white p-4">
+            <summary className="cursor-pointer text-sm font-semibold text-stone-800">External integrations</summary>
+            <div className="mt-3 space-y-3 text-sm text-stone-600">
+              <p>
+                External software connection settings are available here, but EPOS Native Accounting is the active accounting source for this client.
+              </p>
+              {settings.status === "connected" && (
+                <p className="rounded-md border border-stone-200 bg-stone-50 px-3 py-2">
+                  Connected external company: <strong>{settings.company_name || settings.company_id || client.business_name}</strong> ({providerName}, {connectedEnvironment}).
+                </p>
+              )}
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="outline" onClick={sync} disabled={busy || !isQuickBooks || settings.status !== "connected"} className="gap-2">
+                  <RefreshCw className="h-4 w-4" /> Sync external lists
+                </Button>
+                <Button type="button" variant="outline" onClick={connect} disabled={busy || !isQuickBooks || globallyDisabled || globallyMissing} className="gap-2">
+                  <PlugZap className="h-4 w-4" /> {settings.status === "connected" ? "Reconnect" : "Connect"} {providerName}
+                </Button>
+              </div>
+            </div>
+          </details>
+        )}
+
+        {!nativeEnabled && (
         <form onSubmit={saveSettings} className="rounded-md border border-stone-200 bg-white p-4">
         <div className="mb-4 flex items-start justify-between gap-3">
           <div>
@@ -1205,14 +1270,15 @@ function AccountancySoftwarePanel({
           </div>
         </div>
         </form>
+        )}
       </div>
 
       <div className="rounded-md border border-stone-200 bg-white">
         <div className="flex flex-col gap-3 border-b border-stone-200 p-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex flex-wrap gap-2">
-            {INTEGRATION_RECORD_TABS.map((tab) => {
+            {recordTabs.map((tab) => {
               const Icon = tab.icon;
-              const isActive = recordTab === tab.key;
+              const isActive = visibleRecordTab === tab.key;
               return (
                 <button
                   key={tab.key}
@@ -1221,24 +1287,29 @@ function AccountancySoftwarePanel({
                   className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-semibold ${isActive ? "bg-[var(--brand)] text-white" : "bg-stone-100 text-stone-700 hover:bg-stone-200"}`}
                 >
                   <Icon className="h-4 w-4" /> {tab.label}
-                  <span className={isActive ? "text-white/80" : "text-stone-500"}>{detail.counts?.[tab.key] || 0}</span>
+                  <span className={isActive ? "text-white/80" : "text-stone-500"}>{visibleCounts[tab.key] || 0}</span>
                 </button>
               );
             })}
           </div>
-          <p className="rounded-md bg-stone-50 px-3 py-2 text-sm text-stone-600">
-            Synced from {providerName}. Missing suppliers can be created from invoice review.
-          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="rounded-md bg-stone-50 px-3 py-2 text-sm text-stone-600">{sourceMessage}</p>
+            {nativeEnabled && (
+              <Button type="button" onClick={refreshNative} disabled={busy} className="gap-2" style={{ background: "var(--brand)" }}>
+                <RefreshCw className="h-4 w-4" /> Refresh native lists
+              </Button>
+            )}
+          </div>
         </div>
 
         <div className="max-h-[620px] overflow-auto">
-          {(records[recordTab] || []).length === 0 ? (
+          {(visibleRecords[visibleRecordTab] || []).length === 0 ? (
             <p className="py-24 text-center text-sm text-stone-500">
-              {INTEGRATION_RECORD_TABS.find((tab) => tab.key === recordTab)?.empty || "No synced records yet."}
+              {recordTabs.find((tab) => tab.key === visibleRecordTab)?.empty || "No records yet."}
             </p>
           ) : (
-            (records[recordTab] || []).map((record) => (
-              <RecordRow key={record.id} record={record} onDelete={deleteRecord} />
+            (visibleRecords[visibleRecordTab] || []).map((record) => (
+              <RecordRow key={record.id || record.code || record.name} record={record} source={nativeEnabled ? "native" : "external"} onDelete={deleteRecord} />
             ))
           )}
         </div>
@@ -1247,24 +1318,30 @@ function AccountancySoftwarePanel({
   );
 }
 
-function RecordRow({ record, onDelete }) {
+function RecordRow({ record, source = "external", onDelete }) {
+  const name = record.name || record.business_name || record.supplier_name || record.customer_name || record.description || record.code || "Untitled record";
+  const description = record.description || record.email || record.contact_email || record.account_type || record.purpose || "No description";
+  const code = record.code || record.account_code || record.nominal_code || record.supplier_code || record.customer_code || record.vat_code || "-";
+  const isActive = record.active !== false && record.status !== "archived";
   return (
     <div className="grid gap-3 border-b border-stone-100 px-4 py-3 text-sm last:border-b-0 lg:grid-cols-[1fr_160px_180px_auto] lg:items-center">
       <div className="min-w-0">
-        <div className="truncate font-semibold text-stone-900">{record.name}</div>
-        <div className="truncate text-stone-500">{record.description || record.email || "No description"}</div>
+        <div className="truncate font-semibold text-stone-900">{name}</div>
+        <div className="truncate text-stone-500">{description}</div>
         {record.external_id && <div className="mt-1 text-xs text-stone-400">External ID: {record.external_id}</div>}
       </div>
-      <div className="truncate text-stone-600">{record.code || "-"}</div>
+      <div className="truncate text-stone-600">{code}</div>
       <div className="flex gap-2">
-        <Badge className={record.active ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-100" : "bg-stone-100 text-stone-600 hover:bg-stone-100"}>
-          {record.active ? "Active" : "Inactive"}
+        <Badge className={isActive ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-100" : "bg-stone-100 text-stone-600 hover:bg-stone-100"}>
+          {isActive ? "Active" : "Inactive"}
         </Badge>
-        <Badge variant="outline">Synced</Badge>
+        <Badge variant="outline">{source === "native" ? "Native" : "Synced"}</Badge>
       </div>
-      <Button type="button" variant="ghost" size="sm" onClick={() => onDelete(record.id)} className="justify-self-start text-stone-500 hover:text-red-600 lg:justify-self-end">
-        <Trash2 className="h-4 w-4" />
-      </Button>
+      {source === "external" && (
+        <Button type="button" variant="ghost" size="sm" onClick={() => onDelete(record.id)} className="justify-self-start text-stone-500 hover:text-red-600 lg:justify-self-end">
+          <Trash2 className="h-4 w-4" />
+        </Button>
+      )}
     </div>
   );
 }
@@ -2018,6 +2095,57 @@ function makeLocalId() {
 
 function serviceLabel(key, services = DEFAULT_SERVICES) {
   return services.find((service) => service.key === key)?.label || key;
+}
+
+function accountingDestinationForClient(client = {}) {
+  client = client || {};
+  if (client.accounting_destination) return client.accounting_destination === "epos_native" ? "native" : client.accounting_destination;
+  return client.native_accounting_enabled ? "native" : "external";
+}
+
+function accountingDestinationLocked(client = {}) {
+  client = client || {};
+  return !!(client.accounting_destination_locked || client.destination_switching_locked);
+}
+
+function destinationChangeMayAffectPublishedDocuments(client = {}) {
+  client = client || {};
+  return !!(
+    client.has_published_accounting_transactions ||
+    Number(client.published_accounting_transactions_count || 0) > 0 ||
+    Number(client.accounting_transactions_count || 0) > 0 ||
+    Number(client.published_documents_count || 0) > 0
+  );
+}
+
+function nativeRecordsFromDetail(detail = {}) {
+  detail = detail || {};
+  const accounts = Array.isArray(detail.accounts) ? detail.accounts : [];
+  const ap = detail.accounts_payable || {};
+  const ar = detail.accounts_receivable || {};
+  const vat = detail.vat || {};
+  const suppliers = firstArray(ap.suppliers, detail.ap_suppliers, detail.suppliers);
+  const customers = firstArray(ar.customers, detail.ar_customers, detail.customers);
+  const vatCodes = firstArray(detail.vat_codes, vat.codes, vat.vat_codes);
+  const bankAccounts = firstArray(
+    detail.bank_accounts,
+    accounts.filter((account) => account.purpose === "Bank Account" || account.account_type === "Bank")
+  );
+  return {
+    account: accounts,
+    supplier: suppliers,
+    customer: customers,
+    tax_code: vatCodes,
+    bank_account: bankAccounts,
+  };
+}
+
+function firstArray(...values) {
+  return values.find((value) => Array.isArray(value)) || [];
+}
+
+function recordCounts(records = {}) {
+  return Object.fromEntries(Object.entries(records).map(([key, value]) => [key, Array.isArray(value) ? value.length : 0]));
 }
 
 function mergeCompanyProfile(current, data) {
