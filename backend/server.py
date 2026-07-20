@@ -1676,6 +1676,23 @@ async def ensure_schema_columns(conn):
                     )
                 )
                 logger.info("Widened column %s.%s to TEXT", table.name, column.name)
+    submissions_info = await conn.run_sync(
+        lambda sync_conn: {col["name"]: col for col in inspect(sync_conn).get_columns("submissions")}
+    )
+    required_submission_columns = {
+        "ai_review_status": "VARCHAR",
+        "ai_review_message": "TEXT",
+        "ai_document_type": "VARCHAR",
+        "ai_extracted_fields": "TEXT",
+        "ai_client_approved": "BOOLEAN",
+        "comment": "TEXT",
+    }
+    for column_name, expected_type in required_submission_columns.items():
+        column_info = submissions_info.get(column_name)
+        if not column_info:
+            logger.error("submissions.%s is missing after schema migration", column_name)
+            continue
+        logger.info("Verified submissions.%s type=%s expected=%s", column_name, column_info.get("type"), expected_type)
 
 
 async def ensure_table_columns(conn, tables: tuple[Table, ...]):
@@ -14264,35 +14281,66 @@ async def submit_item(
         base_name = f"{user['id']}_{item_id}_{int(now.timestamp())}"
         fpath, stamped, stamp_warning = save_submission_upload_with_stamp_fallback(raw, file, base_name, watermark_comment, now, correlation_id)
         image_path = str(fpath)
+        if client_approved_ai_warning:
+            logger.info(
+                "Client submit accepted-warning finalisation correlation_id=%s endpoint=item token_verified=%s stamped=%s image_filename=%s stamp_warning=%s upload=%s",
+                correlation_id,
+                bool(accepted_ai_review),
+                stamped,
+                Path(image_path).name,
+                stamp_warning or "",
+                upload_log_context(file, raw),
+            )
     else:
         raise HTTPException(status_code=400, detail="Invalid mode")
 
     submission_id = new_id()
-    await session.execute(
-        insert(submissions).values(
-            id=submission_id,
-            client_id=user["id"],
-            type=item["type"],
-            description=item.get("description", ""),
-            date=item.get("date", ""),
-            amount=item.get("amount", ""),
-            comment=(client_approved_warning_note(comment, ai_review, True) if ai_client_approved else comment) + (f"\n{stamp_warning}" if stamp_warning else ""),
-            image_filename=Path(image_path).name if image_path else None,
-            is_additional=False,
-            ai_review_status=ai_review.get("status") if ai_review else None,
-            ai_review_message=ai_review.get("message") if ai_review else None,
-            ai_document_type=ai_review.get("document_type") if ai_review else None,
-            ai_extracted_fields=json.dumps(ai_review.get("coding_fields") or {}) if ai_review else None,
-            ai_client_approved=ai_client_approved,
-            review_status="inbox",
-            submitted_at=utc_now_iso(),
-            client_business_name=user.get("business_name", ""),
-            client_first_name=user.get("first_name", ""),
-            client_last_name=user.get("last_name", ""),
-        )
+    submission_values = {
+        "id": submission_id,
+        "client_id": user["id"],
+        "type": item["type"],
+        "description": item.get("description", ""),
+        "date": item.get("date", ""),
+        "amount": item.get("amount", ""),
+        "comment": (client_approved_warning_note(comment, ai_review, True) if ai_client_approved else comment) + (f"\n{stamp_warning}" if stamp_warning else ""),
+        "image_filename": Path(image_path).name if image_path else None,
+        "is_additional": False,
+        "ai_review_status": ai_review.get("status") if ai_review else None,
+        "ai_review_message": ai_review.get("message") if ai_review else None,
+        "ai_document_type": ai_review.get("document_type") if ai_review else None,
+        "ai_extracted_fields": json.dumps(ai_review.get("coding_fields") or {}) if ai_review else None,
+        "ai_client_approved": ai_client_approved,
+        "review_status": "inbox",
+        "submitted_at": utc_now_iso(),
+        "client_business_name": user.get("business_name", ""),
+        "client_first_name": user.get("first_name", ""),
+        "client_last_name": user.get("last_name", ""),
+    }
+    logger.info(
+        "Client submit before insert correlation_id=%s endpoint=item submission_id=%s accepted_warning=%s image_filename=%s ai_review_status=%s ai_message_len=%s ai_fields_len=%s comment_len=%s",
+        correlation_id,
+        submission_id,
+        ai_client_approved,
+        submission_values.get("image_filename"),
+        submission_values.get("ai_review_status") or "",
+        len(submission_values.get("ai_review_message") or ""),
+        len(submission_values.get("ai_extracted_fields") or ""),
+        len(submission_values.get("comment") or ""),
     )
-    await session.execute(delete(outstanding_items).where(outstanding_items.c.id == item_id))
-    await session.commit()
+    try:
+        await session.execute(insert(submissions).values(**submission_values))
+        await session.execute(delete(outstanding_items).where(outstanding_items.c.id == item_id))
+        await session.commit()
+    except SQLAlchemyError as exc:
+        await session.rollback()
+        logger.exception(
+            "Client submit persistence failed correlation_id=%s endpoint=item submission_id=%s accepted_warning=%s image_filename=%s",
+            correlation_id,
+            submission_id,
+            ai_client_approved,
+            submission_values.get("image_filename"),
+        )
+        raise HTTPException(status_code=500, detail=f"Submission could not be recorded. Reference {correlation_id}.")
     email_sent = True
     email_warning = None
     try:
@@ -14386,6 +14434,16 @@ async def submit_additional(
         base_name = f"{user['id']}_additional_{int(now.timestamp())}"
         fpath, stamped, stamp_warning = save_submission_upload_with_stamp_fallback(raw, file, base_name, watermark_comment, now, correlation_id)
         fname = fpath.name
+        if client_approved_ai_warning:
+            logger.info(
+                "Client submit accepted-warning finalisation correlation_id=%s endpoint=additional token_verified=%s stamped=%s image_filename=%s stamp_warning=%s upload=%s",
+                correlation_id,
+                bool(accepted_ai_review),
+                stamped,
+                fname,
+                stamp_warning or "",
+                upload_log_context(file, raw),
+            )
     else:
         raise HTTPException(status_code=400, detail="Invalid mode")
 
@@ -14393,30 +14451,51 @@ async def submit_additional(
     item = {"description": description, "date": "", "amount": "", "type": type, "additional": True}
 
     submission_id = new_id()
-    await session.execute(
-        insert(submissions).values(
-            id=submission_id,
-            client_id=user["id"],
-            type=type,
-            description=description,
-            date="",
-            amount="",
-            comment=(client_approved_warning_note(comment, ai_review, True) if ai_client_approved else comment) + (f"\n{stamp_warning}" if stamp_warning else ""),
-            image_filename=fname,
-            is_additional=True,
-            ai_review_status=ai_review.get("status") if ai_review else None,
-            ai_review_message=ai_review.get("message") if ai_review else None,
-            ai_document_type=ai_review.get("document_type") if ai_review else None,
-            ai_extracted_fields=json.dumps(ai_review.get("coding_fields") or {}) if ai_review else None,
-            ai_client_approved=ai_client_approved,
-            review_status="inbox",
-            submitted_at=now.isoformat(),
-            client_business_name=user.get("business_name", ""),
-            client_first_name=user.get("first_name", ""),
-            client_last_name=user.get("last_name", ""),
-        )
+    submission_values = {
+        "id": submission_id,
+        "client_id": user["id"],
+        "type": type,
+        "description": description,
+        "date": "",
+        "amount": "",
+        "comment": (client_approved_warning_note(comment, ai_review, True) if ai_client_approved else comment) + (f"\n{stamp_warning}" if stamp_warning else ""),
+        "image_filename": fname,
+        "is_additional": True,
+        "ai_review_status": ai_review.get("status") if ai_review else None,
+        "ai_review_message": ai_review.get("message") if ai_review else None,
+        "ai_document_type": ai_review.get("document_type") if ai_review else None,
+        "ai_extracted_fields": json.dumps(ai_review.get("coding_fields") or {}) if ai_review else None,
+        "ai_client_approved": ai_client_approved,
+        "review_status": "inbox",
+        "submitted_at": now.isoformat(),
+        "client_business_name": user.get("business_name", ""),
+        "client_first_name": user.get("first_name", ""),
+        "client_last_name": user.get("last_name", ""),
+    }
+    logger.info(
+        "Client submit before insert correlation_id=%s endpoint=additional submission_id=%s accepted_warning=%s image_filename=%s ai_review_status=%s ai_message_len=%s ai_fields_len=%s comment_len=%s",
+        correlation_id,
+        submission_id,
+        ai_client_approved,
+        submission_values.get("image_filename"),
+        submission_values.get("ai_review_status") or "",
+        len(submission_values.get("ai_review_message") or ""),
+        len(submission_values.get("ai_extracted_fields") or ""),
+        len(submission_values.get("comment") or ""),
     )
-    await session.commit()
+    try:
+        await session.execute(insert(submissions).values(**submission_values))
+        await session.commit()
+    except SQLAlchemyError:
+        await session.rollback()
+        logger.exception(
+            "Client submit persistence failed correlation_id=%s endpoint=additional submission_id=%s accepted_warning=%s image_filename=%s",
+            correlation_id,
+            submission_id,
+            ai_client_approved,
+            submission_values.get("image_filename"),
+        )
+        raise HTTPException(status_code=500, detail=f"Submission could not be recorded. Reference {correlation_id}.")
     email_sent = True
     email_warning = None
     try:
