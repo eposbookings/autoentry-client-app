@@ -75,6 +75,8 @@ SUPPORTED_DOCUMENT_TYPES = {
 SUPPORTED_DOCUMENT_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".pdf"}
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+UNSUPPORTED_HEIC_TYPES = {"image/heic", "image/heif", "image/heic-sequence", "image/heif-sequence"}
+UNSUPPORTED_HEIC_SUFFIXES = {".heic", ".heif"}
 
 FONTS_DIR = ROOT_DIR / "assets" / "fonts"
 FONT_BOLD_PATH = str(FONTS_DIR / "DejaVuSans-Bold.ttf")
@@ -12959,6 +12961,29 @@ def is_supported_document(file: UploadFile) -> bool:
     return suffix in SUPPORTED_DOCUMENT_SUFFIXES
 
 
+def is_unsupported_heic_document(file: UploadFile) -> bool:
+    content_type = upload_content_type(file)
+    suffix = Path(file.filename or "").suffix.lower()
+    return content_type in UNSUPPORTED_HEIC_TYPES or suffix in UNSUPPORTED_HEIC_SUFFIXES
+
+
+def validate_supported_upload(file: UploadFile) -> None:
+    if is_unsupported_heic_document(file):
+        raise HTTPException(
+            status_code=400,
+            detail="HEIC/HEIF photos are not supported yet. Please choose Most Compatible/JPEG on your phone, or upload a JPG, PNG, WEBP or PDF.",
+        )
+    if not is_supported_document(file):
+        raise HTTPException(status_code=400, detail="Unsupported file type. Please upload a JPG, PNG, WEBP or PDF.")
+
+
+def validate_upload_size(raw: bytes) -> None:
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail="File is too large. Maximum upload size is 25 MB. Please use a smaller scan or compress the photo before uploading.")
+
+
 def is_image_document(file: UploadFile) -> bool:
     content_type = upload_content_type(file)
     suffix = Path(file.filename or "").suffix.lower()
@@ -12985,6 +13010,24 @@ def attachment_mime(path: str) -> tuple[str, str]:
     mime_type, _ = mimetypes.guess_type(path)
     maintype, subtype = (mime_type or "application/octet-stream").split("/", 1)
     return maintype, subtype
+
+
+def write_submission_upload(raw: bytes, file: UploadFile, fpath: Path, watermark_comment: str, submitted_at: datetime) -> None:
+    image_upload = is_image_document(file)
+    try:
+        if image_upload:
+            if watermark_comment:
+                with open(fpath, "wb") as f:
+                    f.write(render_image_with_note_pdf(raw, watermark_comment, submitted_at))
+            else:
+                img = Image.open(io.BytesIO(raw)).convert("RGB")
+                img.save(fpath, format="JPEG", quality=88)
+        else:
+            with open(fpath, "wb") as f:
+                f.write(append_submission_note_page(raw, watermark_comment, submitted_at) if watermark_comment else raw)
+    except Exception as exc:
+        logger.warning("Unsupported or unreadable upload %s (%s): %s", file.filename, upload_content_type(file), exc)
+        raise HTTPException(status_code=400, detail="The uploaded file could not be read. Please upload a JPG, PNG, WEBP or PDF. iPhone HEIC/HEIF photos must be converted to JPEG first.")
 
 
 CODING_FIELD_KEYS = (
@@ -14092,13 +14135,9 @@ async def submit_item(
     elif mode == "photo":
         if not file:
             raise HTTPException(status_code=400, detail="Document file is required")
-        if not is_supported_document(file):
-            raise HTTPException(status_code=400, detail="Please upload an image or PDF document")
+        validate_supported_upload(file)
         raw = await file.read()
-        if not raw:
-            raise HTTPException(status_code=400, detail="Empty file")
-        if len(raw) > MAX_UPLOAD_BYTES:
-            raise HTTPException(status_code=400, detail="File is too large. Maximum upload size is 25 MB")
+        validate_upload_size(raw)
         image_upload = is_image_document(file)
         pdf_upload = is_pdf_document(file)
         if user.get("ai_analysis_enabled") and (image_upload or pdf_upload):
@@ -14135,21 +14174,10 @@ async def submit_item(
         fname_ext = ".pdf" if watermark_comment else (".jpg" if image_upload else upload_extension(file, ".pdf"))
         fname = f"{user['id']}_{item_id}_{int(now.timestamp())}{fname_ext}"
         fpath = UPLOAD_DIR / fname
-        if image_upload:
-            if watermark_comment:
-                with open(fpath, "wb") as f:
-                    f.write(render_image_with_note_pdf(raw, watermark_comment, now))
-            else:
-                img = Image.open(io.BytesIO(raw)).convert("RGB")
-                img.save(fpath, format="JPEG", quality=88)
-        else:
-            with open(fpath, "wb") as f:
-                f.write(append_submission_note_page(raw, watermark_comment, now) if watermark_comment else raw)
+        write_submission_upload(raw, file, fpath, watermark_comment, now)
         image_path = str(fpath)
     else:
         raise HTTPException(status_code=400, detail="Invalid mode")
-
-    await send_submission_email(user, item, comment, image_path)
 
     submission_id = new_id()
     await session.execute(
@@ -14177,7 +14205,19 @@ async def submit_item(
     )
     await session.execute(delete(outstanding_items).where(outstanding_items.c.id == item_id))
     await session.commit()
-    return {"ok": True, "submission_id": submission_id}
+    email_sent = True
+    email_warning = None
+    try:
+        await send_submission_email(user, item, comment, image_path)
+    except HTTPException as exc:
+        email_sent = False
+        email_warning = exc.detail
+        logger.warning("Submission %s was recorded but email delivery failed: %s", submission_id, exc.detail)
+    except Exception as exc:
+        email_sent = False
+        email_warning = "Submission was recorded, but email delivery failed. The practice can still see it in Submitted Items."
+        logger.exception("Submission %s was recorded but email delivery failed", submission_id)
+    return {"ok": True, "submission_id": submission_id, "email_sent": email_sent, "email_warning": email_warning}
 
 
 @api.post("/client/submit-additional")
@@ -14214,13 +14254,9 @@ async def submit_additional(
     elif mode == "photo":
         if not file:
             raise HTTPException(status_code=400, detail="Document file is required")
-        if not is_supported_document(file):
-            raise HTTPException(status_code=400, detail="Please upload an image or PDF document")
+        validate_supported_upload(file)
         raw = await file.read()
-        if not raw:
-            raise HTTPException(status_code=400, detail="Empty file")
-        if len(raw) > MAX_UPLOAD_BYTES:
-            raise HTTPException(status_code=400, detail="File is too large. Maximum upload size is 25 MB")
+        validate_upload_size(raw)
         item = {"description": description, "date": "", "amount": "", "type": type, "additional": True}
         image_upload = is_image_document(file)
         pdf_upload = is_pdf_document(file)
@@ -14258,21 +14294,12 @@ async def submit_additional(
         fname_ext = ".pdf" if watermark_comment else (".jpg" if image_upload else upload_extension(file, ".pdf"))
         fname = f"{user['id']}_additional_{int(now.timestamp())}{fname_ext}"
         fpath = UPLOAD_DIR / fname
-        if image_upload:
-            if watermark_comment:
-                with open(fpath, "wb") as f:
-                    f.write(render_image_with_note_pdf(raw, watermark_comment, now))
-            else:
-                Image.open(io.BytesIO(raw)).convert("RGB").save(fpath, format="JPEG", quality=88)
-        else:
-            with open(fpath, "wb") as f:
-                f.write(append_submission_note_page(raw, watermark_comment, now) if watermark_comment else raw)
+        write_submission_upload(raw, file, fpath, watermark_comment, now)
     else:
         raise HTTPException(status_code=400, detail="Invalid mode")
 
     image_path = str(fpath)
     item = {"description": description, "date": "", "amount": "", "type": type, "additional": True}
-    await send_submission_email(user, item, comment, image_path)
 
     submission_id = new_id()
     await session.execute(
@@ -14299,7 +14326,19 @@ async def submit_additional(
         )
     )
     await session.commit()
-    return {"ok": True, "submission_id": submission_id}
+    email_sent = True
+    email_warning = None
+    try:
+        await send_submission_email(user, item, comment, image_path)
+    except HTTPException as exc:
+        email_sent = False
+        email_warning = exc.detail
+        logger.warning("Additional submission %s was recorded but email delivery failed: %s", submission_id, exc.detail)
+    except Exception as exc:
+        email_sent = False
+        email_warning = "Submission was recorded, but email delivery failed. The practice can still see it in Submitted Items."
+        logger.exception("Additional submission %s was recorded but email delivery failed", submission_id)
+    return {"ok": True, "submission_id": submission_id, "email_sent": email_sent, "email_warning": email_warning}
 
 
 
