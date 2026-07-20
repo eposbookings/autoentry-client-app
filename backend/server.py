@@ -13039,10 +13039,23 @@ def verified_ai_warning_review(user: dict, raw: Optional[bytes], ai_review_token
     if not client_approved_ai_warning or not ai_review_token or not raw:
         return None
     try:
-        return verify_ai_review_token(ai_review_token, str(user["id"]), hashlib.sha256(raw).hexdigest())
+        review = verify_ai_review_token(ai_review_token, str(user["id"]), hashlib.sha256(raw).hexdigest())
+        if not review:
+            logger.warning("Client-approved AI warning token did not verify for user %s", user.get("id"))
+        return review
     except Exception:
         logger.exception("Failed to verify client-approved AI warning token")
         return None
+
+
+def client_approved_warning_note(comment: str, accepted_ai_review: Optional[dict], approved: bool) -> str:
+    lines = []
+    if comment and comment.strip():
+        lines.append(comment.strip())
+    if approved:
+        message = str((accepted_ai_review or {}).get("message") or "AI warning accepted by client.").strip()
+        lines.append(f"Client approved AI warning: {message}")
+    return "\n".join(lines)
 
 
 def save_submission_upload_with_stamp_fallback(
@@ -13052,12 +13065,12 @@ def save_submission_upload_with_stamp_fallback(
     watermark_comment: str,
     submitted_at: datetime,
     correlation_id: str,
-) -> tuple[Path, Optional[str]]:
+) -> tuple[Path, bool, Optional[str]]:
     image_upload = is_image_document(file)
     if not watermark_comment:
         fpath = UPLOAD_DIR / f"{base_name}{'.jpg' if image_upload else upload_extension(file, '.pdf')}"
         write_submission_upload(raw, file, fpath, "", submitted_at)
-        return fpath, None
+        return fpath, False, None
 
     stamped_path = UPLOAD_DIR / f"{base_name}.pdf"
     try:
@@ -13067,7 +13080,7 @@ def save_submission_upload_with_stamp_fallback(
         else:
             with open(stamped_path, "wb") as f:
                 f.write(append_submission_note_page(raw, watermark_comment, submitted_at))
-        return stamped_path, None
+        return stamped_path, True, None
     except Exception:
         logger.exception(
             "Client-approved upload stamping failed correlation_id=%s upload=%s",
@@ -13076,7 +13089,7 @@ def save_submission_upload_with_stamp_fallback(
         )
         fallback_path = UPLOAD_DIR / f"{base_name}{upload_extension(file, '.bin')}"
         write_original_upload(raw, fallback_path)
-        return fallback_path, "Client-approved warning was recorded, but document stamping failed; the original upload was saved."
+        return fallback_path, False, "Client-approved warning was recorded, but document stamping failed; the original upload was saved."
 
 
 def upload_log_context(file: Optional[UploadFile], raw: Optional[bytes] = None) -> dict:
@@ -13111,6 +13124,21 @@ async def apply_ai_review_after_persistence(
         if client_approved_ai_warning and ai_review_token:
             ai_review = verify_ai_review_token(ai_review_token, str(user["id"]), image_hash)
             ai_token_verified = ai_review is not None
+            if not ai_token_verified:
+                warning = "Client approved the AI warning, but the review token could not be verified. The submission remains in Submitted Items for manual review."
+                await session.execute(
+                    update(submissions)
+                    .where(submissions.c.id == submission_id)
+                    .values(ai_review_status="needs_review", ai_review_message=warning, ai_client_approved=False)
+                )
+                await session.commit()
+                logger.warning("Client-approved AI review token was not verified after persistence correlation_id=%s submission_id=%s upload=%s", correlation_id, submission_id, upload_log_context(file, raw))
+                return {"ai_review_status": "needs_review", "ai_review_message": warning, "ai_warning": warning, "ai_client_approved": False}
+        if client_approved_ai_warning:
+            if ai_review is not None:
+                ai_client_approved = True
+            else:
+                return {"ai_review_status": None, "ai_review_message": None, "ai_warning": None, "ai_client_approved": False}
         if ai_review is None:
             ai_settings = await get_openai_runtime_settings(session)
             coding_history = await get_coding_history(session, str(user["id"]), item["type"])
@@ -13126,7 +13154,7 @@ async def apply_ai_review_after_persistence(
                 coding_history,
                 coding_choices,
             )
-        ai_client_approved = ai_review.get("status") in ("needs_review", "rejected") and ai_token_verified
+        ai_client_approved = ai_client_approved or (ai_review.get("status") in ("needs_review", "rejected") and ai_token_verified)
         await session.execute(
             update(submissions)
             .where(submissions.c.id == submission_id)
@@ -13139,7 +13167,7 @@ async def apply_ai_review_after_persistence(
             )
         )
         await session.commit()
-        return {"ai_review_status": ai_review.get("status"), "ai_warning": None, "ai_client_approved": ai_client_approved}
+        return {"ai_review_status": ai_review.get("status"), "ai_review_message": ai_review.get("message"), "ai_warning": None, "ai_client_approved": ai_client_approved}
     except Exception as exc:
         await session.rollback()
         logger.exception("Submission AI review failed after persistence correlation_id=%s submission_id=%s upload=%s", correlation_id, submission_id, upload_log_context(file, raw))
@@ -14256,6 +14284,7 @@ async def submit_item(
     ai_client_approved = False
     accepted_ai_review = None
     stamp_warning = None
+    stamped = False
     raw: Optional[bytes] = None
     now = datetime.now(timezone.utc)
     correlation_id = getattr(request.state, "correlation_id", "")
@@ -14277,9 +14306,9 @@ async def submit_item(
         validate_upload_size(raw)
         accepted_ai_review = verified_ai_warning_review(user, raw, ai_review_token, client_approved_ai_warning)
         ai_client_approved = bool(accepted_ai_review)
-        watermark_comment = build_submission_note(comment, accepted_ai_review, ai_client_approved)
+        watermark_comment = client_approved_warning_note(comment, accepted_ai_review, ai_client_approved)
         base_name = f"{user['id']}_{item_id}_{int(now.timestamp())}"
-        fpath, stamp_warning = save_submission_upload_with_stamp_fallback(raw, file, base_name, watermark_comment, now, correlation_id)
+        fpath, stamped, stamp_warning = save_submission_upload_with_stamp_fallback(raw, file, base_name, watermark_comment, now, correlation_id)
         image_path = str(fpath)
     else:
         raise HTTPException(status_code=400, detail="Invalid mode")
@@ -14293,7 +14322,7 @@ async def submit_item(
             description=item.get("description", ""),
             date=item.get("date", ""),
             amount=item.get("amount", ""),
-            comment=comment,
+            comment=client_approved_warning_note(comment, accepted_ai_review, ai_client_approved) + (f"\n{stamp_warning}" if stamp_warning else ""),
             image_filename=Path(image_path).name if image_path else None,
             is_additional=False,
             ai_review_status=accepted_ai_review.get("status") if accepted_ai_review else None,
@@ -14323,7 +14352,18 @@ async def submit_item(
         email_sent = False
         email_warning = "Submission was recorded, but email delivery failed. The practice can still see it in Submitted Items."
         logger.exception("Submission %s was recorded but email delivery failed", submission_id)
-    return {"ok": True, "submission_id": submission_id, "email_sent": email_sent, "email_warning": email_warning, "ai_review_status": ai_result.get("ai_review_status"), "ai_warning": ai_result.get("ai_warning"), "stamp_warning": stamp_warning}
+    return {
+        "ok": True,
+        "submission_id": submission_id,
+        "email_sent": email_sent,
+        "email_warning": email_warning,
+        "ai_client_approved": bool(ai_client_approved or ai_result.get("ai_client_approved")),
+        "ai_review_status": ai_result.get("ai_review_status") or (accepted_ai_review or {}).get("status"),
+        "ai_review_message": ai_result.get("ai_review_message") or (accepted_ai_review or {}).get("message"),
+        "ai_warning": ai_result.get("ai_warning"),
+        "stamped": stamped,
+        "stamp_warning": stamp_warning,
+    }
 
 
 @api.post("/client/submit-additional")
@@ -14353,6 +14393,7 @@ async def submit_additional(
     ai_client_approved = False
     accepted_ai_review = None
     stamp_warning = None
+    stamped = False
     raw: Optional[bytes] = None
     correlation_id = getattr(request.state, "correlation_id", "")
 
@@ -14372,9 +14413,9 @@ async def submit_additional(
         item = {"description": description, "date": "", "amount": "", "type": type, "additional": True}
         accepted_ai_review = verified_ai_warning_review(user, raw, ai_review_token, client_approved_ai_warning)
         ai_client_approved = bool(accepted_ai_review)
-        watermark_comment = build_submission_note(comment, accepted_ai_review, ai_client_approved)
+        watermark_comment = client_approved_warning_note(comment, accepted_ai_review, ai_client_approved)
         base_name = f"{user['id']}_additional_{int(now.timestamp())}"
-        fpath, stamp_warning = save_submission_upload_with_stamp_fallback(raw, file, base_name, watermark_comment, now, correlation_id)
+        fpath, stamped, stamp_warning = save_submission_upload_with_stamp_fallback(raw, file, base_name, watermark_comment, now, correlation_id)
         fname = fpath.name
     else:
         raise HTTPException(status_code=400, detail="Invalid mode")
@@ -14391,7 +14432,7 @@ async def submit_additional(
             description=description,
             date="",
             amount="",
-            comment=comment,
+            comment=client_approved_warning_note(comment, accepted_ai_review, ai_client_approved) + (f"\n{stamp_warning}" if stamp_warning else ""),
             image_filename=fname,
             is_additional=True,
             ai_review_status=accepted_ai_review.get("status") if accepted_ai_review else None,
@@ -14420,7 +14461,18 @@ async def submit_additional(
         email_sent = False
         email_warning = "Submission was recorded, but email delivery failed. The practice can still see it in Submitted Items."
         logger.exception("Additional submission %s was recorded but email delivery failed", submission_id)
-    return {"ok": True, "submission_id": submission_id, "email_sent": email_sent, "email_warning": email_warning, "ai_review_status": ai_result.get("ai_review_status"), "ai_warning": ai_result.get("ai_warning"), "stamp_warning": stamp_warning}
+    return {
+        "ok": True,
+        "submission_id": submission_id,
+        "email_sent": email_sent,
+        "email_warning": email_warning,
+        "ai_client_approved": bool(ai_client_approved or ai_result.get("ai_client_approved")),
+        "ai_review_status": ai_result.get("ai_review_status") or (accepted_ai_review or {}).get("status"),
+        "ai_review_message": ai_result.get("ai_review_message") or (accepted_ai_review or {}).get("message"),
+        "ai_warning": ai_result.get("ai_warning"),
+        "stamped": stamped,
+        "stamp_warning": stamp_warning,
+    }
 
 
 
