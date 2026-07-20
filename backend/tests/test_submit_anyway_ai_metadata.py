@@ -86,18 +86,17 @@ async def _run_submit_anyway_regression(monkeypatch):
         assert first.status_code == 200, first.text
         first_body = first.json()
         assert first_body["ok"] is False
+        assert first_body["pending_upload_id"]
         assert first_body["ai_review"]["status"] == "needs_review"
         assert first_body["ai_review"]["token"]
 
         second = await client.post(
             f"/api/client/items/{item_id}/submit",
             data={
-                "mode": "photo",
-                "comment": "",
                 "client_approved_ai_warning": "true",
                 "ai_review_token": first_body["ai_review"]["token"],
+                "pending_upload_id": first_body["pending_upload_id"],
             },
-            files={"file": ("receipt.jpg", jpeg, "image/jpeg")},
         )
         assert second.status_code == 200, second.text
         second_body = second.json()
