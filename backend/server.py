@@ -34,7 +34,7 @@ import httpx
 import jwt
 from cryptography.fernet import Fernet
 from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import (
@@ -1817,7 +1817,15 @@ async def correlation_id_middleware(request: Request, call_next):
                 )
             )
             await session.commit()
-        raise
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "detail": f"Unexpected server error. Reference {correlation_id}.",
+                "correlation_id": correlation_id,
+            },
+            headers={"X-Correlation-ID": correlation_id},
+        )
     response.headers["X-Correlation-ID"] = correlation_id
     if response.status_code >= 500:
         async with SessionLocal() as session:
@@ -3954,6 +3962,36 @@ def serialize_platform_error(row: dict) -> dict:
         "user_id": row.get("user_id"),
         "created_at": row.get("created_at"),
     }
+
+
+async def record_mobile_submit_trace(
+    session: AsyncSession,
+    correlation_id: str,
+    path: str,
+    method: str,
+    stage: str,
+    details: Optional[dict] = None,
+    status_code: int = 200,
+    user_id: Optional[str] = None,
+) -> None:
+    try:
+        await session.execute(
+            insert(platform_error_logs).values(
+                id=new_id(),
+                correlation_id=correlation_id,
+                path=path,
+                method=method,
+                status_code=status_code,
+                message=f"mobile_submit:{stage}",
+                details=json.dumps(details or {}, default=str)[:4000],
+                user_id=user_id,
+                created_at=utc_now_iso(),
+            )
+        )
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        logger.exception("Failed to record mobile submit trace correlation_id=%s stage=%s", correlation_id, stage)
 
 
 async def create_platform_job(
@@ -6752,6 +6790,29 @@ async def get_platform_workspace(
     session: AsyncSession = Depends(get_db),
 ):
     return await platform_workspace(session, q)
+
+
+@api.get("/admin/mobile-submit-diagnostics")
+async def mobile_submit_diagnostics(
+    correlation_id: Optional[str] = None,
+    limit: int = 50,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    stmt = select(platform_error_logs).where(
+        or_(
+            platform_error_logs.c.path.like("/api/client/items/%/submit%"),
+            platform_error_logs.c.path == "/api/client/submit-additional",
+            platform_error_logs.c.message.like("mobile_submit:%"),
+        )
+    )
+    if correlation_id:
+        stmt = stmt.where(platform_error_logs.c.correlation_id == correlation_id)
+    rows = await many(
+        session,
+        stmt.order_by(platform_error_logs.c.created_at.desc()).limit(max(1, min(int(limit or 50), 200))),
+    )
+    return {"ok": True, "diagnostics": [serialize_platform_error(row) for row in rows]}
 
 
 @api.get("/v1/admin/platform")
@@ -14411,6 +14472,7 @@ async def submit_item(
     correlation_id = getattr(request.state, "correlation_id", "")
     if mode == "no_photo":
         logger.info("Client submit start correlation_id=%s endpoint=item mode=no_photo item_id=%s upload=%s", correlation_id, item_id, upload_log_context(None))
+        await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "item_start_no_photo", {"item_id": item_id, "mode": mode}, user_id=str(user.get("id") or ""))
         if not comment:
             raise HTTPException(status_code=400, detail="Comment is required when no photo is provided")
         fname = f"{user['id']}_{item_id}_{int(now.timestamp())}.jpg"
@@ -14420,12 +14482,14 @@ async def submit_item(
         image_path = str(fpath)
     elif mode == "photo":
         if client_approved_ai_warning and pending_upload_id:
+            await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "item_resume_pending_start", {"item_id": item_id, "pending_upload_id": pending_upload_id}, user_id=str(user.get("id") or ""))
             pending_upload = await get_pending_upload_or_400(session, user, pending_upload_id, "item", item_id)
             if not comment:
                 comment = str(pending_upload.get("comment") or "")
             raw = (UPLOAD_DIR / Path(pending_upload.get("stored_filename") or "").name).read_bytes()
             file = upload_proxy_from_pending(pending_upload)
             logger.info("Client submit resume pending upload correlation_id=%s endpoint=item item_id=%s upload=%s", correlation_id, item_id, pending_upload_log_context(pending_upload))
+            await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "item_resume_pending_loaded", pending_upload_log_context(pending_upload), user_id=str(user.get("id") or ""))
             accepted_ai_review = verify_ai_review_token(ai_review_token or "", str(user["id"]), str(pending_upload.get("file_sha256") or ""))
             if not accepted_ai_review:
                 raise HTTPException(status_code=400, detail="The AI review approval has expired or does not match this pending upload. Please upload again so we can re-check it.")
@@ -14436,9 +14500,12 @@ async def submit_item(
         else:
             raw = await file.read()
             logger.info("Client submit start correlation_id=%s endpoint=item mode=photo item_id=%s upload=%s", correlation_id, item_id, upload_log_context(file, raw))
+            await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "item_photo_read", {"item_id": item_id, **upload_log_context(file, raw)}, user_id=str(user.get("id") or ""))
             validate_supported_upload(file)
             validate_upload_size(raw)
+            await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "item_photo_validated", {"item_id": item_id, **upload_log_context(file, raw)}, user_id=str(user.get("id") or ""))
             pending_upload = await create_pending_client_upload(session, user, "item", item, raw, file, comment, correlation_id=correlation_id)
+            await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "item_pending_saved", {"pending_upload_id": pending_upload.get("id"), **pending_upload_log_context(pending_upload)}, user_id=str(user.get("id") or ""))
             if user.get("ai_analysis_enabled") and (is_image_document(file) or is_pdf_document(file)):
                 if client_approved_ai_warning:
                     accepted_ai_review = verified_ai_warning_review(user, raw, ai_review_token, True)
@@ -14451,6 +14518,7 @@ async def submit_item(
                     if ai_review.get("status") in ("needs_review", "rejected"):
                         await session.execute(update(pending_client_uploads).where(pending_client_uploads.c.id == pending_upload["id"]).values(ai_review_json=json.dumps(ai_review)))
                         await session.commit()
+                        await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "item_ai_warning_returned", {"pending_upload_id": pending_upload.get("id"), "status": ai_review.get("status"), "message": ai_review.get("message")}, user_id=str(user.get("id") or ""))
                         image_hash = hashlib.sha256(raw).hexdigest()
                         return {
                             "ok": False,
@@ -14469,6 +14537,7 @@ async def submit_item(
         base_name = f"{user['id']}_{item_id}_{int(now.timestamp())}"
         fpath, stamped, stamp_warning = save_submission_upload_with_stamp_fallback(raw, file, base_name, watermark_comment, now, correlation_id)
         image_path = str(fpath)
+        await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "item_file_finalized", {"image_filename": Path(image_path).name, "stamped": stamped, "stamp_warning": stamp_warning, "accepted_warning": ai_client_approved}, user_id=str(user.get("id") or ""))
         if client_approved_ai_warning:
             logger.info(
                 "Client submit accepted-warning finalisation correlation_id=%s endpoint=item token_verified=%s stamped=%s image_filename=%s stamp_warning=%s upload=%s",
@@ -14515,12 +14584,14 @@ async def submit_item(
         len(submission_values.get("ai_extracted_fields") or ""),
         len(submission_values.get("comment") or ""),
     )
+    await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "item_before_insert", {"submission_id": submission_id, "accepted_warning": ai_client_approved, "image_filename": submission_values.get("image_filename"), "ai_review_status": submission_values.get("ai_review_status"), "ai_message_len": len(submission_values.get("ai_review_message") or ""), "ai_fields_len": len(submission_values.get("ai_extracted_fields") or ""), "comment_len": len(submission_values.get("comment") or "")}, user_id=str(user.get("id") or ""))
     try:
         await session.execute(insert(submissions).values(**submission_values))
         await session.execute(delete(outstanding_items).where(outstanding_items.c.id == item_id))
         if pending_upload:
             await session.execute(update(pending_client_uploads).where(pending_client_uploads.c.id == pending_upload["id"]).values(status="finalized", final_submission_id=submission_id))
         await session.commit()
+        await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "item_committed", {"submission_id": submission_id, "pending_upload_id": pending_upload.get("id") if pending_upload else None}, user_id=str(user.get("id") or ""))
     except SQLAlchemyError as exc:
         await session.rollback()
         logger.exception(
@@ -14563,6 +14634,7 @@ async def submit_additional(
     """Submit an invoice that is NOT in the client's outstanding list."""
     pending_upload = None
     if client_approved_ai_warning and pending_upload_id:
+        await record_mobile_submit_trace(session, getattr(request.state, "correlation_id", ""), str(request.url.path), request.method, "additional_prefetch_pending_start", {"pending_upload_id": pending_upload_id}, user_id=str(user.get("id") or ""))
         pending_upload = await get_pending_upload_or_400(session, user, pending_upload_id, "additional")
         type = type or pending_upload.get("type")
         description = description or pending_upload.get("description")
@@ -14588,6 +14660,7 @@ async def submit_additional(
 
     if mode == "no_photo":
         logger.info("Client submit start correlation_id=%s endpoint=additional mode=no_photo upload=%s", correlation_id, upload_log_context(None))
+        await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "additional_start_no_photo", {"mode": mode, "type": type, "description": description}, user_id=str(user.get("id") or ""))
         if not comment:
             raise HTTPException(status_code=400, detail="Comment is required when no photo is provided")
         with open(fpath, "wb") as f:
@@ -14598,6 +14671,7 @@ async def submit_additional(
             raw = (UPLOAD_DIR / Path(pending_upload.get("stored_filename") or "").name).read_bytes()
             file = upload_proxy_from_pending(pending_upload)
             logger.info("Client submit resume pending upload correlation_id=%s endpoint=additional upload=%s", correlation_id, pending_upload_log_context(pending_upload))
+            await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "additional_resume_pending_loaded", pending_upload_log_context(pending_upload), user_id=str(user.get("id") or ""))
             accepted_ai_review = verify_ai_review_token(ai_review_token or "", str(user["id"]), str(pending_upload.get("file_sha256") or ""))
             if not accepted_ai_review:
                 raise HTTPException(status_code=400, detail="The AI review approval has expired or does not match this pending upload. Please upload again so we can re-check it.")
@@ -14608,9 +14682,12 @@ async def submit_additional(
         else:
             raw = await file.read()
             logger.info("Client submit start correlation_id=%s endpoint=additional mode=photo upload=%s", correlation_id, upload_log_context(file, raw))
+            await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "additional_photo_read", {"type": type, "description": description, **upload_log_context(file, raw)}, user_id=str(user.get("id") or ""))
             validate_supported_upload(file)
             validate_upload_size(raw)
+            await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "additional_photo_validated", {"type": type, **upload_log_context(file, raw)}, user_id=str(user.get("id") or ""))
             pending_upload = await create_pending_client_upload(session, user, "additional", item, raw, file, comment, correlation_id=correlation_id)
+            await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "additional_pending_saved", {"pending_upload_id": pending_upload.get("id"), **pending_upload_log_context(pending_upload)}, user_id=str(user.get("id") or ""))
             if user.get("ai_analysis_enabled") and (is_image_document(file) or is_pdf_document(file)):
                 if client_approved_ai_warning:
                     accepted_ai_review = verified_ai_warning_review(user, raw, ai_review_token, True)
@@ -14623,6 +14700,7 @@ async def submit_additional(
                     if ai_review.get("status") in ("needs_review", "rejected"):
                         await session.execute(update(pending_client_uploads).where(pending_client_uploads.c.id == pending_upload["id"]).values(ai_review_json=json.dumps(ai_review)))
                         await session.commit()
+                        await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "additional_ai_warning_returned", {"pending_upload_id": pending_upload.get("id"), "status": ai_review.get("status"), "message": ai_review.get("message")}, user_id=str(user.get("id") or ""))
                         image_hash = hashlib.sha256(raw).hexdigest()
                         return {
                             "ok": False,
@@ -14639,6 +14717,7 @@ async def submit_additional(
         base_name = f"{user['id']}_additional_{int(now.timestamp())}"
         fpath, stamped, stamp_warning = save_submission_upload_with_stamp_fallback(raw, file, base_name, watermark_comment, now, correlation_id)
         fname = fpath.name
+        await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "additional_file_finalized", {"image_filename": fname, "stamped": stamped, "stamp_warning": stamp_warning, "accepted_warning": ai_client_approved}, user_id=str(user.get("id") or ""))
         if client_approved_ai_warning:
             logger.info(
                 "Client submit accepted-warning finalisation correlation_id=%s endpoint=additional token_verified=%s stamped=%s image_filename=%s stamp_warning=%s upload=%s",
@@ -14688,11 +14767,13 @@ async def submit_additional(
         len(submission_values.get("ai_extracted_fields") or ""),
         len(submission_values.get("comment") or ""),
     )
+    await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "additional_before_insert", {"submission_id": submission_id, "accepted_warning": ai_client_approved, "image_filename": submission_values.get("image_filename"), "ai_review_status": submission_values.get("ai_review_status"), "ai_message_len": len(submission_values.get("ai_review_message") or ""), "ai_fields_len": len(submission_values.get("ai_extracted_fields") or ""), "comment_len": len(submission_values.get("comment") or "")}, user_id=str(user.get("id") or ""))
     try:
         await session.execute(insert(submissions).values(**submission_values))
         if pending_upload:
             await session.execute(update(pending_client_uploads).where(pending_client_uploads.c.id == pending_upload["id"]).values(status="finalized", final_submission_id=submission_id))
         await session.commit()
+        await record_mobile_submit_trace(session, correlation_id, str(request.url.path), request.method, "additional_committed", {"submission_id": submission_id, "pending_upload_id": pending_upload.get("id") if pending_upload else None}, user_id=str(user.get("id") or ""))
     except SQLAlchemyError:
         await session.rollback()
         logger.exception(
