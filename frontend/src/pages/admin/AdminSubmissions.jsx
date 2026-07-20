@@ -11,6 +11,7 @@ const listTabs = [
   { key: "inbox", label: "Inbox", icon: Inbox },
   { key: "archived", label: "Archived", icon: Archive },
 ];
+const emptyCodingContext = {};
 
 export default function AdminSubmissions() {
   const [clients, setClients] = useState([]);
@@ -82,7 +83,7 @@ export default function AdminSubmissions() {
 
   const selected = submissions.find((row) => row.id === selectedId) || null;
   const previewUrl = previewObjectUrl;
-  const activeCodingContext = submissionCodingContext || clientCodingContext || {};
+  const activeCodingContext = submissionCodingContext || clientCodingContext || emptyCodingContext;
   const codingOptions = useMemo(() => buildCodingContextOptions(activeCodingContext), [activeCodingContext]);
 
   useEffect(() => {
