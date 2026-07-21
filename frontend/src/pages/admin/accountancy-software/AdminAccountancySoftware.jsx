@@ -31,25 +31,37 @@ import {
 } from "./moduleConfig";
 import BankingWorkspace from "./BankingWorkspace";
 import AccountsPayableWorkspace from "./AccountsPayableWorkspace";
+import AccountsReceivableWorkspace from "./AccountsReceivableWorkspace";
 import {
   AccountCodeSelect,
-  BankReportLine,
   ContactCount,
   Field,
   Info,
   Panel,
-  ReadOnly,
   ReportRows,
   SelectField,
-  SmallStat,
   SummaryCard,
   displayAuditValue,
   downloadReportCsv,
   formatDate,
   formatDateTime,
   formatMoney,
-  statusBadgeClass,
 } from "./shared";
+
+const EMPTY_ACCOUNT_FORM = {
+  id: "",
+  code: "",
+  name: "",
+  category: "Expense",
+  account_type: "Overheads",
+  purpose: "Standard Nominal",
+  normal_balance: "debit",
+  is_control_account: false,
+  show_in_banking: false,
+  banking_enabled: false,
+  active: true,
+  description: "",
+};
 
 export default function AdminAccountancySoftware() {
   const [clients, setClients] = useState([]);
@@ -59,7 +71,10 @@ export default function AdminAccountancySoftware() {
   const [moduleTab, setModuleTab] = useState("");
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
-  const [accountForm, setAccountForm] = useState({ code: "", name: "", category: "Expense", account_type: "Overheads", purpose: "Standard Nominal", normal_balance: "debit", is_control_account: false, description: "" });
+  const [accountForm, setAccountForm] = useState(EMPTY_ACCOUNT_FORM);
+  const [accountDrawerMode, setAccountDrawerMode] = useState("");
+  const [selectedAccount, setSelectedAccount] = useState(null);
+  const [accountBackendMessage, setAccountBackendMessage] = useState("");
   const [contactForm, setContactForm] = useState({ name: "", contact_type: "supplier", email: "" });
   const [bankForm, setBankForm] = useState({ transaction_date: "", description: "", reference: "", money_in: "", money_out: "", bank_account_code: "1200" });
   const [bankImportFile, setBankImportFile] = useState(null);
@@ -135,21 +150,82 @@ export default function AdminAccountancySoftware() {
   async function createAccount(e) {
     e.preventDefault();
     if (!workspace?.client?.id) return;
+    setAccountBackendMessage("");
     if (!accountForm.code.trim() || !accountForm.name.trim()) {
       toast.error("Account code and name are required");
       return;
     }
+    if ((workspace.accounts || []).some((account) => String(account.code || "").trim().toLowerCase() === accountForm.code.trim().toLowerCase())) {
+      toast.error("An account with this code already exists");
+      return;
+    }
     setBusy(true);
     try {
-      await api.post(`/admin/accounting/clients/${workspace.client.id}/accounts`, accountForm);
+      const payload = { ...accountForm };
+      delete payload.id;
+      await api.post(`/admin/accounting/clients/${workspace.client.id}/accounts`, payload);
       toast.success("Account created");
-      setAccountForm({ code: "", name: "", category: "Expense", account_type: "Overheads", purpose: "Standard Nominal", normal_balance: "debit", is_control_account: false, description: "" });
+      setAccountForm(EMPTY_ACCOUNT_FORM);
+      setAccountDrawerMode("");
       await loadWorkspace(workspace.client.id);
     } catch (e) {
       toast.error(formatApiError(e));
     } finally {
       setBusy(false);
     }
+  }
+
+  async function updateAccount(e) {
+    e.preventDefault();
+    if (!workspace?.client?.id || !selectedAccount?.id) return;
+    setAccountBackendMessage("");
+    const duplicate = (workspace.accounts || []).some((account) => (
+      account.id !== selectedAccount.id &&
+      String(account.code || "").trim().toLowerCase() === String(accountForm.code || "").trim().toLowerCase()
+    ));
+    if (duplicate) {
+      toast.error("An account with this code already exists");
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.put(`/admin/accounting/clients/${workspace.client.id}/accounts/${selectedAccount.id}`, accountForm);
+      toast.success("Account updated");
+      setAccountDrawerMode("");
+      setSelectedAccount(null);
+      setAccountForm(EMPTY_ACCOUNT_FORM);
+      await loadWorkspace(workspace.client.id);
+    } catch (e) {
+      const status = e?.response?.status || e?.status;
+      if ([404, 405, 501].includes(status)) {
+        setAccountBackendMessage("Backend endpoint required: update Chart of Accounts account.");
+      } else {
+        toast.error(formatApiError(e));
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function openAddAccountDrawer() {
+    setSelectedAccount(null);
+    setAccountBackendMessage("");
+    setAccountForm(EMPTY_ACCOUNT_FORM);
+    setAccountDrawerMode("add");
+  }
+
+  function openEditAccountDrawer(account) {
+    setSelectedAccount(account);
+    setAccountBackendMessage("");
+    setAccountForm(accountToForm(account));
+    setAccountDrawerMode("edit");
+  }
+
+  function openAccountHistoryDrawer() {
+    setSelectedAccount(null);
+    setAccountBackendMessage("");
+    setAccountForm(EMPTY_ACCOUNT_FORM);
+    setAccountDrawerMode("history");
   }
 
   async function createContact(e) {
@@ -358,6 +434,16 @@ export default function AdminAccountancySoftware() {
           accountForm={accountForm}
           setAccountForm={setAccountForm}
           createAccount={createAccount}
+          updateAccount={updateAccount}
+          accountDrawerMode={accountDrawerMode}
+          selectedAccount={selectedAccount}
+          accountBackendMessage={accountBackendMessage}
+          openAddAccountDrawer={openAddAccountDrawer}
+          openAccountHistoryDrawer={openAccountHistoryDrawer}
+          openEditAccountDrawer={openEditAccountDrawer}
+          setAccountDrawerMode={setAccountDrawerMode}
+          setSelectedAccount={setSelectedAccount}
+          setAccountBackendMessage={setAccountBackendMessage}
           contactForm={contactForm}
           setContactForm={setContactForm}
           createContact={createContact}
@@ -388,7 +474,6 @@ export default function AdminAccountancySoftware() {
     </div>
   );
 }
-
 function EmptyWorkspace({ busy }) {
   return (
     <div className="flex min-h-[520px] flex-col items-center justify-center p-8 text-center">
@@ -533,6 +618,16 @@ function ModuleWorkspace(props) {
     accountForm,
     setAccountForm,
     createAccount,
+    updateAccount,
+    accountDrawerMode,
+    selectedAccount,
+    accountBackendMessage,
+    openAddAccountDrawer,
+    openAccountHistoryDrawer,
+    openEditAccountDrawer,
+    setAccountDrawerMode,
+    setSelectedAccount,
+    setAccountBackendMessage,
     contactForm,
     setContactForm,
     createContact,
@@ -561,6 +656,7 @@ function ModuleWorkspace(props) {
   } = props;
   const [filters, setFilters] = useState({ date_from: "", date_to: "", financial_year_id: "", period_id: "", search: "" });
   const detail = MODULE_DETAILS[module];
+  const isBankingModule = module === "banking";
 
   function renderTab() {
     if (module === "ai_workspace") {
@@ -601,7 +697,28 @@ function ModuleWorkspace(props) {
 
     if (module === "coa") {
       if (moduleTab === "Chart of Accounts") {
-        return <ChartOfAccounts accounts={workspace.accounts} form={accountForm} setForm={setAccountForm} createAccount={createAccount} busy={busy} />;
+        return (
+          <ChartOfAccounts
+            accounts={workspace.accounts}
+            clientId={workspace.client.id}
+            form={accountForm}
+            setForm={setAccountForm}
+            createAccount={createAccount}
+            updateAccount={updateAccount}
+            busy={busy}
+            drawerMode={accountDrawerMode}
+            selectedAccount={selectedAccount}
+            backendMessage={accountBackendMessage}
+            openAddAccount={openAddAccountDrawer}
+            openEditAccount={openEditAccountDrawer}
+            closeDrawer={() => {
+              setAccountDrawerMode("");
+              setSelectedAccount(null);
+              setAccountForm(EMPTY_ACCOUNT_FORM);
+              setAccountBackendMessage("");
+            }}
+          />
+        );
       }
       return <PlaceholderModulePanel title={moduleTab} moduleTitle={detail.title} />;
     }
@@ -637,21 +754,31 @@ function ModuleWorkspace(props) {
             <h1 className="mt-1 font-display text-2xl font-bold text-stone-900">{detail.title}</h1>
             <p className="mt-1 text-sm text-stone-500">{workspace.client.business_name}</p>
           </div>
-          <div className="flex flex-wrap gap-2">
-            {detail.tabs.map((tab) => (
-              <button
-                key={tab}
-                type="button"
-                onClick={() => setModuleTab(tab)}
-                className={`rounded-md px-3 py-2 text-sm font-semibold ${moduleTab === tab ? "bg-[var(--brand)] text-white" : "bg-stone-100 text-stone-700 hover:bg-stone-200"}`}
-              >
-                {tab}
-              </button>
-            ))}
-          </div>
+          {!isBankingModule ? (
+            <div className="flex flex-wrap gap-2">
+              {detail.tabs.map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => setModuleTab(tab)}
+                  className={`rounded-md px-3 py-2 text-sm font-semibold ${moduleTab === tab ? "bg-[var(--brand)] text-white" : "bg-stone-100 text-stone-700 hover:bg-stone-200"}`}
+                >
+                  {tab}
+                </button>
+              ))}
+              {module === "coa" && moduleTab === "Chart of Accounts" ? (
+                <>
+                  <Button type="button" variant="outline" onClick={openAccountHistoryDrawer}>History</Button>
+                  <Button type="button" className="gap-2" onClick={openAddAccountDrawer} style={{ background: "var(--brand)" }}>
+                    <Plus className="h-4 w-4" /> Add account
+                  </Button>
+                </>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </header>
-      <AccountingFilterBar workspace={workspace} filters={filters} setFilters={setFilters} />
+      {!isBankingModule ? <AccountingFilterBar workspace={workspace} filters={filters} setFilters={setFilters} /> : null}
       {renderTab()}
     </div>
   );
@@ -868,463 +995,6 @@ function AccountingRows({ rows, compact = false }) {
       </table>
     </div>
   );
-}
-
-const EMPTY_AR_LINE = { description: "", nominal_account_code: "4000", quantity: "1", unit_price: "", discount_amount: "", net_amount: "", vat_amount: "", gross_amount: "", vat_code: "" };
-
-function AccountsReceivableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
-  const ar = workspace.accounts_receivable || {};
-  const customers = ar.customers || [];
-  const invoices = ar.invoices || [];
-  const creditNotes = ar.credit_notes || [];
-  const receipts = ar.receipts || [];
-  const accounts = workspace.accounts || [];
-  const bankAccounts = accounts.filter((account) => account.purpose === "Bank Account" || account.account_type === "Bank");
-  const incomeAccounts = accounts.filter((account) => account.category === "Income" || account.account_type === "Sales");
-  const [saving, setSaving] = useState(false);
-  const [customerQuery, setCustomerQuery] = useState("");
-  const [statementCustomerId, setStatementCustomerId] = useState("");
-  const emptyCustomerForm = { business_name: "", customer_code: "", trading_name: "", email: "", phone: "", website: "", vat_number: "", company_number: "", payment_terms_days: "30", default_currency: "GBP", default_sales_account: "4000", default_vat_code: "", credit_limit: "", notes: "" };
-  const [customerForm, setCustomerForm] = useState(emptyCustomerForm);
-  const [invoiceForm, setInvoiceForm] = useState({ customer_id: "", invoice_number: "", reference: "", invoice_date: "", due_date: "", currency: "GBP", lines: [{ ...EMPTY_AR_LINE }] });
-  const [creditForm, setCreditForm] = useState({ customer_id: "", credit_note_number: "", reference: "", credit_note_date: "", currency: "GBP", lines: [{ ...EMPTY_AR_LINE }] });
-  const [receiptForm, setReceiptForm] = useState({ customer_id: "", receipt_date: "", reference: "", payment_method: "Bank Transfer", bank_account_code: bankAccounts[0]?.code || "1200", amount: "", invoice_id: "" });
-  const [settingsForm, setSettingsForm] = useState(ar.settings || {});
-
-  useEffect(() => {
-    setSettingsForm(ar.settings || {});
-  }, [ar.settings]);
-
-  const visibleCustomers = customers.filter((customer) => {
-    const needle = customerQuery.trim().toLowerCase();
-    if (!needle) return true;
-    return `${customer.name || ""} ${customer.trading_name || ""} ${customer.customer_code || ""} ${customer.email || ""}`.toLowerCase().includes(needle);
-  });
-
-  async function run(action, success) {
-    setSaving(true);
-    try {
-      await action();
-      toast.success(success);
-      await reloadWorkspace();
-    } catch (e) {
-      toast.error(formatApiError(e));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  const postJson = (url, payload) => api.post(`/admin/accounting/clients/${workspace.client.id}${url}`, payload);
-  const putJson = (url, payload) => api.put(`/admin/accounting/clients/${workspace.client.id}${url}`, payload);
-
-  async function createCustomer(e) {
-    e.preventDefault();
-    if (!customerForm.business_name.trim()) return toast.error("Customer business name is required");
-    await run(async () => postJson("/ar/customers", customerForm), "Customer created");
-    setCustomerForm(emptyCustomerForm);
-  }
-
-  async function createInvoice(e) {
-    e.preventDefault();
-    if (!invoiceForm.customer_id) return toast.error("Customer is required");
-    await run(async () => postJson("/ar/invoices", invoiceForm), "Sales invoice created");
-    setInvoiceForm({ customer_id: "", invoice_number: "", reference: "", invoice_date: "", due_date: "", currency: "GBP", lines: [{ ...EMPTY_AR_LINE }] });
-  }
-
-  async function approveInvoice(invoice) {
-    await run(async () => postJson(`/ar/invoices/${invoice.id}/approve`, {}), "Sales invoice approved");
-  }
-
-  async function postInvoice(invoice) {
-    await run(async () => postJson(`/ar/invoices/${invoice.id}/post`, {}), "Sales invoice posted to the ledger");
-  }
-
-  async function archiveInvoice(invoice) {
-    await run(async () => postJson(`/ar/invoices/${invoice.id}/archive`, {}), "Sales invoice archived");
-  }
-
-  async function createCreditNote(e) {
-    e.preventDefault();
-    if (!creditForm.customer_id || !creditForm.credit_note_number.trim()) return toast.error("Customer and credit note number are required");
-    await run(async () => postJson("/ar/credit-notes", creditForm), "Customer credit note created");
-    setCreditForm({ customer_id: "", credit_note_number: "", reference: "", credit_note_date: "", currency: "GBP", lines: [{ ...EMPTY_AR_LINE }] });
-  }
-
-  async function postCreditNote(creditNote) {
-    await run(async () => postJson(`/ar/credit-notes/${creditNote.id}/post`, {}), "Customer credit note posted");
-  }
-
-  async function createReceipt(e) {
-    e.preventDefault();
-    if (!receiptForm.customer_id || !receiptForm.amount) return toast.error("Customer and receipt amount are required");
-    const allocations = receiptForm.invoice_id ? [{ invoice_id: receiptForm.invoice_id, amount: receiptForm.amount }] : [];
-    await run(async () => postJson("/ar/receipts", { ...receiptForm, allocations }), "Customer receipt posted");
-    setReceiptForm({ customer_id: "", receipt_date: "", reference: "", payment_method: "Bank Transfer", bank_account_code: bankAccounts[0]?.code || "1200", amount: "", invoice_id: "" });
-  }
-
-  async function saveSettings(e) {
-    e.preventDefault();
-    await run(async () => putJson("/ar/settings", settingsForm), "Accounts Receivable settings saved");
-  }
-
-  if (tab === "Dashboard") {
-    const dashboard = ar.dashboard || {};
-    const salesSummary = ar.sales_summary || {};
-    return (
-      <div className="space-y-4">
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
-          <SummaryCard label="Outstanding invoices" value={dashboard.outstanding_invoices || 0} tone="amber" />
-          <SummaryCard label="Overdue invoices" value={dashboard.overdue_invoices || 0} tone="amber" />
-          <SummaryCard label="Customers with balances" value={dashboard.customers_with_balances || 0} tone="blue" />
-          <SummaryCard label="Receipts this month" value={formatMoney(dashboard.receipts_this_month)} tone="emerald" />
-          <SummaryCard label="Average collection days" value={dashboard.average_collection_days || 0} tone="stone" />
-          <SummaryCard label="Sales this month" value={formatMoney(dashboard.sales_this_month)} tone="emerald" />
-        </div>
-        <div className="grid gap-4 xl:grid-cols-2">
-          <Panel title="Overdue invoices">
-            {(ar.overdue_invoices || []).length === 0 ? <p className="py-8 text-center text-sm text-stone-500">No overdue invoices.</p> : (ar.overdue_invoices || []).slice(0, 8).map((invoice) => (
-              <div key={invoice.id} className="flex items-center justify-between border-b border-stone-100 py-2 last:border-0">
-                <div><strong>{invoice.customer_name}</strong><div className="text-xs text-stone-500">{invoice.invoice_number} - due {formatDate(invoice.due_date)}</div></div>
-                <div className="text-right"><div className="font-semibold">{formatMoney(invoice.outstanding_amount)}</div><div className="text-xs text-amber-700">{invoice.days_overdue} days overdue</div></div>
-              </div>
-            ))}
-          </Panel>
-          <Panel title="Customers requiring attention">
-            {(ar.customers_requiring_attention || []).length === 0 ? <p className="py-8 text-center text-sm text-stone-500">No customers need attention.</p> : (ar.customers_requiring_attention || []).slice(0, 8).map((customer) => (
-              <div key={customer.customer_id} className="flex items-center justify-between border-b border-stone-100 py-2 last:border-0">
-                <div><strong>{customer.customer_name}</strong><div className="text-xs text-stone-500">{(customer.reasons || []).join(", ")}</div></div>
-                <strong>{formatMoney(customer.balance)}</strong>
-              </div>
-            ))}
-          </Panel>
-          <Panel title="Recent activity">
-            {(ar.recent_activity || []).length === 0 ? <p className="py-8 text-center text-sm text-stone-500">No Accounts Receivable activity yet.</p> : (ar.recent_activity || []).slice(0, 10).map((item, index) => (
-              <div key={`${item.type}-${item.description}-${index}`} className="flex items-center justify-between border-b border-stone-100 py-2 last:border-0">
-                <div><strong>{item.type}</strong><div className="text-xs text-stone-500">{item.description || "-"} - {formatDateTime(item.date)}</div></div>
-                {item.amount && <span>{formatMoney(item.amount)}</span>}
-              </div>
-            ))}
-          </Panel>
-          <Panel title="Sales summary">
-            <div className="divide-y divide-stone-100">
-              <BankReportLine label="Today" value={formatMoney(salesSummary.today)} />
-              <BankReportLine label="This week" value={formatMoney(salesSummary.this_week)} />
-              <BankReportLine label="This month" value={formatMoney(salesSummary.this_month)} />
-              <BankReportLine label="Financial year" value={formatMoney(salesSummary.financial_year)} />
-            </div>
-          </Panel>
-        </div>
-      </div>
-    );
-  }
-
-  if (tab === "Customers") {
-    return (
-      <div className="grid gap-4 xl:grid-cols-[1fr_390px]">
-        <Panel title="Customer master file">
-          <Input className="mb-3 h-9" value={customerQuery} onChange={(e) => setCustomerQuery(e.target.value)} placeholder="Search customers by name, code or email" />
-          <div className="overflow-auto">
-            <table className="min-w-full text-left text-sm">
-              <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
-                <tr><th className="px-3 py-2">Code</th><th className="px-3 py-2">Customer</th><th className="px-3 py-2">VAT</th><th className="px-3 py-2">Terms</th><th className="px-3 py-2">Credit limit</th><th className="px-3 py-2 text-right">Balance</th><th className="px-3 py-2">Status</th></tr>
-              </thead>
-              <tbody>
-                {visibleCustomers.map((customer) => (
-                  <tr key={customer.id} className="border-t border-stone-100">
-                    <td className="px-3 py-2 text-stone-600">{customer.customer_code || "-"}</td>
-                    <td className="px-3 py-2"><strong>{customer.name}</strong><div className="text-xs text-stone-500">{customer.email || customer.trading_name || "-"}</div></td>
-                    <td className="px-3 py-2 text-stone-600">{customer.vat_number || "-"}</td>
-                    <td className="px-3 py-2 text-stone-600">{customer.payment_terms_days || 0} days</td>
-                    <td className="px-3 py-2 text-stone-600">{formatMoney(customer.credit_limit)}</td>
-                    <td className="px-3 py-2 text-right font-semibold">{formatMoney(customer.outstanding_balance)}</td>
-                    <td className="px-3 py-2"><Badge className={customer.status === "active" ? "bg-emerald-100 text-emerald-800" : "bg-stone-100 text-stone-700"}>{customer.status || "active"}</Badge></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Panel>
-        <Panel title="Create customer">
-          <form onSubmit={createCustomer} className="space-y-3">
-            <Field label="Business name" value={customerForm.business_name} onChange={(value) => setCustomerForm((current) => ({ ...current, business_name: value }))} />
-            <div className="grid grid-cols-2 gap-2">
-              <Field label="Customer code" value={customerForm.customer_code} onChange={(value) => setCustomerForm((current) => ({ ...current, customer_code: value }))} />
-              <Field label="Payment terms" value={customerForm.payment_terms_days} onChange={(value) => setCustomerForm((current) => ({ ...current, payment_terms_days: value }))} />
-            </div>
-            <Field label="Trading name" value={customerForm.trading_name} onChange={(value) => setCustomerForm((current) => ({ ...current, trading_name: value }))} />
-            <Field label="Email" type="email" value={customerForm.email} onChange={(value) => setCustomerForm((current) => ({ ...current, email: value }))} />
-            <div className="grid grid-cols-2 gap-2">
-              <Field label="Phone" value={customerForm.phone} onChange={(value) => setCustomerForm((current) => ({ ...current, phone: value }))} />
-              <Field label="Website" value={customerForm.website} onChange={(value) => setCustomerForm((current) => ({ ...current, website: value }))} />
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <Field label="Company number" value={customerForm.company_number} onChange={(value) => setCustomerForm((current) => ({ ...current, company_number: value }))} />
-              <Field label="VAT number" value={customerForm.vat_number} onChange={(value) => setCustomerForm((current) => ({ ...current, vat_number: value }))} />
-            </div>
-            <AccountCodeSelect label="Default sales account" accounts={incomeAccounts} value={customerForm.default_sales_account} onChange={(value) => setCustomerForm((current) => ({ ...current, default_sales_account: value }))} />
-            <div className="grid grid-cols-2 gap-2">
-              <Field label="Default VAT code" value={customerForm.default_vat_code} onChange={(value) => setCustomerForm((current) => ({ ...current, default_vat_code: value }))} />
-              <Field label="Credit limit" value={customerForm.credit_limit} onChange={(value) => setCustomerForm((current) => ({ ...current, credit_limit: value }))} />
-            </div>
-            <Button disabled={busy || saving} className="w-full gap-2" style={{ background: "var(--brand)" }}><Plus className="h-4 w-4" /> Create customer</Button>
-          </form>
-        </Panel>
-      </div>
-    );
-  }
-
-  if (tab === "Sales Invoices") {
-    return (
-      <div className="grid gap-4 xl:grid-cols-[1fr_440px]">
-        <ArRegister
-          title="Sales invoices"
-          rows={invoices}
-          numberKey="invoice_number"
-          dateKey="invoice_date"
-          amountKey="gross_amount"
-          empty="No sales invoices yet."
-          actions={(invoice) => (
-            <div className="flex justify-end gap-2">
-              {invoice.status === "awaiting_approval" && <Button size="sm" variant="outline" disabled={saving} onClick={() => approveInvoice(invoice)}>Approve</Button>}
-              {!invoice.posted_journal_id && (invoice.status === "approved" || !ar.settings?.approval_required) && <Button size="sm" disabled={saving} onClick={() => postInvoice(invoice)} style={{ background: "var(--brand)" }}>Post</Button>}
-              {(invoice.status === "posted" || invoice.status === "paid" || invoice.status === "part_paid") && <Button size="sm" variant="outline" disabled={saving} onClick={() => archiveInvoice(invoice)}>Archive</Button>}
-            </div>
-          )}
-        />
-        <ArDocumentForm title="Create sales invoice" form={invoiceForm} setForm={setInvoiceForm} customers={customers} accounts={incomeAccounts} onSubmit={createInvoice} button="Create invoice" busy={busy || saving} numberKey="invoice_number" dateKey="invoice_date" />
-      </div>
-    );
-  }
-
-  if (tab === "Credit Notes") {
-    return (
-      <div className="grid gap-4 xl:grid-cols-[1fr_440px]">
-        <ArRegister
-          title="Customer credit notes"
-          rows={creditNotes}
-          numberKey="credit_note_number"
-          dateKey="credit_note_date"
-          amountKey="gross_amount"
-          empty="No customer credit notes yet."
-          actions={(creditNote) => !creditNote.posted_journal_id && <Button size="sm" disabled={saving} onClick={() => postCreditNote(creditNote)} style={{ background: "var(--brand)" }}>Post</Button>}
-        />
-        <ArDocumentForm title="Create customer credit note" form={creditForm} setForm={setCreditForm} customers={customers} accounts={incomeAccounts} onSubmit={createCreditNote} button="Create credit note" busy={busy || saving} numberKey="credit_note_number" dateKey="credit_note_date" />
-      </div>
-    );
-  }
-
-  if (tab === "Receipts") {
-    const customerInvoices = invoices.filter((invoice) => invoice.customer_id === receiptForm.customer_id && Number(invoice.outstanding_amount || 0) > 0);
-    return (
-      <div className="grid gap-4 xl:grid-cols-[1fr_390px]">
-        <ArRegister title="Customer receipts" rows={receipts} numberKey="reference" dateKey="receipt_date" amountKey="amount" empty="No customer receipts yet." />
-        <Panel title="Receive money">
-          <form onSubmit={createReceipt} className="space-y-3">
-            <CustomerSelect customers={customers} value={receiptForm.customer_id} onChange={(value) => setReceiptForm((current) => ({ ...current, customer_id: value, invoice_id: "" }))} />
-            <Field label="Receipt date" type="date" value={receiptForm.receipt_date} onChange={(value) => setReceiptForm((current) => ({ ...current, receipt_date: value }))} />
-            <Field label="Reference" value={receiptForm.reference} onChange={(value) => setReceiptForm((current) => ({ ...current, reference: value }))} />
-            <SelectField label="Payment method" value={receiptForm.payment_method} onChange={(value) => setReceiptForm((current) => ({ ...current, payment_method: value }))} options={["Bank Transfer", "Card", "Cash", "Cheque", "Direct Debit"]} />
-            <AccountCodeSelect label="Bank account" accounts={bankAccounts} value={receiptForm.bank_account_code} onChange={(value) => setReceiptForm((current) => ({ ...current, bank_account_code: value }))} />
-            <div>
-              <Label className="text-xs font-semibold text-stone-600">Allocate to invoice</Label>
-              <select value={receiptForm.invoice_id} onChange={(e) => {
-                const invoice = invoices.find((item) => item.id === e.target.value);
-                setReceiptForm((current) => ({ ...current, invoice_id: e.target.value, amount: invoice?.outstanding_amount || current.amount }));
-              }} className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm">
-                <option value="">Oldest invoices automatically</option>
-                {customerInvoices.map((invoice) => <option key={invoice.id} value={invoice.id}>{invoice.invoice_number} - {formatMoney(invoice.outstanding_amount)}</option>)}
-              </select>
-            </div>
-            <Field label="Amount" value={receiptForm.amount} onChange={(value) => setReceiptForm((current) => ({ ...current, amount: value }))} />
-            <Button disabled={busy || saving} className="w-full" style={{ background: "var(--brand)" }}>Post receipt</Button>
-          </form>
-        </Panel>
-      </div>
-    );
-  }
-
-  if (tab === "Customer Statements") {
-    const rows = statementCustomerId ? arStatementRows(statementCustomerId, invoices, creditNotes, receipts) : [];
-    return (
-      <Panel title="Customer statement">
-        <div className="mb-3 max-w-lg"><CustomerSelect customers={customers} value={statementCustomerId} onChange={setStatementCustomerId} /></div>
-        {rows.length === 0 ? <p className="py-8 text-center text-sm text-stone-500">Select a customer to view statement activity.</p> : (
-          <div className="overflow-auto">
-            <table className="min-w-full text-left text-sm">
-              <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500"><tr><th className="px-3 py-2">Date</th><th className="px-3 py-2">Type</th><th className="px-3 py-2">Reference</th><th className="px-3 py-2 text-right">Debit</th><th className="px-3 py-2 text-right">Credit</th><th className="px-3 py-2 text-right">Balance</th></tr></thead>
-              <tbody>{rows.map((row, index) => <tr key={`${row.type}-${row.id}-${index}`} className="border-t border-stone-100"><td className="px-3 py-2">{formatDate(row.date)}</td><td className="px-3 py-2">{row.type}</td><td className="px-3 py-2">{row.reference}</td><td className="px-3 py-2 text-right">{row.debit ? formatMoney(row.debit) : "-"}</td><td className="px-3 py-2 text-right">{row.credit ? formatMoney(row.credit) : "-"}</td><td className="px-3 py-2 text-right font-semibold">{formatMoney(row.balance)}</td></tr>)}</tbody>
-            </table>
-          </div>
-        )}
-      </Panel>
-    );
-  }
-
-  if (tab === "Aged Debtors") {
-    return <AgedDebtorsTable rows={ar.aged_debtors || []} />;
-  }
-
-  if (tab === "Reports") {
-    return <ArReports ar={ar} />;
-  }
-
-  if (tab === "Settings") {
-    return (
-      <Panel title="Accounts Receivable settings">
-        <form onSubmit={saveSettings} className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <label className="flex items-center gap-2 rounded-md border border-stone-200 p-3 text-sm font-semibold text-stone-700"><input type="checkbox" checked={!!settingsForm.approval_required} onChange={(e) => setSettingsForm((current) => ({ ...current, approval_required: e.target.checked }))} /> Approval required</label>
-          <label className="flex items-center gap-2 rounded-md border border-stone-200 p-3 text-sm font-semibold text-stone-700"><input type="checkbox" checked={!!settingsForm.duplicate_invoice_warning} onChange={(e) => setSettingsForm((current) => ({ ...current, duplicate_invoice_warning: e.target.checked }))} /> Duplicate invoice warning</label>
-          <label className="flex items-center gap-2 rounded-md border border-stone-200 p-3 text-sm font-semibold text-stone-700"><input type="checkbox" checked={!!settingsForm.credit_limit_warnings} onChange={(e) => setSettingsForm((current) => ({ ...current, credit_limit_warnings: e.target.checked }))} /> Credit limit warnings</label>
-          <label className="flex items-center gap-2 rounded-md border border-stone-200 p-3 text-sm font-semibold text-stone-700"><input type="checkbox" checked={!!settingsForm.automatic_customer_numbering} onChange={(e) => setSettingsForm((current) => ({ ...current, automatic_customer_numbering: e.target.checked }))} /> Automatic customer numbering</label>
-          <Field label="Default terms days" value={settingsForm.default_payment_terms_days} onChange={(value) => setSettingsForm((current) => ({ ...current, default_payment_terms_days: value }))} />
-          <AccountCodeSelect label="Default sales nominal" accounts={incomeAccounts} value={settingsForm.default_sales_account} onChange={(value) => setSettingsForm((current) => ({ ...current, default_sales_account: value }))} />
-          <Field label="Default VAT code" value={settingsForm.default_vat_code} onChange={(value) => setSettingsForm((current) => ({ ...current, default_vat_code: value }))} />
-          <Field label="Invoice prefix" value={settingsForm.invoice_number_prefix} onChange={(value) => setSettingsForm((current) => ({ ...current, invoice_number_prefix: value }))} />
-          <Field label="Next invoice number" value={settingsForm.next_invoice_number} onChange={(value) => setSettingsForm((current) => ({ ...current, next_invoice_number: value }))} />
-          <div className="md:col-span-2 xl:col-span-4"><Button disabled={busy || saving} style={{ background: "var(--brand)" }}>Save AR settings</Button></div>
-        </form>
-      </Panel>
-    );
-  }
-
-  return null;
-}
-
-function ArDocumentForm({ title, form, setForm, customers, accounts, onSubmit, button, busy, numberKey, dateKey }) {
-  const updateLine = (index, key, value) => setForm((current) => ({ ...current, lines: current.lines.map((line, lineIndex) => lineIndex === index ? { ...line, [key]: value } : line) }));
-  const totals = apFormTotals(form.lines || []);
-  return (
-    <Panel title={title}>
-      <form onSubmit={onSubmit} className="space-y-3">
-        <CustomerSelect customers={customers} value={form.customer_id} onChange={(value) => setForm((current) => ({ ...current, customer_id: value }))} />
-        <div className="grid grid-cols-2 gap-2">
-          <Field label="Number" value={form[numberKey]} onChange={(value) => setForm((current) => ({ ...current, [numberKey]: value }))} />
-          <Field label="Reference" value={form.reference} onChange={(value) => setForm((current) => ({ ...current, reference: value }))} />
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <Field label="Date" type="date" value={form[dateKey]} onChange={(value) => setForm((current) => ({ ...current, [dateKey]: value }))} />
-          {form.due_date !== undefined && <Field label="Due date" type="date" value={form.due_date} onChange={(value) => setForm((current) => ({ ...current, due_date: value }))} />}
-        </div>
-        <div className="rounded-md border border-stone-200">
-          <div className="border-b border-stone-100 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-stone-500">Lines</div>
-          {(form.lines || []).map((line, index) => (
-            <div key={index} className="grid gap-2 border-b border-stone-100 p-3 last:border-b-0">
-              <Field label="Description" value={line.description} onChange={(value) => updateLine(index, "description", value)} />
-              <AccountCodeSelect label="Sales nominal" accounts={accounts} value={line.nominal_account_code} onChange={(value) => updateLine(index, "nominal_account_code", value)} />
-              <div className="grid grid-cols-4 gap-2">
-                <Field label="Qty" value={line.quantity} onChange={(value) => updateLine(index, "quantity", value)} />
-                <Field label="Unit price" value={line.unit_price} onChange={(value) => updateLine(index, "unit_price", value)} />
-                <Field label="Discount" value={line.discount_amount} onChange={(value) => updateLine(index, "discount_amount", value)} />
-                <Field label="VAT code" value={line.vat_code} onChange={(value) => updateLine(index, "vat_code", value)} />
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                <Field label="Net" value={line.net_amount} onChange={(value) => updateLine(index, "net_amount", value)} />
-                <Field label="VAT" value={line.vat_amount} onChange={(value) => updateLine(index, "vat_amount", value)} />
-                <Field label="Gross" value={line.gross_amount} onChange={(value) => updateLine(index, "gross_amount", value)} />
-              </div>
-              {(form.lines || []).length > 1 && <Button type="button" variant="outline" size="sm" onClick={() => setForm((current) => ({ ...current, lines: current.lines.filter((_, lineIndex) => lineIndex !== index) }))}>Remove line</Button>}
-            </div>
-          ))}
-        </div>
-        <div className="flex flex-wrap justify-between gap-2 rounded-md bg-stone-50 p-3 text-sm">
-          <span>Net: <strong>{formatMoney(totals.net)}</strong></span>
-          <span>VAT: <strong>{formatMoney(totals.vat)}</strong></span>
-          <span>Gross: <strong>{formatMoney(totals.gross)}</strong></span>
-        </div>
-        <div className="flex gap-2">
-          <Button type="button" variant="outline" onClick={() => setForm((current) => ({ ...current, lines: [...current.lines, { ...EMPTY_AR_LINE }] }))}>Add line</Button>
-          <Button disabled={busy} style={{ background: "var(--brand)" }} className="flex-1">{button}</Button>
-        </div>
-      </form>
-    </Panel>
-  );
-}
-
-function ArRegister({ title, rows = [], numberKey, dateKey, amountKey, empty, actions }) {
-  return (
-    <Panel title={title}>
-      {rows.length === 0 ? <p className="py-10 text-center text-sm text-stone-500">{empty}</p> : (
-        <div className="overflow-auto">
-          <table className="min-w-full text-left text-sm">
-            <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500"><tr><th className="px-3 py-2">Customer</th><th className="px-3 py-2">Reference</th><th className="px-3 py-2">Date</th><th className="px-3 py-2">Due</th><th className="px-3 py-2">Status</th><th className="px-3 py-2 text-right">Net</th><th className="px-3 py-2 text-right">VAT</th><th className="px-3 py-2 text-right">Gross</th><th className="px-3 py-2 text-right">Outstanding</th><th className="px-3 py-2"></th></tr></thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.id} className="border-t border-stone-100 align-top">
-                  <td className="px-3 py-2 font-semibold text-stone-900">{row.customer_name || "-"}</td>
-                  <td className="px-3 py-2">{row[numberKey] || row.reference || "-"}</td>
-                  <td className="px-3 py-2">{formatDate(row[dateKey])}</td>
-                  <td className="px-3 py-2">{formatDate(row.due_date)}</td>
-                  <td className="px-3 py-2"><Badge className={statusBadgeClass(row.status)}>{row.status}</Badge></td>
-                  <td className="px-3 py-2 text-right">{formatMoney(row.net_amount)}</td>
-                  <td className="px-3 py-2 text-right">{formatMoney(row.vat_amount)}</td>
-                  <td className="px-3 py-2 text-right">{formatMoney(row[amountKey])}</td>
-                  <td className="px-3 py-2 text-right">{row.outstanding_amount ? formatMoney(row.outstanding_amount) : row.unallocated_amount ? formatMoney(row.unallocated_amount) : "-"}</td>
-                  <td className="px-3 py-2">{actions?.(row)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </Panel>
-  );
-}
-
-function CustomerSelect({ customers, value, onChange }) {
-  return (
-    <div>
-      <Label className="text-xs font-semibold text-stone-600">Customer</Label>
-      <select value={value || ""} onChange={(e) => onChange(e.target.value)} className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm">
-        <option value="">Select customer</option>
-        {customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name}</option>)}
-      </select>
-    </div>
-  );
-}
-
-function AgedDebtorsTable({ rows = [] }) {
-  return (
-    <Panel title="Aged debtors">
-      {rows.length === 0 ? <p className="py-10 text-center text-sm text-stone-500">No outstanding customer balances.</p> : (
-        <div className="overflow-auto">
-          <table className="min-w-full text-left text-sm">
-            <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500"><tr><th className="px-3 py-2">Customer</th><th className="px-3 py-2 text-right">Current</th><th className="px-3 py-2 text-right">1-30</th><th className="px-3 py-2 text-right">31-60</th><th className="px-3 py-2 text-right">61-90</th><th className="px-3 py-2 text-right">90+</th><th className="px-3 py-2 text-right">Total</th></tr></thead>
-            <tbody>{rows.map((row) => <tr key={row.customer_id || row.customer_name} className="border-t border-stone-100"><td className="px-3 py-2 font-semibold">{row.customer_name}</td><td className="px-3 py-2 text-right">{formatMoney(row.current)}</td><td className="px-3 py-2 text-right">{formatMoney(row.days_1_30)}</td><td className="px-3 py-2 text-right">{formatMoney(row.days_31_60)}</td><td className="px-3 py-2 text-right">{formatMoney(row.days_61_90)}</td><td className="px-3 py-2 text-right">{formatMoney(row.days_90_plus)}</td><td className="px-3 py-2 text-right font-semibold">{formatMoney(row.total)}</td></tr>)}</tbody>
-          </table>
-        </div>
-      )}
-    </Panel>
-  );
-}
-
-function ArReports({ ar }) {
-  const invoices = ar.invoices || [];
-  const unpaid = invoices.filter((invoice) => Number(invoice.outstanding_amount || 0) > 0);
-  const receipts = ar.receipts || [];
-  const vat = invoices.reduce((sum, invoice) => sum + Number(invoice.vat_amount || 0), 0);
-  return (
-    <div className="space-y-4">
-      <div className="grid gap-3 md:grid-cols-4">
-        <SummaryCard label="Sales day book" value={invoices.length} tone="blue" />
-        <SummaryCard label="Outstanding invoices" value={unpaid.length} tone="amber" />
-        <SummaryCard label="VAT on sales" value={formatMoney(vat)} tone="emerald" />
-        <SummaryCard label="Receipts" value={receipts.length} tone="stone" />
-      </div>
-      <ArRegister title="Outstanding invoices" rows={unpaid} numberKey="invoice_number" dateKey="invoice_date" amountKey="gross_amount" empty="No outstanding invoices." />
-    </div>
-  );
-}
-
-function arStatementRows(customerId, invoices, creditNotes, receipts) {
-  let balance = 0;
-  return [
-    ...invoices.filter((item) => item.customer_id === customerId).map((item) => ({ id: item.id, date: item.invoice_date, type: "Invoice", reference: item.invoice_number, debit: Number(item.gross_amount || 0), credit: 0 })),
-    ...creditNotes.filter((item) => item.customer_id === customerId).map((item) => ({ id: item.id, date: item.credit_note_date, type: "Credit note", reference: item.credit_note_number, debit: 0, credit: Number(item.gross_amount || 0) })),
-    ...receipts.filter((item) => item.customer_id === customerId).map((item) => ({ id: item.id, date: item.receipt_date, type: "Receipt", reference: item.reference, debit: 0, credit: Number(item.amount || 0) })),
-  ].sort((a, b) => String(a.date || "").localeCompare(String(b.date || ""))).map((row) => {
-    balance += row.debit - row.credit;
-    return { ...row, balance };
-  });
 }
 
 function YearEndWorkspace({ workspace, tab, reloadWorkspace, busy }) {
@@ -1780,7 +1450,7 @@ function FixedAssetsWorkspace({ workspace, tab, reloadWorkspace, busy }) {
                   <div key={item.purchase_invoice_id || item.reference} className="flex items-center justify-between gap-3 rounded-md border border-stone-100 p-3 text-sm">
                     <div>
                       <strong>{item.asset_name}</strong>
-                      <p className="text-stone-500">{item.supplier_name || "Unknown supplier"} · {formatMoney(item.purchase_cost)} · confidence {item.confidence}%</p>
+                      <p className="text-stone-500">{item.supplier_name || "Unknown supplier"} Â· {formatMoney(item.purchase_cost)} Â· confidence {item.confidence}%</p>
                     </div>
                     <Button type="button" variant="outline" onClick={() => applySuggestion(item)}>Use</Button>
                   </div>
@@ -2872,20 +2542,105 @@ function SettingsWorkspace({ workspace, form, setForm, createPeriod, busy }) {
   );
 }
 
-function ChartOfAccounts({ accounts, form, setForm, createAccount, busy }) {
+function ChartOfAccounts({ accounts, clientId, form, setForm, createAccount, updateAccount, busy, drawerMode, selectedAccount, backendMessage, openEditAccount, closeDrawer }) {
   const [filters, setFilters] = useState({ category: "", account_type: "", purpose: "", active: "active", search: "" });
-  const visibleAccounts = (accounts || []).filter((account) => {
+  const [drawerTab, setDrawerTab] = useState("General");
+  const [accountHistory, setAccountHistory] = useState([]);
+  const [allHistory, setAllHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyMessage, setHistoryMessage] = useState("");
+  const [historyFilters, setHistoryFilters] = useState({ search: "", action: "", user: "", date_from: "", date_to: "", status: "" });
+  const accountRows = accounts || [];
+  const isEditing = drawerMode === "edit";
+  const isHistoryView = drawerMode === "history";
+  const protectedAccount = isEditing && isProtectedAccount(selectedAccount);
+  const bankCompatible = isBankCompatibleAccount(form);
+  const duplicateCode = drawerMode === "add" && !!form.code && accountRows.some((account) => String(account.code || "").trim().toLowerCase() === form.code.trim().toLowerCase());
+
+  const loadAccountHistory = useCallback(async () => {
+    if (!clientId || !selectedAccount?.id) return;
+    setHistoryLoading(true);
+    setHistoryMessage("");
+    try {
+      const { data } = await api.get(`/admin/accounting/clients/${clientId}/accounts/${selectedAccount.id}/history`);
+      setAccountHistory(Array.isArray(data?.history) ? data.history : []);
+    } catch (e) {
+      const status = e?.response?.status || e?.status;
+      if ([404, 405, 501].includes(status)) {
+        setHistoryMessage("Backend endpoint required: Chart of Accounts audit history.");
+      } else {
+        setHistoryMessage(formatApiError(e));
+      }
+      setAccountHistory([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [clientId, selectedAccount?.id]);
+
+  const loadAllHistory = useCallback(async () => {
+    if (!clientId) return;
+    setHistoryLoading(true);
+    setHistoryMessage("");
+    try {
+      const { data } = await api.get(`/admin/accounting/clients/${clientId}/accounts/history`);
+      setAllHistory(Array.isArray(data?.history) ? data.history : []);
+    } catch (e) {
+      const status = e?.response?.status || e?.status;
+      if ([404, 405, 501].includes(status)) {
+        setHistoryMessage("Backend endpoint required: Chart of Accounts audit history.");
+      } else {
+        setHistoryMessage(formatApiError(e));
+      }
+      setAllHistory([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [clientId]);
+
+  useEffect(() => {
+    setDrawerTab("General");
+    setHistoryMessage("");
+    setAccountHistory([]);
+  }, [drawerMode, selectedAccount?.id]);
+
+  useEffect(() => {
+    if (drawerMode === "edit" && drawerTab === "History") {
+      loadAccountHistory();
+    }
+    if (drawerMode === "history") {
+      loadAllHistory();
+    }
+  }, [drawerMode, drawerTab, loadAccountHistory, loadAllHistory]);
+
+  function setShowInBanking(checked) {
+    if (!checked) {
+      setForm((current) => ({ ...current, show_in_banking: false, banking_enabled: false }));
+      return;
+    }
+    setForm((current) => ({
+      ...current,
+      category: "Asset",
+      account_type: "Bank",
+      purpose: "Bank Account",
+      normal_balance: "debit",
+      show_in_banking: true,
+      banking_enabled: true,
+    }));
+  }
+
+  const visibleAccounts = accountRows.filter((account) => {
     if (filters.category && account.category !== filters.category) return false;
     if (filters.account_type && account.account_type !== filters.account_type) return false;
     if (filters.purpose && account.purpose !== filters.purpose) return false;
-    if (filters.active === "active" && !account.active) return false;
-    if (filters.active === "inactive" && account.active) return false;
+    if (filters.active === "active" && account.active === false) return false;
+    if (filters.active === "inactive" && account.active !== false) return false;
     const needle = filters.search.trim().toLowerCase();
-    if (needle && !`${account.code || ""} ${account.name || ""}`.toLowerCase().includes(needle)) return false;
+    if (needle && !`${account.code || ""} ${account.name || ""} ${account.account_type || ""} ${account.purpose || ""}`.toLowerCase().includes(needle)) return false;
     return true;
   });
+
   return (
-    <div className="grid gap-4 xl:grid-cols-[1fr_380px]">
+    <div className={drawerMode && drawerMode !== "edit" ? "grid gap-4 xl:grid-cols-[1fr_380px]" : "space-y-4"}>
       <Panel title="Chart of accounts">
         <div className="mb-3 grid gap-2 md:grid-cols-3 xl:grid-cols-5">
           <Input value={filters.search} onChange={(e) => setFilters((current) => ({ ...current, search: e.target.value }))} placeholder="Search code or name" className="h-9" />
@@ -2901,11 +2656,18 @@ function ChartOfAccounts({ accounts, form, setForm, createAccount, busy }) {
             <option value="">All purposes</option>
             {ACCOUNT_PURPOSES.map((purpose) => <option key={purpose} value={purpose}>{purpose}</option>)}
           </select>
-          <select value={filters.active} onChange={(e) => setFilters((current) => ({ ...current, active: e.target.value }))} className="h-9 rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm">
-            <option value="active">Active</option>
-            <option value="inactive">Inactive</option>
-            <option value="">All statuses</option>
-          </select>
+          <div className="flex rounded-md border border-stone-200 bg-stone-50 p-1">
+            {[["active", "Active"], ["inactive", "Inactive"], ["", "All"]].map(([value, label]) => (
+              <button
+                key={label}
+                type="button"
+                onClick={() => setFilters((current) => ({ ...current, active: value }))}
+                className={`flex-1 rounded px-2 py-1 text-xs font-semibold ${filters.active === value ? "bg-white text-emerald-800 shadow-sm" : "text-stone-600 hover:text-stone-900"}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
         <div className="overflow-auto">
           <table className="min-w-full text-left text-sm">
@@ -2916,89 +2678,422 @@ function ChartOfAccounts({ accounts, form, setForm, createAccount, busy }) {
                 <th className="px-3 py-2">Category</th>
                 <th className="px-3 py-2">Account Type</th>
                 <th className="px-3 py-2">Purpose</th>
+                <th className="px-3 py-2">Banking</th>
                 <th className="px-3 py-2">Control</th>
                 <th className="px-3 py-2">Active</th>
                 <th className="px-3 py-2 text-right">Current Balance</th>
               </tr>
             </thead>
             <tbody>
-              {visibleAccounts.map((account) => (
-                <tr key={account.id} className="border-t border-stone-100">
-                  <td className="px-3 py-2 font-semibold text-stone-900">{account.code}</td>
-                  <td className="px-3 py-2">{account.name}</td>
-                  <td className="px-3 py-2 text-stone-600">{account.category}</td>
-                  <td className="px-3 py-2 text-stone-600">{account.account_type || account.type}</td>
-                  <td className="px-3 py-2 text-stone-600">{account.purpose || "Standard Nominal"}</td>
-                  <td className="px-3 py-2">{account.is_control_account || account.control_account ? <Badge variant="outline">Control</Badge> : "-"}</td>
-                  <td className="px-3 py-2">{account.active ? "Active" : "Inactive"}</td>
-                  <td className="px-3 py-2 text-right font-semibold">{formatMoney(account.current_balance)}</td>
+              {visibleAccounts.map((account) => {
+                const selected = drawerMode === "edit" && isSameAccount(account, selectedAccount);
+                return (
+                  <React.Fragment key={account.id || account.code}>
+                    <tr
+                      onClick={() => openEditAccount(account)}
+                      className={`cursor-pointer border-t border-stone-100 hover:bg-emerald-50/40 ${selected ? "border-l-4 border-l-emerald-700 bg-emerald-50/80 shadow-[inset_0_0_0_1px_rgba(4,120,87,0.16)] hover:bg-emerald-50" : "border-l-4 border-l-transparent"}`}
+                    >
+                      <td className={`px-3 py-2 font-semibold text-stone-900 ${selected ? "font-bold" : ""}`}>{account.code}</td>
+                      <td className={`px-3 py-2 ${selected ? "font-semibold text-stone-900" : ""}`}>{account.name}</td>
+                      <td className="px-3 py-2 text-stone-600">{account.category}</td>
+                      <td className="px-3 py-2 text-stone-600">{account.account_type || account.type}</td>
+                      <td className="px-3 py-2 text-stone-600">{account.purpose || "Standard Nominal"}</td>
+                      <td className="px-3 py-2">{account.show_in_banking || account.banking_enabled ? <Badge className="bg-emerald-100 text-emerald-800">Shown</Badge> : isBankCompatibleAccount(account) ? <Badge variant="outline">Not shown</Badge> : "-"}</td>
+                      <td className="px-3 py-2">{isProtectedAccount(account) ? <Badge variant="outline">Control</Badge> : "-"}</td>
+                      <td className="px-3 py-2">{account.active === false ? <Badge className="bg-stone-100 text-stone-700">Inactive</Badge> : <Badge className="bg-emerald-100 text-emerald-800">Active</Badge>}</td>
+                      <td className="px-3 py-2 text-right font-semibold">{formatMoney(account.current_balance)}</td>
+                    </tr>
+                    {selected ? (
+                      <tr className="border-t border-emerald-200 bg-emerald-50/30">
+                        <td colSpan="9" className="p-3">
+                          <AccountEditorContent
+                            account={selectedAccount}
+                            form={form}
+                            setForm={setForm}
+                            updateAccount={updateAccount}
+                            busy={busy}
+                            duplicateCode={duplicateCode}
+                            protectedAccount={protectedAccount}
+                            bankCompatible={bankCompatible}
+                            backendMessage={backendMessage}
+                            drawerTab={drawerTab}
+                            setDrawerTab={setDrawerTab}
+                            setShowInBanking={setShowInBanking}
+                            accountHistory={accountHistory}
+                            historyLoading={historyLoading}
+                            historyMessage={historyMessage}
+                            closeDrawer={closeDrawer}
+                          />
+                        </td>
+                      </tr>
+                    ) : null}
+                  </React.Fragment>
+                );
+              })}
+              {!visibleAccounts.length ? (
+                <tr>
+                  <td colSpan="9" className="px-3 py-10 text-center text-stone-500">No accounts match the current filters.</td>
                 </tr>
-              ))}
+              ) : null}
             </tbody>
           </table>
         </div>
       </Panel>
-      <Panel title="Add account">
-        <form onSubmit={createAccount} className="space-y-3">
-          <Field label="Code" value={form.code} onChange={(value) => setForm((current) => ({ ...current, code: value }))} />
-          <Field label="Name" value={form.name} onChange={(value) => setForm((current) => ({ ...current, name: value }))} />
-          <div>
-            <Label className="text-xs font-semibold text-stone-600">Category</Label>
-            <select
-              value={form.category}
-              onChange={(e) => setForm((current) => ({ ...current, category: e.target.value }))}
-              className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm"
-            >
-              {ACCOUNT_CATEGORIES.map((category) => <option key={category} value={category}>{category}</option>)}
-            </select>
-          </div>
-          <div>
-            <Label className="text-xs font-semibold text-stone-600">Account Type</Label>
-            <select
-              value={form.account_type}
-              onChange={(e) => setForm((current) => ({ ...current, account_type: e.target.value }))}
-              className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm"
-            >
-              {ACCOUNT_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
-            </select>
-          </div>
-          <div>
-            <Label className="text-xs font-semibold text-stone-600">Purpose</Label>
-            <select
-              value={form.purpose}
-              onChange={(e) => setForm((current) => ({ ...current, purpose: e.target.value }))}
-              className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm"
-            >
-              {ACCOUNT_PURPOSES.map((purpose) => <option key={purpose} value={purpose}>{purpose}</option>)}
-            </select>
-          </div>
-          <div>
-            <Label className="text-xs font-semibold text-stone-600">Normal Balance</Label>
-            <select
-              value={form.normal_balance}
-              onChange={(e) => setForm((current) => ({ ...current, normal_balance: e.target.value }))}
-              className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm"
-            >
-              <option value="debit">Debit</option>
-              <option value="credit">Credit</option>
-            </select>
-          </div>
-          <label className="flex items-center gap-2 rounded-md border border-stone-200 p-3 text-sm font-semibold text-stone-700">
-            <input
-              type="checkbox"
-              checked={!!form.is_control_account}
-              onChange={(e) => setForm((current) => ({ ...current, is_control_account: e.target.checked }))}
+      {drawerMode && drawerMode !== "edit" ? (
+        <div className="fixed inset-x-3 bottom-3 top-3 z-40 overflow-y-auto rounded-md bg-white shadow-2xl xl:sticky xl:inset-auto xl:top-4 xl:z-auto xl:max-h-[calc(100vh-2rem)] xl:self-start xl:shadow-none">
+        <Panel title={isHistoryView ? "Chart of Accounts history" : isEditing ? "Edit account" : "Add account"}>
+          {isHistoryView ? (
+            <FullAccountHistoryPanel
+              history={allHistory}
+              loading={historyLoading}
+              message={historyMessage}
+              filters={historyFilters}
+              setFilters={setHistoryFilters}
+              closeDrawer={closeDrawer}
             />
-            Is Control Account
-          </label>
-          <Field label="Description" value={form.description} onChange={(value) => setForm((current) => ({ ...current, description: value }))} />
-          <Button disabled={busy} className="w-full gap-2" style={{ background: "var(--brand)" }}>
-            <Plus className="h-4 w-4" /> Create account
-          </Button>
-        </form>
-      </Panel>
+          ) : (
+            <div className="space-y-3">
+              {isEditing ? <AccountDrawerContextHeader account={selectedAccount} /> : null}
+              {isEditing ? (
+                <div className="flex rounded-md border border-stone-200 bg-stone-50 p-1">
+                  {["General", "History"].map((tab) => (
+                    <button
+                      key={tab}
+                      type="button"
+                      onClick={() => setDrawerTab(tab)}
+                      className={`flex-1 rounded px-2 py-1 text-sm font-semibold ${drawerTab === tab ? "bg-white text-emerald-800 shadow-sm" : "text-stone-600 hover:text-stone-900"}`}
+                    >
+                      {tab}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              {drawerTab === "History" && isEditing ? (
+                <AccountHistoryPanel account={selectedAccount} protectedAccount={protectedAccount} history={accountHistory} loading={historyLoading} message={historyMessage} closeDrawer={closeDrawer} />
+              ) : (
+                <form onSubmit={isEditing ? updateAccount : createAccount} className="space-y-3">
+                  {protectedAccount ? (
+                    <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                      This is a system control account used by EPOS Native Accounting and cannot be structurally edited.
+                    </div>
+                  ) : null}
+                  {backendMessage ? <InlineFormMessage message={backendMessage} /> : null}
+                  {duplicateCode ? <InlineFormMessage message="An account with this code already exists." tone="error" /> : null}
+                  <AccountDrawerField label="Account code" value={form.code} disabled={protectedAccount} onChange={(value) => setForm((current) => ({ ...current, code: value }))} />
+                  <AccountDrawerField label="Account name" value={form.name} disabled={protectedAccount} onChange={(value) => setForm((current) => ({ ...current, name: value }))} />
+                  <AccountDrawerSelect label="Category" value={form.category} options={ACCOUNT_CATEGORIES} disabled={protectedAccount} onChange={(value) => setForm((current) => ({ ...current, category: value }))} />
+                  <AccountDrawerSelect label="Account type" value={form.account_type} options={ACCOUNT_TYPES} disabled={protectedAccount} onChange={(value) => setForm((current) => ({ ...current, account_type: value }))} />
+                  <AccountDrawerSelect label="Purpose" value={form.purpose} options={ACCOUNT_PURPOSES} disabled={protectedAccount} onChange={(value) => setForm((current) => ({ ...current, purpose: value }))} />
+                  <AccountDrawerSelect label="Normal balance" value={form.normal_balance} options={[["debit", "Debit"], ["credit", "Credit"]]} disabled={protectedAccount} onChange={(value) => setForm((current) => ({ ...current, normal_balance: value }))} />
+                  <label className={`flex items-center gap-2 rounded-md border border-stone-200 p-3 text-sm font-semibold ${protectedAccount ? "bg-stone-50 text-stone-500" : "text-stone-700"}`}>
+                    <input type="checkbox" checked={!!form.is_control_account} disabled={protectedAccount} onChange={(e) => setForm((current) => ({ ...current, is_control_account: e.target.checked }))} />
+                    Control account
+                  </label>
+                  <label className={`block rounded-md border border-stone-200 p-3 text-sm ${!bankCompatible || protectedAccount ? "bg-stone-50 text-stone-500" : "text-stone-700"}`}>
+                    <span className="flex items-center gap-2 font-semibold">
+                      <input type="checkbox" checked={!!(form.show_in_banking || form.banking_enabled)} disabled={!bankCompatible || protectedAccount} onChange={(e) => setShowInBanking(e.target.checked)} />
+                      Show in Banking
+                    </span>
+                    <span className="mt-1 block text-xs font-normal text-stone-500">
+                      {bankCompatible ? "Use this for actual bank, cash, card, Stripe, PayPal, or clearing accounts that need statement import and reconciliation." : "Only bank, cash, card, payment, or clearing accounts can appear in Banking."}
+                    </span>
+                  </label>
+                  <label className="flex items-center gap-2 rounded-md border border-stone-200 p-3 text-sm font-semibold text-stone-700">
+                    <input type="checkbox" checked={form.active !== false} disabled={protectedAccount && accountHasPostings(selectedAccount)} onChange={(e) => setForm((current) => ({ ...current, active: e.target.checked }))} />
+                    Active
+                  </label>
+                  {protectedAccount && accountHasPostings(selectedAccount) ? <p className="text-xs text-stone-500">This account has postings or is required by a core module, so it cannot be deactivated here.</p> : null}
+                  <AccountDrawerField label="Description" value={form.description} onChange={(value) => setForm((current) => ({ ...current, description: value }))} />
+                  <div className="flex gap-2">
+                    <Button type="button" variant="outline" className="flex-1" onClick={closeDrawer}>Cancel</Button>
+                    <Button disabled={busy || duplicateCode} className="flex-1 gap-2" style={{ background: "var(--brand)" }}>
+                      <Plus className="h-4 w-4" /> {isEditing ? "Save account" : "Create account"}
+                    </Button>
+                  </div>
+                  {isEditing && !protectedAccount ? (
+                    <Button type="button" variant="outline" className="w-full" disabled={busy || form.active === false} onClick={() => setForm((current) => ({ ...current, active: false }))}>Make inactive</Button>
+                  ) : null}
+                </form>
+              )}
+            </div>
+          )}
+        </Panel>
+        </div>
+      ) : (
+        <div className="rounded-md border border-dashed border-stone-300 bg-stone-50 p-4 text-sm text-stone-600">
+          Select an account to edit it, or use Add account from the page header to create a custom nominal account.
+        </div>
+      )}
     </div>
   );
+}
+
+function AccountEditorContent({ account, form, setForm, updateAccount, busy, duplicateCode, protectedAccount, bankCompatible, backendMessage, drawerTab, setDrawerTab, setShowInBanking, accountHistory, historyLoading, historyMessage, closeDrawer }) {
+  return (
+    <div className="rounded-md border border-emerald-200 bg-white p-3 shadow-sm">
+      <div className="grid gap-4 xl:grid-cols-[260px_1fr]">
+        <div className="space-y-3">
+          <AccountDrawerContextHeader account={account} />
+          <div className="flex rounded-md border border-stone-200 bg-stone-50 p-1">
+            {["General", "History"].map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => setDrawerTab(tab)}
+                className={`flex-1 rounded px-2 py-1 text-sm font-semibold ${drawerTab === tab ? "bg-white text-emerald-800 shadow-sm" : "text-stone-600 hover:text-stone-900"}`}
+              >
+                {tab}
+              </button>
+            ))}
+          </div>
+          {protectedAccount ? (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              This is a system control account used by EPOS Native Accounting and cannot be structurally edited.
+            </div>
+          ) : null}
+        </div>
+        {drawerTab === "History" ? (
+          <AccountHistoryPanel account={account} protectedAccount={protectedAccount} history={accountHistory} loading={historyLoading} message={historyMessage} closeDrawer={closeDrawer} />
+        ) : (
+          <form onSubmit={updateAccount} className="space-y-3">
+            {backendMessage ? <InlineFormMessage message={backendMessage} /> : null}
+            {duplicateCode ? <InlineFormMessage message="An account with this code already exists." tone="error" /> : null}
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              <AccountDrawerField label="Account code" value={form.code} disabled={protectedAccount} onChange={(value) => setForm((current) => ({ ...current, code: value }))} />
+              <AccountDrawerField label="Account name" value={form.name} disabled={protectedAccount} onChange={(value) => setForm((current) => ({ ...current, name: value }))} />
+              <AccountDrawerSelect label="Category" value={form.category} options={ACCOUNT_CATEGORIES} disabled={protectedAccount} onChange={(value) => setForm((current) => ({ ...current, category: value }))} />
+              <AccountDrawerSelect label="Account type" value={form.account_type} options={ACCOUNT_TYPES} disabled={protectedAccount} onChange={(value) => setForm((current) => ({ ...current, account_type: value }))} />
+              <AccountDrawerSelect label="Purpose" value={form.purpose} options={ACCOUNT_PURPOSES} disabled={protectedAccount} onChange={(value) => setForm((current) => ({ ...current, purpose: value }))} />
+              <AccountDrawerSelect label="Normal balance" value={form.normal_balance} options={[["debit", "Debit"], ["credit", "Credit"]]} disabled={protectedAccount} onChange={(value) => setForm((current) => ({ ...current, normal_balance: value }))} />
+            </div>
+            <div className="grid gap-3 md:grid-cols-3">
+              <label className={`flex items-center gap-2 rounded-md border border-stone-200 p-3 text-sm font-semibold ${protectedAccount ? "bg-stone-50 text-stone-500" : "text-stone-700"}`}>
+                <input type="checkbox" checked={!!form.is_control_account} disabled={protectedAccount} onChange={(e) => setForm((current) => ({ ...current, is_control_account: e.target.checked }))} />
+                Control account
+              </label>
+              <label className={`block rounded-md border border-stone-200 p-3 text-sm ${!bankCompatible || protectedAccount ? "bg-stone-50 text-stone-500" : "text-stone-700"}`}>
+                <span className="flex items-center gap-2 font-semibold">
+                  <input type="checkbox" checked={!!(form.show_in_banking || form.banking_enabled)} disabled={!bankCompatible || protectedAccount} onChange={(e) => setShowInBanking(e.target.checked)} />
+                  Show in Banking
+                </span>
+                <span className="mt-1 block text-xs font-normal text-stone-500">
+                  {bankCompatible ? "Use this for bank, cash, card, Stripe, PayPal, or clearing accounts." : "Only bank, cash, card, payment, or clearing accounts can appear in Banking."}
+                </span>
+              </label>
+              <label className="flex items-center gap-2 rounded-md border border-stone-200 p-3 text-sm font-semibold text-stone-700">
+                <input type="checkbox" checked={form.active !== false} disabled={protectedAccount && accountHasPostings(account)} onChange={(e) => setForm((current) => ({ ...current, active: e.target.checked }))} />
+                Active
+              </label>
+            </div>
+            {protectedAccount && accountHasPostings(account) ? <p className="text-xs text-stone-500">This account has postings or is required by a core module, so it cannot be deactivated here.</p> : null}
+            <AccountDrawerField label="Description" value={form.description} onChange={(value) => setForm((current) => ({ ...current, description: value }))} />
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="outline" onClick={closeDrawer}>Cancel</Button>
+              <Button disabled={busy || duplicateCode} className="gap-2" style={{ background: "var(--brand)" }}>
+                <Plus className="h-4 w-4" /> Save account
+              </Button>
+              {!protectedAccount ? (
+                <Button type="button" variant="outline" disabled={busy || form.active === false} onClick={() => setForm((current) => ({ ...current, active: false }))}>Make inactive</Button>
+              ) : null}
+            </div>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AccountDrawerContextHeader({ account, sticky = false }) {
+  const shell = sticky ? "sticky top-0 z-10 -mx-3 -mt-3 border-b border-stone-100 bg-white px-3 py-3" : "rounded-md border border-stone-200 bg-stone-50 px-3 py-3";
+  return (
+    <div className={shell}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-bold text-stone-900">{account?.code || "-"} - {account?.name || "Account"}</div>
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            {account?.active === false ? <Badge className="bg-stone-100 text-stone-700">Inactive</Badge> : <Badge className="bg-emerald-100 text-emerald-800">Active</Badge>}
+            {isProtectedAccount(account) ? <Badge variant="outline">Control</Badge> : null}
+            {account?.show_in_banking || account?.banking_enabled ? <Badge className="bg-emerald-100 text-emerald-800">Banking</Badge> : null}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AccountHistoryPanel({ account, protectedAccount, history, loading, message, closeDrawer }) {
+  return (
+    <div className="space-y-3">
+      {protectedAccount ? (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          This is a system control account. Structural changes are restricted, but history is retained.
+        </div>
+      ) : null}
+      <div className="rounded-md border border-stone-200 bg-stone-50 px-3 py-2">
+        <div className="text-sm font-semibold text-stone-900">{account?.code || "-"} - {account?.name || "Account"}</div>
+        <div className="text-xs text-stone-500">Nominal account audit timeline</div>
+      </div>
+      <HistoryTimeline history={history} loading={loading} message={message} />
+      <Button type="button" variant="outline" className="w-full" onClick={closeDrawer}>Close</Button>
+    </div>
+  );
+}
+
+function FullAccountHistoryPanel({ history, loading, message, filters, setFilters, closeDrawer }) {
+  const actions = Array.from(new Set(history.map((item) => item.action).filter(Boolean)));
+  const users = Array.from(new Set(history.map((item) => item.user_name || item.user).filter(Boolean)));
+  const filteredHistory = history.filter((item) => {
+    const needle = filters.search.trim().toLowerCase();
+    const haystack = `${item.account_code || ""} ${item.account_name || ""} ${item.field || ""} ${item.action || ""}`.toLowerCase();
+    if (needle && !haystack.includes(needle)) return false;
+    if (filters.action && item.action !== filters.action) return false;
+    if (filters.user && (item.user_name || item.user) !== filters.user) return false;
+    if (filters.date_from && String(item.created_at || "") < filters.date_from) return false;
+    if (filters.date_to && String(item.created_at || "") > `${filters.date_to}T23:59:59`) return false;
+    if (filters.status && String(item.account_status || item.status || "").toLowerCase() !== filters.status) return false;
+    return true;
+  });
+
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2">
+        <Input value={filters.search} onChange={(e) => setFilters((current) => ({ ...current, search: e.target.value }))} placeholder="Search code, name, field or action" className="h-9" />
+        <select value={filters.action} onChange={(e) => setFilters((current) => ({ ...current, action: e.target.value }))} className="h-9 rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm">
+          <option value="">All actions</option>
+          {actions.map((action) => <option key={action} value={action}>{displayHistoryAction(action)}</option>)}
+        </select>
+        <select value={filters.user} onChange={(e) => setFilters((current) => ({ ...current, user: e.target.value }))} className="h-9 rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm">
+          <option value="">All users</option>
+          {users.map((user) => <option key={user} value={user}>{user}</option>)}
+        </select>
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Date from" type="date" value={filters.date_from} onChange={(value) => setFilters((current) => ({ ...current, date_from: value }))} />
+          <Field label="Date to" type="date" value={filters.date_to} onChange={(value) => setFilters((current) => ({ ...current, date_to: value }))} />
+        </div>
+        <select value={filters.status} onChange={(e) => setFilters((current) => ({ ...current, status: e.target.value }))} className="h-9 rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm">
+          <option value="">All account statuses</option>
+          <option value="active">Active</option>
+          <option value="inactive">Inactive</option>
+        </select>
+      </div>
+      <div className="flex gap-2">
+        <Button type="button" variant="outline" className="flex-1" onClick={() => downloadReportCsv("chart-of-accounts-history.csv", filteredHistory)}>
+          <Download className="mr-2 h-4 w-4" /> Export
+        </Button>
+        <Button type="button" variant="outline" className="flex-1" onClick={closeDrawer}>Close</Button>
+      </div>
+      <HistoryTimeline history={filteredHistory} loading={loading} message={message} showAccount />
+    </div>
+  );
+}
+
+function HistoryTimeline({ history, loading, message, showAccount = false }) {
+  if (loading) return <div className="rounded-md border border-stone-200 bg-stone-50 p-6 text-center text-sm text-stone-500">Loading history...</div>;
+  if (message) return <InlineFormMessage message={message} />;
+  if (!history.length) return <div className="rounded-md border border-dashed border-stone-300 bg-stone-50 p-6 text-center text-sm text-stone-600">No Chart of Accounts history found.</div>;
+  return (
+    <div className="space-y-2">
+      {history.map((item) => (
+        <div key={item.id || `${item.account_id}-${item.created_at}-${item.field}`} className="rounded-md border border-stone-200 bg-white p-3">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <div className="text-sm font-semibold text-stone-900">{displayHistoryAction(item.action)}</div>
+              {showAccount ? <div className="text-xs text-stone-500">{item.account_code || "-"} - {item.account_name || "Account"}</div> : null}
+            </div>
+            <div className="text-right text-xs text-stone-500">{formatDateTime(item.created_at)}</div>
+          </div>
+          <div className="mt-2 grid gap-1 text-xs text-stone-600">
+            <div className="flex justify-between gap-3"><span>User</span><span className="text-right font-medium text-stone-800">{item.user_name || item.user || "-"}</span></div>
+            <div className="flex justify-between gap-3"><span>Field changed</span><span className="text-right font-medium text-stone-800">{displayHistoryField(item.field)}</span></div>
+            <div className="flex justify-between gap-3"><span>Previous value</span><span className="text-right font-medium text-stone-800">{displayHistoryValue(item.old_value)}</span></div>
+            <div className="flex justify-between gap-3"><span>New value</span><span className="text-right font-medium text-stone-800">{displayHistoryValue(item.new_value)}</span></div>
+            {item.note ? <div className="rounded bg-stone-50 px-2 py-1 text-stone-600">{item.note}</div> : null}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function displayHistoryAction(action) {
+  return String(action || "Account updated").replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function displayHistoryField(field) {
+  return field ? String(field).replace(/_/g, " ") : "-";
+}
+
+function displayHistoryValue(value) {
+  if (value === null || value === undefined || value === "") return "-";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  return String(value);
+}
+
+function isSameAccount(account, selectedAccount) {
+  if (!account || !selectedAccount) return false;
+  if (account.id && selectedAccount.id) return account.id === selectedAccount.id;
+  return String(account.code || "").trim() === String(selectedAccount.code || "").trim();
+}
+
+function isBankCompatibleAccount(account) {
+  const text = `${account?.purpose || ""} ${account?.account_type || account?.type || ""} ${account?.detail_type || ""} ${account?.name || ""}`.toLowerCase();
+  return account?.purpose === "Bank Account" || text.includes("bank") || text.includes("cash") || text.includes("card") || text.includes("stripe") || text.includes("paypal") || text.includes("clearing") || text.includes("current asset") || text.includes("payment");
+}
+
+function isProtectedAccount(account) {
+  if (!account) return false;
+  const text = `${account.code || ""} ${account.name || ""} ${account.category || ""} ${account.account_type || account.type || ""} ${account.purpose || ""} ${account.detail_type || ""}`.toLowerCase();
+  if (account.is_control_account || account.control_account || account.control || account.protected || account.system_account) return true;
+  return ["trade debtors", "accounts receivable", "trade creditors", "accounts payable", "vat control", "bank control", "payroll control", "corporation tax", "retained earnings", "sales ledger", "purchase ledger"].some((term) => text.includes(term));
+}
+
+function accountHasPostings(account) {
+  return Number(account?.current_balance || 0) !== 0 || Number(account?.posted_transactions || account?.transaction_count || account?.postings_count || 0) > 0 || !!account?.module_required;
+}
+
+function accountToForm(account = {}) {
+  return {
+    ...EMPTY_ACCOUNT_FORM,
+    ...account,
+    id: account.id || "",
+    code: account.code || "",
+    name: account.name || "",
+    category: account.category || "Expense",
+    account_type: account.account_type || account.type || "Overheads",
+    purpose: account.purpose || account.detail_type || "Standard Nominal",
+    normal_balance: account.normal_balance || "debit",
+    is_control_account: !!(account.is_control_account || account.control_account || account.control || account.protected || account.system_account),
+    show_in_banking: !!(account.show_in_banking || account.banking_enabled),
+    banking_enabled: !!(account.show_in_banking || account.banking_enabled),
+    active: account.active !== false,
+    description: account.description || "",
+  };
+}
+
+function AccountDrawerField({ label, value, onChange, disabled = false }) {
+  return (
+    <div>
+      <Label className="text-xs font-semibold text-stone-600">{label}</Label>
+      <Input value={value || ""} disabled={disabled} onChange={(e) => onChange(e.target.value)} className="mt-1 h-9" />
+    </div>
+  );
+}
+
+function AccountDrawerSelect({ label, value, onChange, options = [], disabled = false }) {
+  const optionRows = options.map((option) => Array.isArray(option) ? { value: option[0], label: option[1] } : { value: option, label: option });
+  return (
+    <div>
+      <Label className="text-xs font-semibold text-stone-600">{label}</Label>
+      <select value={value || ""} disabled={disabled} onChange={(e) => onChange(e.target.value)} className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm disabled:bg-stone-50 disabled:text-stone-500">
+        {optionRows.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select>
+    </div>
+  );
+}
+
+function InlineFormMessage({ message, tone = "info" }) {
+  const className = tone === "error" ? "border-red-200 bg-red-50 text-red-700" : "border-amber-200 bg-amber-50 text-amber-800";
+  return <div className={`rounded-md border px-3 py-2 text-sm ${className}`}>{message}</div>;
 }
 
 function AIAccountingWorkspace({ workspace, activeTab }) {

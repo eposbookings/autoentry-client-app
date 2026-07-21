@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { api, formatApiError } from "@/lib/api";
+import { API, api, formatApiError } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,7 +30,6 @@ import {
 const apTabs = ["Dashboard", "Suppliers"];
 const supplierRecordTabs = ["General", "Ledger", "Audit Trail"];
 const transactionTypes = ["Purchase Invoice", "Supplier Credit Note", "Supplier Payment", "Payment on Account"];
-const statusOptions = ["Draft", "Posted", "Approved", "Paid", "Allocated", "Open"];
 
 const emptySupplierForm = {
   name: "",
@@ -99,8 +98,19 @@ function isPaymentDocument(type) {
   return type === "Supplier Payment" || type === "Payment on Account";
 }
 
+function normaliseStatusText(value) {
+  return String(value || "").trim().toLowerCase().replace(/[_-]+/g, " ");
+}
+
+function displayStatus(value) {
+  return String(value || "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 function isReadOnlyTransaction(draft) {
-  return !["draft", "awaiting approval"].includes(String(draft?.status || "Draft").toLowerCase());
+  if (typeof draft?.view_only === "boolean") return draft.view_only;
+  return !["draft", "awaiting approval"].includes(normaliseStatusText(draft?.status || "Draft"));
 }
 
 function transactionLineTotals(lines = []) {
@@ -110,6 +120,97 @@ function transactionLineTotals(lines = []) {
     totals.gross += asNumber(line.gross);
     return totals;
   }, { net: 0, vat: 0, gross: 0 });
+}
+
+function invoiceValue(row = {}) {
+  return asNumber(row.invoice_value ?? row.gross_amount ?? row.gross ?? row.total ?? row.amount ?? row.credit);
+}
+
+function allocatedValue(row = {}) {
+  return asNumber(row.paid_allocated ?? row.paid_amount ?? row.allocated_amount ?? row.amount_paid ?? row.debit);
+}
+
+function invoiceBalance(row = {}) {
+  const supplied = row.invoice_balance ?? row.balance ?? row.outstanding_amount ?? row.amount_due;
+  if (supplied !== undefined && supplied !== null && supplied !== "") return asNumber(supplied);
+  if (isPaymentDocument(row.type) || isCreditDocument(row.type)) return 0;
+  return invoiceValue(row) - allocatedValue(row);
+}
+
+function attachmentUrl(row = {}) {
+  return row.attachment_url || row.document_url || row.source_document_url || "";
+}
+
+function hasAttachment(row = {}) {
+  return Boolean(attachmentUrl(row) || row.source_submission_id || row.attachment_path);
+}
+
+function isServedDocumentUrl(value) {
+  return /^https?:\/\//i.test(String(value || "")) || String(value || "").startsWith("/");
+}
+
+function browserDocumentUrl(value) {
+  const url = String(value || "").trim();
+  if (!url) return "";
+  if (/^https?:\/\//i.test(url)) return url;
+  if (url.startsWith("/api/")) return `${API.replace(/\/api\/?$/, "")}${url}`;
+  if (url.startsWith("/")) return `${API}${url}`;
+  return "";
+}
+
+function sourceDocumentKind(value = "") {
+  const path = String(value).split("?")[0].toLowerCase();
+  if (path.endsWith(".pdf")) return "pdf";
+  if (/\.(png|jpe?g|gif|webp|bmp)$/i.test(path)) return "image";
+  return "unknown";
+}
+
+function linePurchaseNominal(line = {}) {
+  return line.purchase_nominal || line.purchase_nominal_code || line.purchase_account || line.purchase_account_code || line.account_code || line.nominal_account_code || line.category || "";
+}
+
+function normaliseLineItem(line = {}, fallbackDescription = "", fallbackAmount = "") {
+  return {
+    description: line.description || line.line_description || fallbackDescription,
+    purchase_nominal: linePurchaseNominal(line),
+    vat_code: line.vat_code || line.tax_code || "",
+    quantity: line.quantity ?? line.units ?? "1",
+    unit_price: line.unit_price ?? line.price ?? line.rate ?? fallbackAmount,
+    net: line.net ?? line.net_amount ?? fallbackAmount,
+    vat: line.vat ?? line.vat_amount ?? "",
+    gross: line.gross ?? line.gross_amount ?? line.total ?? fallbackAmount,
+  };
+}
+
+function normaliseTransactionDetailResponse(data = {}) {
+  return data.invoice || data.ap_invoice || data.purchase_invoice || data.credit_note || data.payment || data.expense || data.transaction || data;
+}
+
+function normaliseVatOption(vat = {}) {
+  const code = vat.code || vat.vat_code || vat.tax_code || vat.id || "";
+  if (!code) return null;
+  const description = vat.description || vat.detail || (vat.name && vat.name !== code ? vat.name : "");
+  return {
+    value: code,
+    label: `${code}${description ? ` - ${description}` : ""}`.trim(),
+  };
+}
+
+function normaliseOptionText(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function canonicalOptionValue(rawValue, options = []) {
+  const raw = String(rawValue || "").trim();
+  if (!raw) return "";
+  const rawKey = normaliseOptionText(raw);
+  const prefixKey = normaliseOptionText(raw.split(" - ")[0]);
+  const match = options.find((option) => {
+    const valueKey = normaliseOptionText(option.value);
+    const labelKey = normaliseOptionText(option.label);
+    return valueKey === rawKey || labelKey === rawKey || valueKey === prefixKey;
+  });
+  return match?.value || raw;
 }
 
 function ledgerImpactFor(type) {
@@ -276,6 +377,26 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
   }, [ap.audit_trail, workspace.audit_trail]);
   const bankAccounts = useMemo(() => accounts.filter((account) => account.purpose === "Bank Account" || account.account_type === "Bank"), [accounts]);
   const expenseAccounts = useMemo(() => accounts.filter((account) => account.category === "Expense" || account.account_type === "Purchases" || account.account_type === "Overheads"), [accounts]);
+  const vatCodes = useMemo(() => {
+    const lists = [
+      workspace.vat_codes,
+      workspace.native_vat_codes,
+      workspace.vat?.codes,
+      workspace.vat?.vat_codes,
+      workspace.accounting?.vat_codes,
+    ];
+    const seen = new Set();
+    return lists
+      .flatMap((list) => (Array.isArray(list) ? list : []))
+      .filter((record) => record?.active !== false)
+      .map(normaliseVatOption)
+      .filter((option) => {
+        if (!option || seen.has(option.value)) return false;
+        seen.add(option.value);
+        return true;
+      });
+  }, [workspace.accounting?.vat_codes, workspace.native_vat_codes, workspace.vat?.codes, workspace.vat?.vat_codes, workspace.vat_codes]);
+  const defaultCurrency = workspace.client?.default_currency || workspace.accounting?.default_currency || workspace.accounting_default_currency || workspace.default_currency || ap.settings?.default_currency || "GBP";
   const activeTab = apTabs.includes(tab) ? tab : "Dashboard";
 
   const [saving, setSaving] = useState(false);
@@ -361,6 +482,7 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
       ...invoices
         .filter((invoice) => invoice.supplier_id === supplierId)
         .map((invoice) => ({
+          ...invoice,
           id: invoice.id,
           ledgerKey: `invoice-${invoice.id}`,
           supplier_id: supplierId,
@@ -371,11 +493,15 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
           description: invoice.description || invoice.supplier_name || "Purchase invoice",
           debit: 0,
           credit: asNumber(invoice.gross_amount || invoice.total || invoice.amount),
+          invoice_value: invoiceValue(invoice),
+          paid_allocated: allocatedValue(invoice),
+          invoice_balance: invoiceBalance(invoice),
           status: invoice.status || "Posted",
         })),
       ...creditNotes
         .filter((note) => note.supplier_id === supplierId)
         .map((note) => ({
+          ...note,
           id: note.id,
           ledgerKey: `credit-note-${note.id}`,
           supplier_id: supplierId,
@@ -386,11 +512,15 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
           description: note.description || "Supplier credit note",
           debit: asNumber(note.gross_amount || note.total || note.amount),
           credit: 0,
+          invoice_value: 0,
+          paid_allocated: asNumber(note.gross_amount || note.total || note.amount),
+          invoice_balance: 0,
           status: note.status || "Posted",
         })),
       ...payments
         .filter((payment) => payment.supplier_id === supplierId)
         .map((payment) => ({
+          ...payment,
           id: payment.id,
           ledgerKey: `payment-${payment.id}`,
           supplier_id: supplierId,
@@ -401,11 +531,15 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
           description: payment.description || "Supplier payment",
           debit: asNumber(payment.amount || payment.gross_amount),
           credit: 0,
+          invoice_value: 0,
+          paid_allocated: asNumber(payment.amount || payment.gross_amount),
+          invoice_balance: 0,
           status: payment.status || (payment.invoice_id ? "Allocated" : "Open"),
         })),
       ...expenses
         .filter((expense) => expense.supplier_id === supplierId)
         .map((expense) => ({
+          ...expense,
           id: expense.id,
           ledgerKey: `expense-${expense.id}`,
           supplier_id: supplierId,
@@ -416,6 +550,9 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
           description: expense.description || "Supplier expense",
           debit: 0,
           credit: asNumber(expense.gross_amount || expense.total || expense.amount),
+          invoice_value: invoiceValue(expense),
+          paid_allocated: allocatedValue(expense),
+          invoice_balance: invoiceBalance(expense),
           status: expense.status || "Posted",
         })),
     ];
@@ -442,44 +579,89 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
     return rows.length ? rows[rows.length - 1].date : null;
   }
 
-  function openTransactionForm(type, row) {
-    setTransactionErrors({});
+  function buildTransactionDraft(type, row = {}) {
     const source = row?.source || "frontend";
     const documentType = row?.type === "Credit Note" ? "Supplier Credit Note" : row?.type || type;
     const gross = row?.gross || row?.gross_amount || row?.total || (row?.credit || row?.debit) || "";
-    const net = row?.net || row?.net_amount || "";
-    const vat = row?.vat || row?.vat_amount || "";
-    setTransactionDraft({
+    const net = row?.net || row?.net_amount || row?.subtotal || "";
+    const vat = row?.vat || row?.vat_amount || row?.tax_amount || "";
+    const sourceLines = row?.line_items || row?.lines || row?.items || row?.invoice_lines || row?.coding_lines;
+    const lineItems = Array.isArray(sourceLines) && sourceLines.length
+      ? sourceLines.map((line) => normaliseLineItem(line, row?.description || "", formatAmount(net || gross)))
+      : [purchaseDocumentLine(row?.description || "", formatAmount(net || gross))];
+    const firstLineNominal = lineItems.find((line) => line.purchase_nominal)?.purchase_nominal || "";
+    const firstLineVatCode = lineItems.find((line) => line.vat_code)?.vat_code || "";
+    return {
       id: row?.id || "",
       ledgerKey: row?.ledgerKey || "",
       originalKey: source === "frontend" ? row?.originalKey || "" : row?.ledgerKey || "",
       supplier_id: row?.supplier_id || selectedSupplier?.id || selectedSupplierId,
-      supplier_name: selectedSupplier?.name || "",
-      supplier_code: selectedSupplier?.supplier_code || "",
+      supplier_name: row?.supplier_name || selectedSupplier?.name || "",
+      supplier_code: row?.supplier_code || selectedSupplier?.supplier_code || "",
       source,
       type: documentType,
-      date: toInputDate(row?.date) || todayInput(),
-      due_date: toInputDate(row?.due_date) || toInputDate(row?.date) || todayInput(),
-      payment_terms: row?.payment_terms || row?.payment_terms_days || selectedSupplier?.payment_terms_days || "30",
-      currency: row?.currency || selectedSupplier?.default_currency || "GBP",
+      date: toInputDate(row?.invoice_date || row?.document_date || row?.date) || todayInput(),
+      due_date: toInputDate(row?.due_date) || toInputDate(row?.invoice_date || row?.document_date || row?.date) || todayInput(),
+      payment_terms: selectedSupplier?.payment_terms_days || row?.payment_terms || row?.payment_terms_days || "30",
+      currency: selectedSupplier?.default_currency || defaultCurrency,
       document_number: row?.document_number || row?.invoice_number || row?.credit_note_number || (row?.reference === "-" ? "" : row?.reference || ""),
       reference: row?.reference === "-" ? "" : row?.reference || "",
       description: row?.description || "",
-      purchase_nominal: row?.purchase_nominal || row?.default_purchase_account || selectedSupplier?.default_purchase_account || "",
-      vat_code: row?.vat_code || row?.default_vat_code || selectedSupplier?.default_vat_code || "",
+      purchase_nominal: row?.purchase_nominal || row?.purchase_nominal_code || row?.purchase_account_code || row?.account_code || row?.nominal_account_code || firstLineNominal || row?.default_purchase_account || selectedSupplier?.default_purchase_account || "",
+      vat_code: row?.vat_code || row?.tax_code || firstLineVatCode || row?.default_vat_code || selectedSupplier?.default_vat_code || "",
       net: formatAmount(net),
       vat: formatAmount(vat),
       gross: formatAmount(gross),
       debit: row?.debit ? String(row.debit) : "",
       credit: row?.credit ? String(row.credit) : "",
       status: row?.status || "Draft",
-      attachment_name: row?.attachment_name || row?.attachment_url || row?.document_url || "",
+      view_only: row?.view_only,
+      attachment_name: row?.attachment_name || row?.attachment_path || row?.attachment_url || row?.document_url || row?.source_document_url || "",
+      attachment_path: row?.attachment_path || "",
+      attachment_url: row?.attachment_url || "",
+      document_url: row?.document_url || "",
+      source_document_url: row?.source_document_url || "",
+      source_submission_id: row?.source_submission_id || "",
       payment_allocation: row?.payment_allocation || row?.bank_reference || "",
-      line_items: Array.isArray(row?.line_items) && row.line_items.length
-        ? row.line_items
-        : [purchaseDocumentLine(row?.description || "", formatAmount(net || gross))],
+      line_items: lineItems,
       notes: "",
-    });
+    };
+  }
+
+  async function loadTransactionDetail(row, initialDraft) {
+    if (!row?.id || row?.source === "frontend") return;
+    const endpoints = {
+      invoice: `/ap/invoices/${row.id}`,
+      credit_note: `/ap/credit-notes/${row.id}`,
+      payment: `/ap/payments/${row.id}`,
+      expense: `/ap/expenses/${row.id}`,
+    };
+    const endpoint = endpoints[row.source];
+    if (!endpoint) return;
+    try {
+      const response = await api.get(`/admin/accounting/clients/${clientId}${endpoint}`);
+      const detail = normaliseTransactionDetailResponse(response.data);
+      const merged = {
+        ...initialDraft,
+        ...row,
+        ...detail,
+        source: row.source,
+        ledgerKey: initialDraft.ledgerKey,
+        originalKey: initialDraft.originalKey,
+      };
+      setTransactionDraft((current) => (
+        current?.ledgerKey === initialDraft.ledgerKey ? buildTransactionDraft(initialDraft.type, merged) : current
+      ));
+    } catch {
+      // Keep the ledger row values visible if the optional detail endpoint is not available.
+    }
+  }
+
+  function openTransactionForm(type, row) {
+    setTransactionErrors({});
+    const draft = buildTransactionDraft(type, row || {});
+    setTransactionDraft(draft);
+    loadTransactionDetail(row || {}, draft);
   }
 
   function validateTransaction() {
@@ -497,9 +679,65 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
     return Object.keys(errors).length === 0;
   }
 
-  function saveTransactionDraft(e, nextStatus = "Draft") {
+  function transactionPayload(nextStatus = "Draft") {
+    const supplierId = transactionDraft.supplier_id || selectedSupplier?.id || selectedSupplierId;
+    return {
+      supplier_id: supplierId,
+      supplier_name: selectedSupplier?.name || transactionDraft.supplier_name || "",
+      supplier_code: selectedSupplier?.supplier_code || transactionDraft.supplier_code || "",
+      invoice_number: transactionDraft.document_number?.trim() || "",
+      document_number: transactionDraft.document_number?.trim() || "",
+      reference: (transactionDraft.reference || transactionDraft.document_number || "").trim(),
+      invoice_date: transactionDraft.date,
+      date: transactionDraft.date,
+      due_date: transactionDraft.due_date,
+      payment_terms: transactionDraft.payment_terms,
+      currency: transactionDraft.currency || "GBP",
+      description: transactionDraft.description?.trim() || "",
+      purchase_nominal: transactionDraft.purchase_nominal,
+      vat_code: transactionDraft.vat_code,
+      net_amount: asNumber(transactionDraft.net),
+      vat_amount: asNumber(transactionDraft.vat),
+      gross_amount: asNumber(transactionDraft.gross),
+      status: nextStatus,
+      line_items: transactionDraft.line_items,
+      attachment_path: transactionDraft.attachment_path,
+      attachment_url: transactionDraft.attachment_url,
+      document_url: transactionDraft.document_url,
+      source_document_url: transactionDraft.source_document_url,
+      source_submission_id: transactionDraft.source_submission_id,
+    };
+  }
+
+  async function updateExistingApInvoice(nextStatus) {
+    setSaving(true);
+    try {
+      await putJson(`/ap/invoices/${transactionDraft.id}`, transactionPayload(nextStatus));
+      toast.success("AP invoice updated");
+      await reloadWorkspace();
+      setTransactionDraft(null);
+    } catch (error) {
+      const status = error?.response?.status;
+      if ([404, 405, 501].includes(status)) {
+        setTransactionErrors((current) => ({
+          ...current,
+          backend: "Backend endpoint required: update AP invoice",
+        }));
+      } else {
+        toast.error(formatApiError(error));
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveTransactionDraft(e, nextStatus = "Draft") {
     e.preventDefault();
     if (!validateTransaction()) return;
+    if (transactionDraft.source === "invoice" && transactionDraft.id) {
+      await updateExistingApInvoice(nextStatus);
+      return;
+    }
     const supplierId = transactionDraft.supplier_id || selectedSupplier?.id || selectedSupplierId;
     const isExistingFrontendRow = transactionDraft.source === "frontend" && transactionDraft.ledgerKey;
     const ledgerKey = isExistingFrontendRow ? transactionDraft.ledgerKey : `frontend-${Date.now()}`;
@@ -594,22 +832,23 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
     ["All", ...Array.from(new Set(selectedLedgerRows.map((row) => row.status).filter(Boolean)))]
   ), [selectedLedgerRows]);
   const ledgerTotals = useMemo(() => visibleLedgerRows.reduce((totals, row) => ({
-    debit: totals.debit + asNumber(row.debit),
-    credit: totals.credit + asNumber(row.credit),
-  }), { debit: 0, credit: 0 }), [visibleLedgerRows]);
-  const ledgerClosingBalance = visibleLedgerRows.length ? visibleLedgerRows[visibleLedgerRows.length - 1].runningBalance : 0;
+    invoiceValue: totals.invoiceValue + invoiceValue(row),
+    allocated: totals.allocated + allocatedValue(row),
+    balance: totals.balance + invoiceBalance(row),
+  }), { invoiceValue: 0, allocated: 0, balance: 0 }), [visibleLedgerRows]);
 
   function exportLedgerRows() {
-    const header = "Date,Type,Reference,Description,Debit,Credit,Running Balance,Status";
+    const header = "Date,Type,Reference,Description,Invoice value,Paid / allocated,Invoice balance,Status,Attachment";
     const rows = visibleLedgerRows.map((row) => [
       formatDate(row.date),
       row.type,
       row.reference,
       String(row.description || "").replaceAll("\"", "\"\""),
-      asNumber(row.debit).toFixed(2),
-      asNumber(row.credit).toFixed(2),
-      asNumber(row.runningBalance).toFixed(2),
+      invoiceValue(row).toFixed(2),
+      allocatedValue(row).toFixed(2),
+      invoiceBalance(row).toFixed(2),
       row.status,
+      hasAttachment(row) ? "Yes" : "No",
     ].map((value) => `"${value || ""}"`).join(","));
     const blob = new Blob([[header, ...rows].join("\n")], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -838,9 +1077,9 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
             <Panel title="Supplier ledger">
               <div className="mb-3 grid gap-3 md:grid-cols-4">
                 <SummaryCard label="Visible transactions" value={visibleLedgerRows.length} />
-                <SummaryCard label="Debit" value={formatMoney(ledgerTotals.debit)} />
-                <SummaryCard label="Credit" value={formatMoney(ledgerTotals.credit)} />
-                <SummaryCard label="Closing balance" value={formatMoney(ledgerClosingBalance)} />
+                <SummaryCard label="Invoice value" value={formatMoney(ledgerTotals.invoiceValue)} />
+                <SummaryCard label="Invoice balance / outstanding" value={formatMoney(ledgerTotals.balance)} />
+                <SummaryCard label="Payments / credits allocated" value={formatMoney(ledgerTotals.allocated)} />
               </div>
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div className="flex flex-wrap gap-2">
@@ -882,10 +1121,11 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
                       <th className="px-3 py-2">Type</th>
                       <th className="px-3 py-2">Reference</th>
                       <th className="px-3 py-2">Description</th>
-                      <th className="px-3 py-2 text-right">Debit</th>
-                      <th className="px-3 py-2 text-right">Credit</th>
-                      <th className="px-3 py-2 text-right">Running Balance</th>
+                      <th className="px-3 py-2 text-right">Invoice value</th>
+                      <th className="px-3 py-2 text-right">Paid / allocated</th>
+                      <th className="px-3 py-2 text-right">Invoice balance</th>
                       <th className="px-3 py-2">Status</th>
+                      <th className="px-3 py-2">Attachment</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -900,14 +1140,15 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
                         </td>
                         <td className="px-3 py-2">{row.reference}</td>
                         <td className="px-3 py-2 text-stone-600">{row.description}</td>
-                        <td className="px-3 py-2 text-right">{row.debit ? formatMoney(row.debit) : "-"}</td>
-                        <td className="px-3 py-2 text-right">{row.credit ? formatMoney(row.credit) : "-"}</td>
-                        <td className="px-3 py-2 text-right font-semibold">{formatMoney(row.runningBalance)}</td>
+                        <td className="px-3 py-2 text-right">{invoiceValue(row) ? formatMoney(invoiceValue(row)) : "-"}</td>
+                        <td className="px-3 py-2 text-right">{allocatedValue(row) ? formatMoney(allocatedValue(row)) : "-"}</td>
+                        <td className="px-3 py-2 text-right font-semibold">{invoiceBalance(row) ? formatMoney(invoiceBalance(row)) : "-"}</td>
                         <td className="px-3 py-2"><Badge className={statusBadgeClass(row.status)}>{row.status}</Badge></td>
+                        <td className="px-3 py-2">{hasAttachment(row) ? <Badge className="bg-emerald-100 text-emerald-800">Attached</Badge> : "-"}</td>
                       </tr>
                     )) : (
                       <tr>
-                        <td colSpan="8" className="px-3 py-8 text-center text-stone-500">No ledger transactions found.</td>
+                        <td colSpan="9" className="px-3 py-8 text-center text-stone-500">No ledger transactions found.</td>
                       </tr>
                     )}
                   </tbody>
@@ -915,9 +1156,10 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
                     <tfoot className="border-t border-stone-200 bg-stone-50 text-sm font-semibold">
                       <tr>
                         <td colSpan="4" className="px-3 py-2 text-right">Visible total</td>
-                        <td className="px-3 py-2 text-right">{formatMoney(ledgerTotals.debit)}</td>
-                        <td className="px-3 py-2 text-right">{formatMoney(ledgerTotals.credit)}</td>
-                        <td className="px-3 py-2 text-right">{formatMoney(ledgerClosingBalance)}</td>
+                        <td className="px-3 py-2 text-right">{formatMoney(ledgerTotals.invoiceValue)}</td>
+                        <td className="px-3 py-2 text-right">{formatMoney(ledgerTotals.allocated)}</td>
+                        <td className="px-3 py-2 text-right">{formatMoney(ledgerTotals.balance)}</td>
+                        <td className="px-3 py-2" />
                         <td className="px-3 py-2" />
                       </tr>
                     </tfoot>
@@ -977,6 +1219,8 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
               errors={transactionErrors}
               supplier={selectedSupplier}
               expenseAccounts={expenseAccounts}
+              vatCodes={vatCodes}
+              saving={saving}
               onClose={() => setTransactionDraft(null)}
               onSave={saveTransactionDraft}
               onPost={postTransactionDraft}
@@ -1049,14 +1293,59 @@ function ManualPurchaseDocumentDrawer({
   errors,
   supplier,
   expenseAccounts,
+  vatCodes,
+  saving,
   onClose,
   onSave,
   onPost,
 }) {
+  const [previewOpen, setPreviewOpen] = useState(false);
   const readOnly = isReadOnlyTransaction(draft);
   const isCredit = isCreditDocument(draft.type);
   const isPayment = isPaymentDocument(draft.type);
   const lineTotals = transactionLineTotals(draft.line_items);
+  const totalsDifference = {
+    net: asNumber(draft.net) - lineTotals.net,
+    vat: asNumber(draft.vat) - lineTotals.vat,
+    gross: asNumber(draft.gross) - lineTotals.gross,
+  };
+  const totalsDiffer = Math.abs(totalsDifference.net) > 0.01 || Math.abs(totalsDifference.vat) > 0.01 || Math.abs(totalsDifference.gross) > 0.01;
+  const sourceUrl = attachmentUrl(draft);
+  const previewUrl = browserDocumentUrl(sourceUrl);
+  const canOpenSourceUrl = Boolean(previewUrl) && isServedDocumentUrl(sourceUrl);
+  const sourceKind = sourceDocumentKind(previewUrl || draft.attachment_name || draft.attachment_path);
+  const sourceLabel = draft.source_submission_id ? "Source: Submitted Items" : "Source document";
+  const isExistingApInvoice = draft.source === "invoice" && draft.id;
+  const saveLabel = draft.source === "invoice" && draft.id ? "Update AP invoice" : "Save draft";
+  const showPostAction = !isExistingApInvoice && !isPayment;
+  const accountOptions = useMemo(() => {
+    const seen = new Set();
+    const baseOptions = expenseAccounts
+      .map((account) => ({ value: account.code, label: `${account.code} - ${account.name}` }))
+      .filter((option) => {
+        if (!option.value || seen.has(normaliseOptionText(option.value))) return false;
+        seen.add(normaliseOptionText(option.value));
+        return true;
+      });
+    const currentValues = [draft.purchase_nominal, ...draft.line_items.map((line) => line.purchase_nominal)]
+      .filter(Boolean)
+      .map((value) => canonicalOptionValue(value, baseOptions))
+      .filter((value) => value && !seen.has(normaliseOptionText(value)))
+      .map((value) => {
+        seen.add(normaliseOptionText(value));
+        return { value, label: value };
+      });
+    return [...baseOptions, ...currentValues];
+  }, [draft.line_items, draft.purchase_nominal, expenseAccounts]);
+  const vatOptions = useMemo(() => {
+    const seen = new Set();
+    return vatCodes.filter((option) => {
+      if (!option.value || seen.has(normaliseOptionText(option.value))) return false;
+      seen.add(normaliseOptionText(option.value));
+      return true;
+    });
+  }, [vatCodes]);
+  const hasVatOptions = vatOptions.length > 0;
   const impact = ledgerImpactFor(draft.type);
   const set = (key, value) => setDraft((current) => ({ ...current, [key]: value }));
   const setLine = (index, key, value) => {
@@ -1087,18 +1376,18 @@ function ManualPurchaseDocumentDrawer({
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="font-display text-lg font-semibold text-stone-900">{supplier?.name || draft.supplier_name || "Supplier"}</h3>
                 <Badge variant="secondary">{supplier?.supplier_code || draft.supplier_code || "No supplier code"}</Badge>
-                <Badge className={statusBadgeClass(draft.status)}>{draft.status || "Draft"}</Badge>
+                <Badge className={statusBadgeClass(draft.status)}>{displayStatus(draft.status || "Draft")}</Badge>
               </div>
               <p className="mt-1 text-sm text-stone-500">
-                Manual Accounts Payable purchase document entry. Supplier is locked from the open supplier account.
+                {isExistingApInvoice ? "Accounts Payable invoice details. Editable fields can be updated here." : "Manual Accounts Payable purchase document entry. Supplier is locked from the open supplier account."}
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
               {draft.originalKey ? <Button type="button" variant="outline" onClick={() => set("showImpact", !draft.showImpact)}>View ledger impact</Button> : null}
               {draft.originalKey ? <Button type="button" variant="outline" onClick={() => set("showAudit", !draft.showAudit)}>View audit trail</Button> : null}
               <Button type="button" variant="outline" onClick={onClose}>Cancel / close</Button>
-              {!readOnly ? <Button type="button" variant="outline" onClick={(event) => onSave(event, "Draft")}>Save draft</Button> : null}
-              {!readOnly && !isPayment ? <Button type="button" onClick={onPost} style={{ background: "var(--brand)" }}>Post to AP</Button> : null}
+              {!readOnly ? <Button type="button" variant="outline" disabled={saving} onClick={(event) => onSave(event, draft.status || "Draft")}>{saveLabel}</Button> : null}
+              {!readOnly && showPostAction ? <Button type="button" disabled={saving} onClick={onPost} style={{ background: "var(--brand)" }}>Post to AP</Button> : null}
               <Button type="button" variant="outline" size="sm" onClick={onClose}><X className="h-4 w-4" /></Button>
             </div>
           </div>
@@ -1108,9 +1397,10 @@ function ManualPurchaseDocumentDrawer({
           <form onSubmit={(event) => onSave(event, draft.status || "Draft")} className="min-h-0 overflow-auto p-4">
             {readOnly ? (
               <div className="mb-3 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-600">
-                Posted, paid and allocated supplier ledger transactions are view only. Corrections should be entered as a supplier credit note or reversal flow.
+                This AP invoice is view-only because its status is {displayStatus(draft.status)}. Corrections should be entered through the appropriate AP adjustment flow.
               </div>
             ) : null}
+            {errors.backend ? <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{errors.backend}</div> : null}
             {errors.supplier ? <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{errors.supplier}</div> : null}
 
             <section className="rounded-md border border-stone-200 bg-white p-3">
@@ -1147,23 +1437,33 @@ function ManualPurchaseDocumentDrawer({
                       <Input type="date" value={draft.due_date || ""} readOnly={readOnly} onChange={(e) => set("due_date", e.target.value)} className="h-9" />
                     </FieldControl>
                     <FieldControl label="Payment terms">
-                      <Input value={draft.payment_terms || ""} readOnly={readOnly} onChange={(e) => set("payment_terms", e.target.value)} className="h-9" />
+                      <Input value={supplier?.payment_terms_days || draft.payment_terms || ""} readOnly className="h-9 bg-stone-50" />
                     </FieldControl>
                   </>
                 ) : null}
                 <FieldControl label="Currency">
-                  <Input value={draft.currency || "GBP"} readOnly={readOnly} onChange={(e) => set("currency", e.target.value)} className="h-9" />
+                  <Input value={draft.currency || "GBP"} readOnly className="h-9 bg-stone-50" />
                 </FieldControl>
                 {!isPayment ? (
                   <>
                     <FieldControl label="Purchase nominal / category" error={errors.purchase_nominal}>
-                      <select value={draft.purchase_nominal || ""} disabled={readOnly} onChange={(e) => set("purchase_nominal", e.target.value)} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm disabled:bg-stone-50">
+                      <select value={canonicalOptionValue(draft.purchase_nominal, accountOptions)} disabled={readOnly} onChange={(e) => set("purchase_nominal", e.target.value)} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm disabled:bg-stone-50">
                         <option value="">Select purchase nominal</option>
-                        {expenseAccounts.map((account) => <option key={account.code} value={account.code}>{account.code} - {account.name}</option>)}
+                        {accountOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                       </select>
                     </FieldControl>
                     <FieldControl label="VAT code">
-                      <Input value={draft.vat_code || ""} readOnly={readOnly} onChange={(e) => set("vat_code", e.target.value)} className="h-9" />
+                      {hasVatOptions ? (
+                        <select value={canonicalOptionValue(draft.vat_code, vatOptions)} disabled={readOnly} onChange={(e) => set("vat_code", e.target.value)} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm disabled:bg-stone-50">
+                          <option value="">Select VAT code</option>
+                          {vatOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                        </select>
+                      ) : (
+                        <>
+                          <Input value={draft.vat_code || ""} readOnly={readOnly} onChange={(e) => set("vat_code", e.target.value)} className="h-9" />
+                          <p className="mt-1 text-xs text-amber-700">VAT code list unavailable. Free text is enabled until native VAT codes are returned.</p>
+                        </>
+                      )}
                     </FieldControl>
                   </>
                 ) : null}
@@ -1193,6 +1493,11 @@ function ManualPurchaseDocumentDrawer({
                     <div className="mt-1 font-display text-lg font-semibold text-stone-900">{formatMoney(lineTotals.gross)}</div>
                   </div>
                 </div>
+                {totalsDiffer ? (
+                  <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
+                    Header totals differ from line totals: net {formatMoney(totalsDifference.net)}, VAT {formatMoney(totalsDifference.vat)}, gross {formatMoney(totalsDifference.gross)}.
+                  </div>
+                ) : null}
               </section>
             ) : (
               <section className="mt-3 rounded-md border border-stone-200 bg-white p-3">
@@ -1219,26 +1524,40 @@ function ManualPurchaseDocumentDrawer({
                 </div>
                 {errors.line_items ? <div className="mb-2 text-xs font-medium text-red-600">{errors.line_items}</div> : null}
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[900px] text-xs">
+                  <table className="w-full min-w-[1080px] text-xs">
                     <thead className="border-b border-stone-200 text-left text-[10px] uppercase tracking-wider text-stone-500">
                       <tr>
-                        <th className="py-1 pr-1.5">Description</th>
-                        <th className="py-1 pr-1.5">Purchase nominal/account code</th>
-                        <th className="py-1 pr-1.5">VAT code</th>
+                        <th className="w-56 py-1 pr-1.5">Description</th>
+                        <th className="w-52 py-1 pr-1.5">Purchase nominal/account code</th>
+                        <th className="w-56 py-1 pr-1.5">VAT code</th>
                         <th className="py-1 pr-1.5">Quantity / units</th>
                         <th className="py-1 pr-1.5">Unit price</th>
                         <th className="py-1 pr-1.5">Net</th>
                         <th className="py-1 pr-1.5">VAT</th>
-                        <th className="py-1">Gross</th>
+                        <th className="py-1">Total</th>
                         <th className="py-1 pl-1.5"></th>
                       </tr>
                     </thead>
                     <tbody>
                       {draft.line_items.map((line, index) => (
                         <tr key={index}>
-                          <td className="py-0.5 pr-1.5"><Input value={line.description || ""} readOnly={readOnly} onChange={(e) => setLine(index, "description", e.target.value)} className="h-7 min-w-40 px-1.5 text-xs" /></td>
-                          <td className="py-0.5 pr-1.5"><Input value={line.purchase_nominal || ""} readOnly={readOnly} onChange={(e) => setLine(index, "purchase_nominal", e.target.value)} className="h-7 min-w-32 px-1.5 text-xs" /></td>
-                          <td className="py-0.5 pr-1.5"><Input value={line.vat_code || ""} readOnly={readOnly} onChange={(e) => setLine(index, "vat_code", e.target.value)} className="h-7 min-w-24 px-1.5 text-xs" /></td>
+                          <td className="py-0.5 pr-1.5"><Input value={line.description || ""} readOnly={readOnly} onChange={(e) => setLine(index, "description", e.target.value)} className="h-8 min-w-52 px-1.5 text-xs" /></td>
+                          <td className="py-0.5 pr-1.5">
+                            <select value={canonicalOptionValue(line.purchase_nominal, accountOptions)} disabled={readOnly} onChange={(e) => setLine(index, "purchase_nominal", e.target.value)} className="h-8 min-w-48 rounded-md border border-stone-200 bg-white px-1.5 text-xs disabled:bg-stone-50">
+                              <option value="">Select nominal</option>
+                              {accountOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                            </select>
+                          </td>
+                          <td className="py-0.5 pr-1.5">
+                            {hasVatOptions ? (
+                              <select value={canonicalOptionValue(line.vat_code, vatOptions)} disabled={readOnly} onChange={(e) => setLine(index, "vat_code", e.target.value)} className="h-8 min-w-52 rounded-md border border-stone-200 bg-white px-1.5 text-xs disabled:bg-stone-50">
+                                <option value="">Select VAT code</option>
+                                {vatOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                              </select>
+                            ) : (
+                              <Input value={line.vat_code || ""} readOnly={readOnly} onChange={(e) => setLine(index, "vat_code", e.target.value)} className="h-8 min-w-52 px-1.5 text-xs" />
+                            )}
+                          </td>
                           <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.quantity || ""} readOnly={readOnly} onChange={(e) => setLine(index, "quantity", e.target.value)} className="h-7 min-w-20 px-1.5 text-xs" /></td>
                           <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.unit_price || ""} readOnly={readOnly} onChange={(e) => setLine(index, "unit_price", e.target.value)} className="h-7 min-w-20 px-1.5 text-xs" /></td>
                           <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.net || ""} readOnly={readOnly} onChange={(e) => setLine(index, "net", e.target.value)} className="h-7 min-w-20 px-1.5 text-xs" /></td>
@@ -1252,17 +1571,77 @@ function ManualPurchaseDocumentDrawer({
                     </tbody>
                   </table>
                 </div>
+                {!hasVatOptions ? (
+                  <p className="mt-2 text-xs text-amber-700">VAT code list unavailable. Line VAT codes can be entered as text until native VAT codes are returned.</p>
+                ) : null}
               </section>
             ) : null}
           </form>
 
           <aside className="min-h-0 overflow-auto border-t border-stone-200 bg-stone-50 p-4 lg:border-l lg:border-t-0">
             <section className="rounded-md border border-stone-200 bg-white p-3">
-              <h4 className="text-sm font-semibold text-stone-900">Optional attachment preview</h4>
-              <div className="mt-3 flex min-h-56 items-center justify-center rounded-md border border-dashed border-stone-300 bg-stone-50 p-4 text-center text-sm text-stone-500">
-                {draft.attachment_name ? draft.attachment_name : "No attachment linked to this manual AP entry"}
+              <h4 className="text-sm font-semibold text-stone-900">Source document</h4>
+              <div className="mt-3 min-h-56 rounded-md border border-dashed border-stone-300 bg-stone-50 p-4 text-sm text-stone-600">
+                {hasAttachment(draft) ? (
+                  <div className="flex h-full min-h-48 flex-col items-center justify-center gap-3 text-center">
+                    <Badge className="bg-emerald-100 text-emerald-800">{sourceLabel}</Badge>
+                    <div className="max-w-full break-words text-stone-700">
+                      {draft.attachment_name || sourceUrl || draft.source_submission_id}
+                    </div>
+                    {canOpenSourceUrl ? (
+                      <div className="flex flex-wrap justify-center gap-2">
+                        <Button type="button" size="sm" onClick={() => setPreviewOpen(true)} style={{ background: "var(--brand)" }}>
+                          <FileText className="mr-2 h-4 w-4" /> View document
+                        </Button>
+                        <a href={previewUrl} target="_blank" rel="noreferrer">
+                          <Button type="button" variant="outline" size="sm">
+                            Open in new tab
+                          </Button>
+                        </a>
+                      </div>
+                    ) : (
+                      <Button type="button" variant="outline" size="sm" onClick={() => toast.info("Backend endpoint required: open Submitted Items source document.")}>
+                        <FileText className="mr-2 h-4 w-4" /> View document
+                      </Button>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex h-full min-h-48 items-center justify-center text-center text-stone-500">
+                    No attachment linked to this manual AP entry
+                  </div>
+                )}
               </div>
             </section>
+
+            {previewOpen && canOpenSourceUrl ? (
+              <div className="fixed inset-0 z-50 bg-stone-950/70 p-4">
+                <div className="mx-auto flex h-full max-w-5xl flex-col overflow-hidden rounded-md bg-white shadow-2xl">
+                  <div className="flex items-center justify-between border-b border-stone-200 px-4 py-3">
+                    <div className="min-w-0">
+                      <h4 className="font-display text-base font-semibold text-stone-900">Source document preview</h4>
+                      <p className="truncate text-xs text-stone-500">{draft.attachment_name || previewUrl}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <a href={previewUrl} target="_blank" rel="noreferrer">
+                        <Button type="button" variant="outline" size="sm">Open in new tab</Button>
+                      </a>
+                      <Button type="button" variant="outline" size="icon" onClick={() => setPreviewOpen(false)}>
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="min-h-0 flex-1 bg-stone-100 p-3">
+                    {sourceKind === "image" ? (
+                      <div className="flex h-full items-center justify-center overflow-auto">
+                        <img src={previewUrl} alt="Source document preview" className="max-h-full max-w-full rounded-md bg-white object-contain shadow" />
+                      </div>
+                    ) : sourceKind === "pdf" || sourceKind === "unknown" ? (
+                      <iframe title="Source document preview" src={previewUrl} className="h-full w-full rounded-md border border-stone-200 bg-white" />
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            ) : null}
 
             <section className="mt-3 rounded-md border border-stone-200 bg-white p-3">
               <h4 className="text-sm font-semibold text-stone-900">Totals</h4>

@@ -8,7 +8,9 @@ import { AlertTriangle, Archive, ArrowLeft, CheckCircle2, Download, FileText, In
 import { toast } from "sonner";
 
 const listTabs = [
-  { key: "inbox", label: "Inbox", icon: Inbox },
+  { key: "active", label: "All active items", icon: Inbox },
+  { key: "purchase", label: "Purchase invoices", icon: FileText },
+  { key: "sales", label: "Sales invoices", icon: FileText },
   { key: "archived", label: "Archived", icon: Archive },
 ];
 const emptyCodingContext = {};
@@ -19,8 +21,7 @@ export default function AdminSubmissions() {
   const [q, setQ] = useState("");
   const [view, setView] = useState("clients");
   const [clientId, setClientId] = useState("");
-  const [tab, setTab] = useState("inbox");
-  const [documentFilter, setDocumentFilter] = useState("all");
+  const [tab, setTab] = useState("active");
   const [selectedId, setSelectedId] = useState("");
   const [selectedArchiveIds, setSelectedArchiveIds] = useState([]);
   const [draft, setDraft] = useState(makeDraft(null));
@@ -56,9 +57,10 @@ export default function AdminSubmissions() {
     return submissions.reduce((acc, row) => {
       const cid = row.client_id;
       if (!cid) return acc;
-      if (!acc[cid]) acc[cid] = { inbox: 0, archived: 0 };
-      const group = statusGroup(row.review_status);
-      if (group === "inbox" || group === "archived") acc[cid][group] += 1;
+      if (!acc[cid]) acc[cid] = { active: 0, purchase: 0, sales: 0, archived: 0 };
+      listTabs.forEach((item) => {
+        if (submissionBelongsToTab(row, item.key)) acc[cid][item.key] += 1;
+      });
       return acc;
     }, {});
   }, [submissions]);
@@ -77,26 +79,31 @@ export default function AdminSubmissions() {
   const rows = useMemo(() => {
     return submissions
       .filter((row) => row.client_id === clientId)
-      .filter((row) => statusGroup(row.review_status) === tab)
+      .filter((row) => submissionBelongsToTab(row, tab))
       .sort((a, b) => new Date(a.submitted_at || 0) - new Date(b.submitted_at || 0));
   }, [clientId, submissions, tab]);
 
   const selected = submissions.find((row) => row.id === selectedId) || null;
   const previewUrl = previewObjectUrl;
+  const selectedDocumentFlow = submittedDocumentFlow(selected);
+  const selectedKnownDocumentFlow = !isCompletedSubmission(selected) && (selectedDocumentFlow === "sales" || selectedDocumentFlow === "purchase") ? selectedDocumentFlow : "";
+  const listDocumentType = tab === "sales" || tab === "purchase" ? tab : "";
   const activeCodingContext = submissionCodingContext || clientCodingContext || emptyCodingContext;
   const codingOptions = useMemo(() => buildCodingContextOptions(activeCodingContext), [activeCodingContext]);
 
   useEffect(() => {
     setSelectedArchiveIds([]);
     setSelectedId("");
-  }, [clientId, tab, documentFilter]);
+  }, [clientId, tab]);
 
   useEffect(() => {
-    if (!clientId) return undefined;
+    if (!clientId || !listDocumentType) {
+      setClientCodingContext(null);
+      return undefined;
+    }
     let cancelled = false;
-    const documentType = documentFilter === "sales" ? "sales" : "purchase";
     setClientCodingContext(null);
-    api.get(`/admin/submissions/coding-context?client_id=${encodeURIComponent(clientId)}&document_type=${documentType}`)
+    api.get(`/admin/submissions/coding-context?client_id=${encodeURIComponent(clientId)}&document_type=${listDocumentType}`)
       .then(({ data }) => {
         if (!cancelled) setClientCodingContext(data || null);
       })
@@ -104,10 +111,10 @@ export default function AdminSubmissions() {
         if (!cancelled) setClientCodingContext(null);
       });
     return () => { cancelled = true; };
-  }, [clientId, documentFilter]);
+  }, [clientId, listDocumentType]);
 
   useEffect(() => {
-    if (!selectedId) {
+    if (!selectedId || !selectedKnownDocumentFlow) {
       setSubmissionCodingContext(null);
       return undefined;
     }
@@ -121,7 +128,7 @@ export default function AdminSubmissions() {
         if (!cancelled) setSubmissionCodingContext(null);
       });
     return () => { cancelled = true; };
-  }, [selectedId]);
+  }, [selectedId, selectedKnownDocumentFlow]);
 
   useEffect(() => {
     setDraft(makeDraft(selected));
@@ -142,7 +149,7 @@ export default function AdminSubmissions() {
         setPreviewObjectUrl(objectUrl);
       })
       .catch((e) => {
-        setPreviewError(formatApiError(e));
+        setPreviewError(`Could not load document preview from ${endpoint}: ${formatApiError(e)}`);
       });
 
     return () => {
@@ -179,7 +186,8 @@ export default function AdminSubmissions() {
       return data || null;
     }
     if (clientId) {
-      const documentType = documentFilter === "sales" ? "sales" : "purchase";
+      const documentType = selectedKnownDocumentFlow || listDocumentType;
+      if (!documentType) return null;
       const { data } = await api.get(`/admin/submissions/coding-context?client_id=${encodeURIComponent(clientId)}&document_type=${documentType}`);
       setClientCodingContext(data || null);
       return data || null;
@@ -190,11 +198,12 @@ export default function AdminSubmissions() {
   async function moveSelected(reviewStatus) {
     if (!selected) return;
     const isSalesInvoice = submittedDocumentFlow(selected) === "sales";
-    const nextInboxId = reviewStatus === "published" ? getNextRowId(rows, selected.id) : "";
+    const isPublishStatus = reviewStatus === "published" || reviewStatus === "published_to_ap" || reviewStatus === "published_to_ar";
+    const nextInboxId = isPublishStatus ? getNextRowId(rows, selected.id) : "";
     setBusy(true);
     try {
       const { data } = await api.patch(`/admin/submissions/${selected.id}/review-status`, { review_status: reviewStatus, coding_fields: draft });
-      if (reviewStatus === "published" && isSalesInvoice) {
+      if (isPublishStatus && isSalesInvoice) {
         const arPublish = data?.accounts_receivable_publish || data?.accounts_receivable_invoice || data?.ar_sales_invoice;
         if (arPublish) {
           setDraft((current) => ({
@@ -204,20 +213,17 @@ export default function AdminSubmissions() {
           }));
         }
         toast.success("Published to Accounts Receivable");
-      } else if (reviewStatus === "published" && activeCodingContext?.source === "epos_native") {
+      } else if (isPublishStatus && activeCodingContext?.source === "epos_native") {
         toast.success("Published to Accounts Payable");
-      } else if (reviewStatus === "published" && activeCodingContext?.source === "external") {
+      } else if (isPublishStatus && activeCodingContext?.source === "external") {
         toast.success(`Published to ${codingProviderLabel(activeCodingContext)}`);
-      } else if (reviewStatus === "published" && data?.memory_updated) {
+      } else if (isPublishStatus && data?.memory_updated) {
         toast.success("Published to archive and future AI examples updated");
       } else {
-        toast.success(reviewStatus === "published" ? "Published to archive" : "Submission updated");
+        toast.success(isPublishStatus ? "Published to archive" : "Submission updated");
       }
       await load();
-      if (reviewStatus === "published" && isSalesInvoice) {
-        setSelectedId(selected.id);
-        setView("detail");
-      } else if (reviewStatus === "published" && nextInboxId) {
+      if (isPublishStatus && nextInboxId) {
         setSelectedId(nextInboxId);
         setView("detail");
       } else {
@@ -319,6 +325,63 @@ export default function AdminSubmissions() {
     }
   }
 
+  async function createCustomerFromDraft() {
+    const customerName = String(draft.customer_name || "").trim();
+    if (!clientId || !customerName) {
+      toast.error("Enter a customer name first");
+      return false;
+    }
+    const customerCode = window.prompt("Optional customer account/code", String(draft.customer_account_code || "").trim());
+    if (customerCode === null) return false;
+    setBusy(true);
+    try {
+      let customer = {};
+      if (activeCodingContext?.source === "epos_native") {
+        const { data } = await api.post(`/admin/accounting/clients/${clientId}/ar/customers`, {
+          name: customerName,
+          customer_code: String(customerCode || "").trim(),
+          email: draft.customer_email || null,
+        });
+        customer = data?.customer || data || {};
+        toast.success("Customer created in EPOS Native Accounts Receivable");
+      } else {
+        const { data } = await api.post(`/admin/integrations/clients/${clientId}/records`, {
+          record_type: "customer",
+          name: customerName,
+          code: String(customerCode || "").trim(),
+          external_id: "",
+          email: draft.customer_email || null,
+          description: "Created from sales invoice review",
+          active: true,
+        });
+        customer = data?.customer || data?.record || data || {};
+        toast.success("Customer created and added to this client profile");
+      }
+      const customerPatch = {
+        customer_id: customer.external_id || customer.customer_id || customer.id || customer._id || draft.customer_id,
+        customer_name: customer.name || customerName,
+        customer_account_code: customer.customer_code || customer.code || String(customerCode || "").trim(),
+        customer_code: customer.customer_code || customer.code || String(customerCode || "").trim(),
+        customer_display_name: [customer.customer_code || customer.code || String(customerCode || "").trim(), customer.name || customerName].filter(Boolean).join(" - "),
+        currency: customer.currency || draft.currency || "GBP",
+        payment_terms: customer.payment_terms_days || customer.payment_terms || draft.payment_terms,
+        create_new_customer: false,
+      };
+      setDraft((current) => ({ ...current, ...customerPatch }));
+      await refreshCodingContext();
+      return customerPatch;
+    } catch (e) {
+      if (e?.response?.status === 404 || e?.response?.status === 405 || e?.response?.status === 501) {
+        toast.error("Backend endpoint required: create AR customer from Submitted Items review");
+      } else {
+        toast.error(formatApiError(e));
+      }
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function downloadArchive() {
     if (selectedArchiveIds.length === 0) {
       toast.error("Select at least one archived document");
@@ -378,8 +441,7 @@ export default function AdminSubmissions() {
           rows={rows}
           tab={tab}
           setTab={setTab}
-          documentFilter={documentFilter}
-          setDocumentFilter={setDocumentFilter}
+          counts={clientCounts[selectedClient?._id] || { active: 0, purchase: 0, sales: 0, archived: 0 }}
           backToClients={backToClients}
           openDocument={openDocument}
           selectedArchiveIds={selectedArchiveIds}
@@ -404,6 +466,7 @@ export default function AdminSubmissions() {
           suggestLinesFromPattern={suggestLinesFromPattern}
           moveSelected={moveSelected}
           createSupplierFromDraft={createSupplierFromDraft}
+          createCustomerFromDraft={createCustomerFromDraft}
           codingContext={activeCodingContext}
           codingOptions={codingOptions}
           busy={busy}
@@ -419,7 +482,7 @@ function ClientsLayer({ clients, counts, q, setQ, openClient }) {
       <header className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <h1 className="font-display text-2xl font-bold tracking-tight text-stone-900">Submitted items</h1>
-          <p className="text-sm text-stone-600">Open a client inbox or archive to review submitted invoices and receipts.</p>
+          <p className="text-sm text-stone-600">Open active purchase and sales review items, or view archived submitted documents.</p>
         </div>
         <div className="relative w-full max-w-md">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-stone-400" />
@@ -434,7 +497,7 @@ function ClientsLayer({ clients, counts, q, setQ, openClient }) {
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
           {clients.map((client) => {
-            const count = counts[client._id] || { inbox: 0, archived: 0 };
+            const count = counts[client._id] || { active: 0, purchase: 0, sales: 0, archived: 0 };
             return (
               <div key={client._id} className="rounded-md border border-stone-200 bg-white p-4 shadow-sm">
                 <div className="flex items-start justify-between gap-3">
@@ -450,11 +513,27 @@ function ClientsLayer({ clients, counts, q, setQ, openClient }) {
                 <div className="mt-4 grid grid-cols-2 gap-2">
                   <button
                     type="button"
-                    onClick={() => openClient(client, "inbox")}
+                    onClick={() => openClient(client, "active")}
                     className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-left hover:border-amber-300"
                   >
-                    <div className="text-xs font-semibold uppercase tracking-wide text-amber-700">Inbox</div>
-                    <div className="font-display text-2xl font-bold text-amber-700">{count.inbox || 0}</div>
+                    <div className="text-xs font-semibold uppercase tracking-wide text-amber-700">Active</div>
+                    <div className="font-display text-2xl font-bold text-amber-700">{count.active || 0}</div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openClient(client, "purchase")}
+                    className="rounded-md border border-stone-200 bg-stone-50 px-3 py-2.5 text-left hover:border-stone-300"
+                  >
+                    <div className="text-xs font-semibold uppercase tracking-wide text-stone-500">Purchase</div>
+                    <div className="font-display text-2xl font-bold text-stone-700">{count.purchase || 0}</div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openClient(client, "sales")}
+                    className="rounded-md border border-stone-200 bg-stone-50 px-3 py-2.5 text-left hover:border-stone-300"
+                  >
+                    <div className="text-xs font-semibold uppercase tracking-wide text-stone-500">Sales</div>
+                    <div className="font-display text-2xl font-bold text-stone-700">{count.sales || 0}</div>
                   </button>
                   <button
                     type="button"
@@ -484,8 +563,7 @@ function ItemsLayer({
   rows,
   tab,
   setTab,
-  documentFilter,
-  setDocumentFilter,
+  counts,
   backToClients,
   openDocument,
   selectedArchiveIds,
@@ -493,15 +571,6 @@ function ItemsLayer({
   downloadArchive,
   busy,
 }) {
-  const filteredRows = useMemo(() => {
-    if (documentFilter === "all") return rows;
-    return rows.filter((row) => submittedDocumentFlow(row) === documentFilter);
-  }, [documentFilter, rows]);
-  const flowCounts = useMemo(() => rows.reduce((acc, row) => {
-    acc[submittedDocumentFlow(row)] += 1;
-    return acc;
-  }, { purchase: 0, sales: 0, unclassified: 0 }), [rows]);
-
   return (
     <div className="flex h-[calc(100vh-2rem)] min-h-[660px] flex-col overflow-hidden">
       <header className="mb-3 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
@@ -511,7 +580,7 @@ function ItemsLayer({
           </Button>
           <div>
             <h1 className="font-display text-xl font-bold text-stone-900">{client?.business_name || "Client"}</h1>
-            <p className="text-sm text-stone-500">{filteredRows.length} {filteredRows.length === 1 ? "document" : "documents"} in {tab}</p>
+            <p className="text-sm text-stone-500">{rows.length} {rows.length === 1 ? "document" : "documents"} in {tabLabel(tab)}</p>
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -528,6 +597,7 @@ function ItemsLayer({
                 style={active ? { background: "var(--brand)" } : undefined}
               >
                 <Icon className="h-4 w-4" /> {item.label}
+                <Badge variant="secondary" className="bg-white/80 text-stone-700">{counts?.[item.key] || 0}</Badge>
               </Button>
             );
           })}
@@ -538,30 +608,6 @@ function ItemsLayer({
           )}
         </div>
       </header>
-
-      <div className="mb-3 flex flex-wrap gap-2">
-        {[
-          { key: "all", label: "All submitted items", count: rows.length },
-          { key: "purchase", label: "Purchase invoices", count: flowCounts.purchase },
-          { key: "sales", label: "Sales invoices", count: flowCounts.sales },
-          { key: "unclassified", label: "Unclassified / needs review", count: flowCounts.unclassified },
-        ].map((item) => {
-          const active = documentFilter === item.key;
-          return (
-            <Button
-              key={item.key}
-              type="button"
-              variant={active ? "default" : "outline"}
-              onClick={() => setDocumentFilter(item.key)}
-              className="h-8 gap-2 px-3"
-              style={active ? { background: "var(--brand)" } : undefined}
-            >
-              {item.label}
-              <Badge variant="secondary" className="bg-white/80 text-stone-700">{item.count}</Badge>
-            </Button>
-          );
-        })}
-      </div>
 
       <div className="min-h-0 flex-1 overflow-auto rounded-md border border-stone-200 bg-white">
         <table className="w-full text-sm">
@@ -577,11 +623,11 @@ function ItemsLayer({
             </tr>
           </thead>
           <tbody>
-            {filteredRows.length === 0 ? (
+            {rows.length === 0 ? (
               <tr>
                 <td className="px-4 py-12 text-center text-stone-500" colSpan={tab === "archived" ? 7 : 6}>No documents here.</td>
               </tr>
-            ) : filteredRows.map((row) => (
+            ) : rows.map((row) => (
               <tr key={row.id} className="border-t border-stone-100 hover:bg-stone-50">
                 {tab === "archived" && (
                   <td className="px-4 py-3">
@@ -601,10 +647,10 @@ function ItemsLayer({
                       <div className="max-w-lg truncate text-xs text-stone-500">{row.image_filename || "No file"}</div>
                       {submittedDocumentFlow(row) === "sales" && (
                         <div className="mt-1 flex flex-wrap gap-1.5 text-xs">
-                          <Badge variant="secondary">Review: {row.review_status || "inbox"}</Badge>
+                          <Badge variant="secondary">Review: {submissionStatusLabel(row.review_status)}</Badge>
                           <Badge variant="secondary">Customer match: {salesCustomerMatchStatus(row)}</Badge>
-                          <Badge className={row.review_status === "published" ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-100" : "bg-stone-100 text-stone-700 hover:bg-stone-100"}>
-                            {row.review_status === "published" ? "Published to Accounts Receivable" : "Not published"}
+                          <Badge className={isPublishedToAr(row) ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-100" : "bg-stone-100 text-stone-700 hover:bg-stone-100"}>
+                            {isPublishedToAr(row) ? "Published to Accounts Receivable" : "Not published"}
                           </Badge>
                         </div>
                       )}
@@ -616,7 +662,8 @@ function ItemsLayer({
                     <Badge variant="secondary" className="capitalize">{submittedDocumentTypeLabel(row)}</Badge>
                     {submittedDocumentFlow(row) === "sales" && <Badge className="bg-sky-100 text-sky-800 hover:bg-sky-100">Accounts Receivable</Badge>}
                     {submittedDocumentFlow(row) === "purchase" && <Badge className="bg-amber-100 text-amber-800 hover:bg-amber-100">Accounts Payable</Badge>}
-                    {submittedDocumentFlow(row) === "unclassified" && <Badge className="bg-stone-100 text-stone-700 hover:bg-stone-100">Needs review</Badge>}
+                    {submittedDocumentFlow(row) === "unclassified" && <Badge className="bg-stone-100 text-stone-700 hover:bg-stone-100">Route required</Badge>}
+                    {isCompletedSubmission(row) && <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">{submissionStatusLabel(row.review_status)}</Badge>}
                   </div>
                 </td>
                 <td className="px-3 py-2 text-stone-600">{formatDateTime(row.submitted_at)}</td>
@@ -628,7 +675,7 @@ function ItemsLayer({
                 </td>
                 <td className="max-w-md truncate px-3 py-2 text-stone-600">{row.comment || "-"}</td>
                 <td className="px-3 py-2 text-right">
-                  <Button type="button" size="sm" variant="outline" onClick={() => openDocument(row)}>Review</Button>
+                  <Button type="button" size="sm" variant="outline" onClick={() => openDocument(row)}>{tab === "archived" ? "View" : "Review"}</Button>
                 </td>
               </tr>
             ))}
@@ -653,6 +700,7 @@ function DetailLayer({
   suggestLinesFromPattern,
   moveSelected,
   createSupplierFromDraft,
+  createCustomerFromDraft,
   codingContext,
   codingOptions,
   busy,
@@ -664,7 +712,32 @@ function DetailLayer({
       </div>
     );
   }
-  if (submittedDocumentFlow(row) === "sales") {
+  const flow = submittedDocumentFlow(row);
+  if (isCompletedSubmission(row)) {
+    return (
+      <ArchivedDetailLayer
+        client={client}
+        row={row}
+        draft={draft}
+        backToList={backToList}
+        previewUrl={previewUrl}
+        previewError={previewError}
+      />
+    );
+  }
+  if (flow === "unclassified") {
+    return (
+      <RouteRequiredDetailLayer
+        client={client}
+        row={row}
+        draft={draft}
+        backToList={backToList}
+        previewUrl={previewUrl}
+        previewError={previewError}
+      />
+    );
+  }
+  if (flow === "sales") {
     return (
       <SalesInvoiceDetailLayer
         client={client}
@@ -677,7 +750,9 @@ function DetailLayer({
         previewUrl={previewUrl}
         previewError={previewError}
         prefillSelected={prefillSelected}
+        suggestLinesFromPattern={suggestLinesFromPattern}
         moveSelected={moveSelected}
+        createCustomerFromDraft={createCustomerFromDraft}
         codingContext={codingContext}
         codingOptions={codingOptions}
         busy={busy}
@@ -704,7 +779,7 @@ function DetailLayer({
           <Button type="button" variant="outline" onClick={() => moveSelected("archived")} disabled={busy} className="h-8 gap-2 px-3">
             <Archive className="h-4 w-4" /> Archive
           </Button>
-          <Button type="button" onClick={() => moveSelected("published")} disabled={busy || (codingContext?.source === "epos_native" && !draft.supplier_id)} className="h-8 gap-2 px-3" style={{ background: "var(--brand)" }}>
+          <Button type="button" onClick={() => moveSelected("published")} disabled={busy || !purchaseReviewReady(draft, codingContext)} className="h-8 gap-2 px-3" style={{ background: "var(--brand)" }}>
             <CheckCircle2 className="h-4 w-4" /> Publish and Next
           </Button>
         </div>
@@ -731,7 +806,7 @@ function DetailLayer({
                 <div className="truncate font-semibold text-stone-900">{row.image_filename || "Document preview"}</div>
                 <div className="truncate text-xs text-stone-500">{row.comment || "No client comment"}</div>
               </div>
-              <Badge variant="secondary" className="shrink-0 capitalize">{row.review_status || "inbox"}</Badge>
+              <Badge variant="secondary" className="shrink-0">{submissionStatusLabel(row.review_status)}</Badge>
             </div>
             <div className="min-h-0 flex-1 overflow-auto p-2">
               {row.image_filename ? (
@@ -765,6 +840,158 @@ function DetailLayer({
   );
 }
 
+function RouteRequiredDetailLayer({ client, row, draft, backToList, previewUrl, previewError }) {
+  return (
+    <div className="flex h-[calc(100vh-1.5rem)] min-h-[660px] flex-col overflow-hidden">
+      <header className="mb-2 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex min-w-0 items-center gap-3">
+          <Button type="button" variant="outline" onClick={backToList} className="h-8 gap-2 px-3">
+            <ArrowLeft className="h-4 w-4" /> {client?.business_name || "Documents"}
+          </Button>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="truncate font-display text-lg font-bold text-stone-900">Document route required</h1>
+              <Badge variant="secondary">{submissionStatusLabel(row.review_status)}</Badge>
+            </div>
+            <p className="truncate text-xs text-stone-500">{row.image_filename || "No file"} {row.comment ? `- ${row.comment}` : ""}</p>
+          </div>
+        </div>
+      </header>
+
+      <div className="grid min-h-0 flex-1 gap-2 xl:grid-cols-[minmax(520px,0.95fr)_minmax(640px,1.05fr)]">
+        <section className="min-h-0 overflow-auto rounded-md border border-stone-200 bg-white p-4">
+          <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+            This submitted item does not have a purchase or sales route yet. It cannot enter AP or AR review until the backend assigns a document direction/type.
+          </div>
+          <ReviewSection title="Current document state">
+            <div className="grid gap-2 text-sm md:grid-cols-2">
+              <ReadonlyFact label="Status" value={submissionStatusLabel(row.review_status)} />
+              <ReadonlyFact label="Document type" value={row.document_type || row.type || draft.document_type || "-"} />
+              <ReadonlyFact label="Document direction" value={row.document_direction || row.route || row.destination || "-"} />
+              <ReadonlyFact label="Submitted" value={formatDateTime(row.submitted_at)} />
+            </div>
+          </ReviewSection>
+          <ReviewSection title="Audit / history">
+            <SubmittedAuditTrail row={row} />
+          </ReviewSection>
+        </section>
+        <section className="min-h-0 overflow-hidden rounded-md border border-stone-200 bg-stone-100">
+          <DocumentPreviewPanel row={row} previewUrl={previewUrl} previewError={previewError} badge="Route required" />
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function ArchivedDetailLayer({ client, row, draft, backToList, previewUrl, previewError }) {
+  const flow = submittedDocumentFlow(row);
+  return (
+    <div className="flex h-[calc(100vh-1.5rem)] min-h-[660px] flex-col overflow-hidden">
+      <header className="mb-2 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex min-w-0 items-center gap-3">
+          <Button type="button" variant="outline" onClick={backToList} className="h-8 gap-2 px-3">
+            <ArrowLeft className="h-4 w-4" /> {client?.business_name || "Documents"}
+          </Button>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="truncate font-display text-lg font-bold text-stone-900">{row.description || "Submitted document"}</h1>
+              <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">{submissionStatusLabel(row.review_status)}</Badge>
+              {flow === "purchase" ? <Badge className="bg-amber-100 text-amber-800 hover:bg-amber-100">Accounts Payable</Badge> : null}
+              {flow === "sales" ? <Badge className="bg-sky-100 text-sky-800 hover:bg-sky-100">Accounts Receivable</Badge> : null}
+            </div>
+            <p className="truncate text-xs text-stone-500">{row.image_filename || "No file"} {row.comment ? `- ${row.comment}` : ""}</p>
+          </div>
+        </div>
+        {previewUrl ? (
+          <a href={previewUrl} download={row.image_filename || "submitted-document"}>
+            <Button type="button" variant="outline" className="h-8 gap-2 px-3">
+              <Download className="h-4 w-4" /> Download document
+            </Button>
+          </a>
+        ) : null}
+      </header>
+
+      <div className="grid min-h-0 flex-1 gap-2 xl:grid-cols-[minmax(520px,0.95fr)_minmax(640px,1.05fr)]">
+        <section className="min-h-0 overflow-auto rounded-md border border-stone-200 bg-white p-4">
+          <ReviewSection title="Document summary">
+            <div className="grid gap-2 text-sm md:grid-cols-2">
+              <ReadonlyFact label="Status" value={submissionStatusLabel(row.review_status)} />
+              <ReadonlyFact label="Document type" value={submittedDocumentTypeLabel(row)} />
+              <ReadonlyFact label="Route" value={flow === "sales" ? "Accounts Receivable" : flow === "purchase" ? "Accounts Payable" : "-"} />
+              <ReadonlyFact label="Submitted" value={formatDateTime(row.submitted_at)} />
+              <ReadonlyFact label="Reference" value={draft.reference || draft.bill_number || draft.sales_invoice_number || "-"} />
+              <ReadonlyFact label="Gross total" value={draft.total || "-"} />
+            </div>
+          </ReviewSection>
+          <ReviewSection title="Audit / history">
+            <SubmittedAuditTrail row={row} />
+          </ReviewSection>
+        </section>
+        <section className="min-h-0 overflow-hidden rounded-md border border-stone-200 bg-stone-100">
+          <DocumentPreviewPanel row={row} previewUrl={previewUrl} previewError={previewError} badge={submissionStatusLabel(row.review_status)} />
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function ReadonlyFact({ label, value }) {
+  return (
+    <div className="rounded-md border border-stone-200 bg-stone-50 px-3 py-2">
+      <div className="text-xs font-semibold uppercase tracking-wide text-stone-500">{label}</div>
+      <div className="mt-1 break-words font-medium text-stone-900">{value || "-"}</div>
+    </div>
+  );
+}
+
+function SubmittedAuditTrail({ row }) {
+  return (
+    <div className="space-y-1.5 text-xs text-stone-600">
+      {submittedItemAuditRows(row).map((entry, index) => (
+        <div key={index} className="flex items-start justify-between gap-3 rounded-md border border-stone-200 bg-stone-50 px-2 py-1.5">
+          <span className="font-medium text-stone-800">{entry.action}</span>
+          <span className="text-right">{entry.detail}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DocumentPreviewPanel({ row, previewUrl, previewError, badge }) {
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex items-center justify-between gap-3 border-b border-stone-200 bg-white px-3 py-2">
+        <div className="min-w-0">
+          <div className="truncate font-semibold text-stone-900">{row.image_filename || "Document preview"}</div>
+          <div className="truncate text-xs text-stone-500">{row.comment || "No client comment"}</div>
+        </div>
+        <Badge variant="secondary" className="shrink-0">{badge || submissionStatusLabel(row.review_status)}</Badge>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto p-2">
+        {row.image_filename ? (
+          <div className="relative min-h-[640px] overflow-auto rounded-md border border-stone-200 bg-white">
+            {previewUrl ? (
+              isPdfFile(row.image_filename) ? (
+                <iframe title="Submitted document PDF" src={previewUrl} className="h-[calc(100vh-9rem)] min-h-[640px] w-full rounded-md bg-white" />
+              ) : (
+                <img src={previewUrl} alt="Submitted document" className="block w-full rounded-md bg-white" />
+              )
+            ) : previewError ? (
+              <div className="flex h-full min-h-[640px] items-center justify-center p-6 text-center text-sm text-red-600">{previewError}</div>
+            ) : (
+              <div className="flex h-full min-h-[640px] items-center justify-center text-stone-500">Loading preview...</div>
+            )}
+          </div>
+        ) : (
+          <div className="flex h-full min-h-[640px] items-center justify-center rounded-md border border-dashed border-stone-300 bg-white text-stone-500">
+            No document attached
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function SalesInvoiceDetailLayer({
   client,
   row,
@@ -776,24 +1003,25 @@ function SalesInvoiceDetailLayer({
   previewUrl,
   previewError,
   prefillSelected,
+  suggestLinesFromPattern,
   moveSelected,
+  createCustomerFromDraft,
   codingContext,
   codingOptions,
   busy,
 }) {
-  const publishSalesInvoice = () => {
-    const summary = [
-      "Publish this sales invoice to Accounts Receivable?",
-      "",
-      `Customer: ${draft.customer_name || "Not set"}`,
-      `Invoice number: ${draft.sales_invoice_number || draft.reference || "Not set"}`,
-      `Invoice date: ${draft.invoice_date || draft.date || "Not set"}`,
-      `Due date: ${draft.due_date || "Not set"}`,
-      `Net/VAT/Gross: ${draft.net || "0.00"} / ${draft.vat || "0.00"} / ${draft.total || "0.00"}`,
-      "Destination: Accounts Receivable",
-      "Ledger impact: Debit debtors control; Credit sales/VAT",
-    ].join("\n");
-    if (window.confirm(summary)) moveSelected("published");
+  const [confirmPublish, setConfirmPublish] = useState(false);
+  const publishProblems = salesReviewProblems(draft);
+  const publishSalesInvoice = async () => {
+    if (publishProblems.length) {
+      toast.error(publishProblems[0]);
+      return;
+    }
+    setConfirmPublish(true);
+  };
+  const confirmSalesPublish = () => {
+    setConfirmPublish(false);
+    moveSelected("published_to_ar");
   };
 
   return (
@@ -809,7 +1037,7 @@ function SalesInvoiceDetailLayer({
               <ConfidenceBadge value={aiConfidence(row)} />
               <CodingSourceBadge context={codingContext} />
               <Badge className="bg-sky-100 text-sky-800 hover:bg-sky-100">Accounts Receivable</Badge>
-              <Badge variant="secondary" className="capitalize">{row.review_status || "inbox"}</Badge>
+              <Badge variant="secondary">{submissionStatusLabel(row.review_status)}</Badge>
             </div>
             <p className="truncate text-xs text-stone-500">{row.image_filename || "No file"} {row.comment ? `- ${row.comment}` : ""}</p>
           </div>
@@ -827,11 +1055,23 @@ function SalesInvoiceDetailLayer({
           <Button type="button" variant="outline" onClick={() => moveSelected("reviewed")} disabled={busy} className="h-8 gap-2 px-3">
             <CheckCircle2 className="h-4 w-4" /> Save review
           </Button>
-          <Button type="button" onClick={publishSalesInvoice} disabled={busy} className="h-8 gap-2 px-3" style={{ background: "var(--brand)" }}>
+          <Button type="button" onClick={publishSalesInvoice} disabled={busy || publishProblems.length > 0} className="h-8 gap-2 px-3" style={{ background: "var(--brand)" }}>
             <CheckCircle2 className="h-4 w-4" /> Publish to Accounts Receivable
           </Button>
+          {publishProblems.length ? (
+            <div className="basis-full text-right text-xs font-medium text-amber-700">{publishProblems[0]}</div>
+          ) : null}
         </div>
       </header>
+
+      {confirmPublish ? (
+        <PublishConfirmationPanel
+          draft={draft}
+          onCancel={() => setConfirmPublish(false)}
+          onConfirm={confirmSalesPublish}
+          busy={busy}
+        />
+      ) : null}
 
       <div className="grid min-h-0 flex-1 gap-2 xl:grid-cols-[minmax(540px,1fr)_minmax(620px,0.95fr)]">
         <section className="min-h-0 overflow-hidden rounded-md border border-stone-200 bg-white">
@@ -841,8 +1081,10 @@ function SalesInvoiceDetailLayer({
             setDraft={setDraft}
             activeField={activeField}
             setActiveField={setActiveField}
-            codingContext={codingContext}
+            suggestLinesFromPattern={suggestLinesFromPattern}
+            createCustomerFromDraft={createCustomerFromDraft}
             codingOptions={codingOptions}
+            codingContext={codingContext}
             busy={busy}
           />
         </section>
@@ -853,8 +1095,8 @@ function SalesInvoiceDetailLayer({
                 <div className="truncate font-semibold text-stone-900">{row.image_filename || "Source document preview"}</div>
                 <div className="truncate text-xs text-stone-500">Original submitted item audit trail remains with this document</div>
               </div>
-              <Badge className={row.review_status === "published" ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-100" : "bg-sky-100 text-sky-800 hover:bg-sky-100"}>
-                {row.review_status === "published" ? "Published to Accounts Receivable" : "Sales Invoice"}
+              <Badge className={isPublishedToAr(row) ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-100" : "bg-sky-100 text-sky-800 hover:bg-sky-100"}>
+                {isPublishedToAr(row) ? "Published to Accounts Receivable" : "Sales Invoice"}
               </Badge>
             </div>
             <div className="min-h-0 flex-1 overflow-auto p-2">
@@ -885,8 +1127,12 @@ function SalesInvoiceDetailLayer({
   );
 }
 
-function SalesInvoiceReviewForm({ row, draft, setDraft, activeField, setActiveField, codingContext, codingOptions, busy }) {
+function SalesInvoiceReviewForm({ row, draft, setDraft, activeField, setActiveField, suggestLinesFromPattern, createCustomerFromDraft, codingOptions, codingContext, busy }) {
+  const [patternLineIndex, setPatternLineIndex] = useState(0);
   const options = codingOptions || {};
+  const salesNominalOptions = options.salesAccountOptions?.length ? options.salesAccountOptions : options.categoryOptions || [];
+  const hasVatOptions = (options.vatOptions || []).length > 0;
+  const nativeContext = codingContext?.source === "epos_native";
   const lineTotals = useMemo(() => calculateLineTotals(draft.line_items), [draft.line_items]);
   const headerTotals = {
     net: parseAmount(draft.net),
@@ -895,6 +1141,9 @@ function SalesInvoiceReviewForm({ row, draft, setDraft, activeField, setActiveFi
   };
   const duplicateWarning = salesDuplicateWarning(row, draft);
   const set = (key, value) => setDraftValue(key, value, setDraft);
+  const setDate = (value) => {
+    setDraft((current) => ({ ...current, invoice_date: value, date: value }));
+  };
   const setLine = (index, key, value) => {
     setDraft((current) => ({
       ...current,
@@ -910,6 +1159,13 @@ function SalesInvoiceReviewForm({ row, draft, setDraft, activeField, setActiveFi
       ],
     }));
   };
+  const clearLines = () => {
+    setPatternLineIndex(0);
+    setDraft((current) => ({
+      ...current,
+      line_items: [{ description: "", quantity: "1", unit_price: "", net: "", vat_code: "", vat: "", total: "", sales_nominal: "" }],
+    }));
+  };
   const removeLine = (index) => {
     setDraft((current) => {
       const next = current.line_items.filter((_, i) => i !== index);
@@ -918,16 +1174,17 @@ function SalesInvoiceReviewForm({ row, draft, setDraft, activeField, setActiveFi
         line_items: next.length ? next : [{ description: "", quantity: "1", unit_price: "", net: "", vat_code: "", vat: "", total: "", sales_nominal: "" }],
       };
     });
+    setPatternLineIndex((current) => Math.max(0, Math.min(current, draft.line_items.length - 2)));
   };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center justify-between gap-3 border-b border-stone-200 bg-stone-50 px-3 py-2">
         <div>
-          <div className="font-display text-base font-bold text-stone-900">Sales invoice review</div>
+          <div className="font-display text-base font-bold text-stone-900">Coding fields</div>
           <div className="text-xs text-stone-500">Active field: {salesFieldLabel(activeField)}</div>
         </div>
-        <Badge className="bg-sky-100 text-sky-800 hover:bg-sky-100">Route: Accounts Receivable</Badge>
+        <Badge variant="secondary">{draft.currency || options.defaultCurrency || "GBP"}</Badge>
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto p-2.5">
@@ -938,67 +1195,149 @@ function SalesInvoiceReviewForm({ row, draft, setDraft, activeField, setActiveFi
           </div>
         )}
 
-        <ReviewSection title="Customer">
-          <div className="grid gap-2 lg:grid-cols-3">
-            <DatalistField id="customer_name" label="Customer name" value={draft.customer_name} options={options.customerOptions} onChange={(v) => setCustomerDraftFromOption(v, options.customerOptions, setDraft)} activeField={activeField} setActiveField={setActiveField} />
-            <ConfidenceField row={row} field="customer_name" draft={draft} />
-            <TextField id="customer_match_status" label="Customer match / suggested customer" value={draft.customer_match_status} onChange={(v) => set("customer_match_status", v)} activeField={activeField} setActiveField={setActiveField} />
-            <label className="flex h-8 items-center gap-2 text-sm font-medium text-stone-700">
-              <input type="checkbox" checked={Boolean(draft.create_new_customer)} onChange={(e) => set("create_new_customer", e.target.checked)} disabled={busy} />
-              Create new customer
-            </label>
-            <TextField id="customer_email" label="Customer email" value={draft.customer_email} onChange={(v) => set("customer_email", v)} activeField={activeField} setActiveField={setActiveField} />
-            <TextField id="customer_account_code" label="Customer reference/account code" value={draft.customer_account_code} onChange={(v) => set("customer_account_code", v)} activeField={activeField} setActiveField={setActiveField} />
+        <div className="grid gap-2 lg:grid-cols-3">
+          <DatalistField
+            id="customer_name"
+            label="Customer Name"
+            value={draft.customer_display_name || draft.customer_name}
+            options={customerLookupOptions(options.customerOptions)}
+            onChange={(v) => setCustomerDraftFromOption(v, options.customerOptions, setDraft)}
+            activeField={activeField}
+            setActiveField={setActiveField}
+          />
+          <div>
+            <Label className="text-xs font-semibold text-stone-700">Type</Label>
+            <div className="mt-1 flex h-8 items-center gap-3 text-sm">
+              <label className="flex items-center gap-2"><input type="radio" checked={draft.document_type === "sales_invoice"} onChange={() => set("document_type", "sales_invoice")} /> Sales Invoice</label>
+              <label className="flex items-center gap-2"><input type="radio" checked={draft.document_type === "customer_credit_note"} onChange={() => set("document_type", "customer_credit_note")} /> Customer Credit Note</label>
+            </div>
           </div>
-        </ReviewSection>
-
-        <ReviewSection title="Invoice">
-          <div className="grid gap-2 lg:grid-cols-4">
-            <TextField id="sales_invoice_number" label="Sales invoice number" value={draft.sales_invoice_number} onChange={(v) => set("sales_invoice_number", v)} activeField={activeField} setActiveField={setActiveField} />
-            <TextField id="invoice_date" label="Invoice date" value={draft.invoice_date} onChange={(v) => set("invoice_date", v)} activeField={activeField} setActiveField={setActiveField} />
-            <TextField id="due_date" label="Due date" value={draft.due_date} onChange={(v) => set("due_date", v)} activeField={activeField} setActiveField={setActiveField} />
-            <TextField id="payment_terms" label="Payment terms" value={draft.payment_terms} onChange={(v) => set("payment_terms", v)} activeField={activeField} setActiveField={setActiveField} />
-            <TextField id="currency" label="Currency" value={draft.currency} onChange={(v) => set("currency", v)} activeField={activeField} setActiveField={setActiveField} />
-            <TextField id="net" label="Net amount" value={draft.net} onChange={(v) => set("net", v)} activeField={activeField} setActiveField={setActiveField} />
-            <TextField id="vat" label="VAT amount" value={draft.vat} onChange={(v) => set("vat", v)} activeField={activeField} setActiveField={setActiveField} />
-            <TextField id="total" label="Gross amount" value={draft.total} onChange={(v) => set("total", v)} activeField={activeField} setActiveField={setActiveField} />
+          <TextField id="sales_invoice_number" label="Sales invoice #" value={draft.sales_invoice_number} onChange={(v) => set("sales_invoice_number", v)} activeField={activeField} setActiveField={setActiveField} />
+          <div className="lg:col-span-3 -mt-1">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={createCustomerFromDraft}
+              disabled={busy || !String(draft.customer_name || "").trim() || customerExists(draft.customer_name, options.customerOptions)}
+              className="h-8"
+            >
+              Create missing customer
+            </Button>
+            {!options.customerOptions?.length && (
+              <span className="ml-3 text-xs text-stone-500">{nativeContext ? "No EPOS Native AR customers found for this client yet." : "No external customers synced for this client yet."}</span>
+            )}
           </div>
-        </ReviewSection>
+          {salesNominalOptions.length ? (
+            <SelectOptionField id="sales_nominal" label="Sales nominal / category" value={draft.sales_nominal || draft.category} options={salesNominalOptions} onChange={(v) => setDraft((current) => ({ ...current, sales_nominal: v, category: v }))} activeField={activeField} setActiveField={setActiveField} placeholder="Select sales nominal" />
+          ) : (
+            <DatalistField id="sales_nominal" label="Sales nominal / category" value={draft.sales_nominal || draft.category} options={salesNominalOptions} onChange={(v) => setDraft((current) => ({ ...current, sales_nominal: v, category: v }))} activeField={activeField} setActiveField={setActiveField} />
+          )}
+          <TextField id="reference" label="Reference" value={draft.reference} onChange={(v) => set("reference", v)} activeField={activeField} setActiveField={setActiveField} />
+          <TextField id="invoice_date" label="Date" value={draft.invoice_date || draft.date} onChange={setDate} activeField={activeField} setActiveField={setActiveField} />
+          <TextField id="due_date" label="Due Date" value={draft.due_date} onChange={(v) => set("due_date", v)} activeField={activeField} setActiveField={setActiveField} />
+          <TextField id="payment_terms" label="Payment terms / payment method" value={draft.payment_terms || draft.payment_method} onChange={(v) => set("payment_terms", v)} activeField={activeField} setActiveField={setActiveField} />
+          <ReadonlyInputField id="currency" label="Currency" value={draft.currency || options.defaultCurrency || "GBP"} activeField={activeField} setActiveField={setActiveField} />
+        </div>
 
-        <ReviewSection title="Line coding">
+        <div className="mt-2">
+          <TextField id="description" label="Description" value={draft.description} onChange={(v) => set("description", v)} activeField={activeField} setActiveField={setActiveField} />
+        </div>
+
+        <div className="mt-2 grid gap-2 border-t border-stone-200 pt-2 lg:grid-cols-4">
+          <TextField id="net" label="Net" value={draft.net} onChange={(v) => set("net", v)} activeField={activeField} setActiveField={setActiveField} />
+          <TextField id="vat" label="VAT" value={draft.vat} onChange={(v) => set("vat", v)} activeField={activeField} setActiveField={setActiveField} />
+          <TextField id="total" label="Total" value={draft.total} onChange={(v) => set("total", v)} activeField={activeField} setActiveField={setActiveField} />
+          {hasVatOptions ? (
+            <SelectOptionField id="vat_code" label="VAT Code" value={draft.vat_code} options={options.vatOptions} onChange={(v) => set("vat_code", v)} activeField={activeField} setActiveField={setActiveField} placeholder="Select VAT code" />
+          ) : (
+            <div>
+              <DatalistField id="vat_code" label="VAT Code" value={draft.vat_code} options={options.vatOptions} onChange={(v) => set("vat_code", v)} activeField={activeField} setActiveField={setActiveField} />
+              <p className="mt-1 text-xs text-amber-700">VAT code list unavailable. Free text is enabled until VAT codes are returned.</p>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-2 border-t border-stone-200 pt-2">
+          <div className="mb-1.5 flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
+            <div className="font-display text-sm font-semibold text-stone-900">Line Items ({draft.line_items.length})</div>
+            <div className="flex flex-wrap gap-2">
+              <select className="h-7 rounded-md border border-stone-200 bg-white px-2 text-xs" value={draft.price_is} onChange={(e) => set("price_is", e.target.value)}>
+                <option>Tax Exclusive</option>
+                <option>Tax Inclusive</option>
+              </select>
+              <Button type="button" variant="outline" size="sm" onClick={clearLines} className="h-7 gap-1.5 px-2 text-xs">
+                <RotateCcw className="h-3.5 w-3.5" /> Clear
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => suggestLinesFromPattern(draft.line_items[patternLineIndex])}
+                disabled={busy}
+                className="h-7 gap-1.5 px-2 text-xs"
+              >
+                <Wand2 className="h-3.5 w-3.5" /> Suggest from pattern
+              </Button>
+            </div>
+          </div>
           <div className="overflow-x-auto">
-            <datalist id="sales-nominal-options">
-              {(options.salesAccountOptions || options.categoryOptions || []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </datalist>
-            <datalist id="sales-vat-options">
-              {(options.vatOptions || []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </datalist>
-            <table className="w-full min-w-[920px] text-xs">
+            <table className="w-full min-w-[840px] text-xs">
               <thead className="border-b border-stone-200 text-left text-[10px] uppercase tracking-wider text-stone-500">
                 <tr>
+                  <th className="py-1 pr-1.5">Pattern</th>
                   <th className="py-1 pr-1.5">Description</th>
-                  <th className="py-1 pr-1.5">Quantity</th>
-                  <th className="py-1 pr-1.5">Unit price</th>
+                  <th className="py-1 pr-1.5">Sales nominal/category</th>
+                  <th className="py-1 pr-1.5">VAT Code</th>
+                  <th className="py-1 pr-1.5">Units</th>
+                  <th className="py-1 pr-1.5">Price</th>
                   <th className="py-1 pr-1.5">Net</th>
-                  <th className="py-1 pr-1.5">VAT code</th>
-                  <th className="py-1 pr-1.5">VAT amount</th>
-                  <th className="py-1 pr-1.5">Gross</th>
-                  <th className="py-1">Sales nominal/account code</th>
+                  <th className="py-1 pr-1.5">VAT</th>
+                  <th className="py-1">Total</th>
                   <th className="py-1 pl-1.5"></th>
                 </tr>
               </thead>
               <tbody>
                 {draft.line_items.map((line, index) => (
                   <tr key={index}>
-                    {["description", "quantity", "unit_price", "net", "vat_code", "vat", "total", "sales_nominal"].map((key) => (
+                    <td className="py-0.5 pr-1.5 align-middle">
+                      <input
+                        type="radio"
+                        name="sales-line-pattern"
+                        checked={patternLineIndex === index}
+                        onChange={() => setPatternLineIndex(index)}
+                        className="h-3.5 w-3.5"
+                        title="Use this line as the pattern"
+                      />
+                    </td>
+                    {["description", "sales_nominal", "vat_code", "quantity", "unit_price", "net", "vat", "total"].map((key) => (
                       <td key={key} className="py-0.5 pr-1.5">
-                        <Input
-                          value={line[key] || ""}
-                          onChange={(e) => setLine(index, key, e.target.value)}
-                          onFocus={() => setActiveField(`line_items.${index}.${key}`)}
-                          list={key === "sales_nominal" ? "sales-nominal-options" : key === "vat_code" ? "sales-vat-options" : undefined}
-                          className={`h-7 min-w-16 px-1.5 text-xs ${activeField === `line_items.${index}.${key}` ? "border-emerald-500 ring-2 ring-emerald-100" : ""}`}
-                        />
+                        {key === "vat_code" && hasVatOptions ? (
+                          <LineSelect
+                            value={line[key] || ""}
+                            options={options.vatOptions}
+                            placeholder="Select VAT"
+                            onChange={(value) => setLine(index, key, value)}
+                            onFocus={() => setActiveField(`line_items.${index}.${key}`)}
+                            active={activeField === `line_items.${index}.${key}`}
+                          />
+                        ) : key === "sales_nominal" && salesNominalOptions.length ? (
+                          <LineSelect
+                            value={line[key] || ""}
+                            options={salesNominalOptions}
+                            placeholder="Select nominal"
+                            onChange={(value) => setLine(index, key, value)}
+                            onFocus={() => setActiveField(`line_items.${index}.${key}`)}
+                            active={activeField === `line_items.${index}.${key}`}
+                          />
+                        ) : (
+                          <Input
+                            value={line[key] || ""}
+                            onChange={(e) => setLine(index, key, e.target.value)}
+                            onFocus={() => setActiveField(`line_items.${index}.${key}`)}
+                            className={`h-7 min-w-16 px-1.5 text-xs ${activeField === `line_items.${index}.${key}` ? "border-emerald-500 ring-2 ring-emerald-100" : ""}`}
+                          />
+                        )}
                       </td>
                     ))}
                     <td className="py-0.5 pl-1.5 align-middle">
@@ -1014,12 +1353,15 @@ function SalesInvoiceReviewForm({ row, draft, setDraft, activeField, setActiveFi
           <Button type="button" variant="outline" size="sm" onClick={addLine} className="mt-1.5 h-7 px-2 text-xs">
             Add line item
           </Button>
+          {!hasVatOptions ? (
+            <p className="mt-1.5 text-xs text-amber-700">VAT code list unavailable. Free text is enabled until VAT codes are returned.</p>
+          ) : null}
           <div className="mt-1.5 grid gap-1.5 rounded-md border border-stone-200 bg-stone-50 p-1.5 md:grid-cols-3">
             <TotalComparison label="Net" lineValue={lineTotals.net} headerValue={headerTotals.net} />
             <TotalComparison label="VAT" lineValue={lineTotals.vat} headerValue={headerTotals.vat} />
-            <TotalComparison label="Gross" lineValue={lineTotals.total} headerValue={headerTotals.total} />
+            <TotalComparison label="Total" lineValue={lineTotals.total} headerValue={headerTotals.total} />
           </div>
-        </ReviewSection>
+        </div>
 
         <ReviewSection title="AI learning and review">
           <div className="grid gap-2 md:grid-cols-2">
@@ -1040,7 +1382,7 @@ function SalesInvoiceReviewForm({ row, draft, setDraft, activeField, setActiveFi
           </div>
         </ReviewSection>
 
-        {row.review_status === "published" && (
+        {isPublishedToAr(row) && (
           <div className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
             <div className="font-semibold">Published to Accounts Receivable</div>
             <div className="mt-1">
@@ -1053,6 +1395,35 @@ function SalesInvoiceReviewForm({ row, draft, setDraft, activeField, setActiveFi
             </div>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function PublishConfirmationPanel({ draft, onCancel, onConfirm, busy }) {
+  return (
+    <div className="mb-2 rounded-md border border-emerald-200 bg-emerald-50 p-3 shadow-sm">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <h2 className="font-display text-sm font-semibold text-emerald-950">Publish to Accounts Receivable</h2>
+          <p className="mt-1 text-xs text-emerald-800">Review the destination and ledger impact before publishing.</p>
+        </div>
+        <div className="flex gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={onCancel} disabled={busy}>Cancel</Button>
+          <Button type="button" size="sm" onClick={onConfirm} disabled={busy} style={{ background: "var(--brand)" }}>
+            Confirm publish
+          </Button>
+        </div>
+      </div>
+      <div className="mt-3 grid gap-2 text-sm md:grid-cols-2 xl:grid-cols-4">
+        <ReadonlyFact label="Customer" value={draft.customer_name || "Not set"} />
+        <ReadonlyFact label="Invoice number" value={draft.sales_invoice_number || draft.reference || "Not set"} />
+        <ReadonlyFact label="Invoice date" value={draft.invoice_date || draft.date || "Not set"} />
+        <ReadonlyFact label="Due date" value={draft.due_date || "Not set"} />
+        <ReadonlyFact label="Net / VAT / Gross" value={`${draft.net || "0.00"} / ${draft.vat || "0.00"} / ${draft.total || "0.00"}`} />
+        <ReadonlyFact label="Destination" value="Accounts Receivable" />
+        <ReadonlyFact label="Debit" value="Debtors control" />
+        <ReadonlyFact label="Credit" value="Sales/VAT" />
       </div>
     </div>
   );
@@ -1071,6 +1442,8 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
   const [patternLineIndex, setPatternLineIndex] = useState(0);
   const options = codingOptions || {};
   const nativeContext = codingContext?.source === "epos_native";
+  const hasCategoryOptions = (options.categoryOptions || []).length > 0;
+  const hasVatOptions = (options.vatOptions || []).length > 0;
   const lineTotals = useMemo(() => calculateLineTotals(draft.line_items), [draft.line_items]);
   const headerTotals = {
     net: parseAmount(draft.net),
@@ -1147,7 +1520,11 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
               <span className="ml-3 text-xs text-stone-500">{nativeContext ? "No EPOS Native AP suppliers found for this client yet." : "No external suppliers synced for this client yet."}</span>
             )}
           </div>
-          <DatalistField id="category" label="Category" value={draft.category} options={options.categoryOptions} onChange={(v) => set("category", v)} activeField={activeField} setActiveField={setActiveField} />
+          {hasCategoryOptions ? (
+            <SelectOptionField id="category" label="Category" value={draft.category} options={options.categoryOptions} onChange={(v) => set("category", v)} activeField={activeField} setActiveField={setActiveField} placeholder="Select category" />
+          ) : (
+            <DatalistField id="category" label="Category" value={draft.category} options={options.categoryOptions} onChange={(v) => set("category", v)} activeField={activeField} setActiveField={setActiveField} />
+          )}
           <TextField id="reference" label="Reference" value={draft.reference} onChange={(v) => set("reference", v)} activeField={activeField} setActiveField={setActiveField} />
           <TextField id="date" label="Date" value={draft.date} onChange={(v) => set("date", v)} activeField={activeField} setActiveField={setActiveField} />
           <TextField id="due_date" label="Due Date" value={draft.due_date} onChange={(v) => set("due_date", v)} activeField={activeField} setActiveField={setActiveField} />
@@ -1163,7 +1540,14 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
           <TextField id="net" label="Net" value={draft.net} onChange={(v) => set("net", v)} activeField={activeField} setActiveField={setActiveField} />
           <TextField id="vat" label="VAT" value={draft.vat} onChange={(v) => set("vat", v)} activeField={activeField} setActiveField={setActiveField} />
           <TextField id="total" label="Total" value={draft.total} onChange={(v) => set("total", v)} activeField={activeField} setActiveField={setActiveField} />
-          <DatalistField id="vat_code" label="VAT Code" value={draft.vat_code} options={options.vatOptions} onChange={(v) => set("vat_code", v)} activeField={activeField} setActiveField={setActiveField} />
+          {hasVatOptions ? (
+            <SelectOptionField id="vat_code" label="VAT Code" value={draft.vat_code} options={options.vatOptions} onChange={(v) => set("vat_code", v)} activeField={activeField} setActiveField={setActiveField} placeholder="Select VAT code" />
+          ) : (
+            <div>
+              <DatalistField id="vat_code" label="VAT Code" value={draft.vat_code} options={options.vatOptions} onChange={(v) => set("vat_code", v)} activeField={activeField} setActiveField={setActiveField} />
+              <p className="mt-1 text-xs text-amber-700">VAT code list unavailable. Free text is enabled until VAT codes are returned.</p>
+            </div>
+          )}
           <label className="flex h-8 items-center gap-2 text-sm font-medium text-stone-700">
             <input type="checkbox" checked={draft.mark_as_paid} onChange={(e) => set("mark_as_paid", e.target.checked)} />
             Mark as Paid
@@ -1197,12 +1581,6 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
             </div>
           </div>
           <div className="overflow-x-auto">
-            <datalist id="line-category-options">
-              {(options.categoryOptions || []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </datalist>
-            <datalist id="line-vat-options">
-              {(options.vatOptions || []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </datalist>
             <table className="w-full min-w-[840px] text-xs">
               <thead className="border-b border-stone-200 text-left text-[10px] uppercase tracking-wider text-stone-500">
                 <tr>
@@ -1233,13 +1611,32 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
                     </td>
                     {["description", "category", "vat_code", "units", "price", "net", "vat", "total"].map((key) => (
                       <td key={key} className="py-0.5 pr-1.5">
-                        <Input
-                          value={line[key]}
-                          onChange={(e) => setLine(index, key, e.target.value)}
-                          onFocus={() => setActiveField(`line_items.${index}.${key}`)}
-                          list={key === "category" ? "line-category-options" : key === "vat_code" ? "line-vat-options" : undefined}
-                          className={`h-7 min-w-16 px-1.5 text-xs ${activeField === `line_items.${index}.${key}` ? "border-emerald-500 ring-2 ring-emerald-100" : ""}`}
-                        />
+                        {key === "category" && hasCategoryOptions ? (
+                          <LineSelect
+                            value={line[key] || ""}
+                            options={options.categoryOptions}
+                            placeholder="Select category"
+                            onChange={(value) => setLine(index, key, value)}
+                            onFocus={() => setActiveField(`line_items.${index}.${key}`)}
+                            active={activeField === `line_items.${index}.${key}`}
+                          />
+                        ) : key === "vat_code" && hasVatOptions ? (
+                          <LineSelect
+                            value={line[key] || ""}
+                            options={options.vatOptions}
+                            placeholder="Select VAT"
+                            onChange={(value) => setLine(index, key, value)}
+                            onFocus={() => setActiveField(`line_items.${index}.${key}`)}
+                            active={activeField === `line_items.${index}.${key}`}
+                          />
+                        ) : (
+                          <Input
+                            value={line[key] || ""}
+                            onChange={(e) => setLine(index, key, e.target.value)}
+                            onFocus={() => setActiveField(`line_items.${index}.${key}`)}
+                            className={`h-7 min-w-16 px-1.5 text-xs ${activeField === `line_items.${index}.${key}` ? "border-emerald-500 ring-2 ring-emerald-100" : ""}`}
+                          />
+                        )}
                       </td>
                     ))}
                     <td className="py-0.5 pl-1.5 align-middle">
@@ -1255,6 +1652,9 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
           <Button type="button" variant="outline" size="sm" onClick={addLine} className="mt-1.5 h-7 px-2 text-xs">
             Add line item
           </Button>
+          {!hasVatOptions ? (
+            <p className="mt-1.5 text-xs text-amber-700">VAT code list unavailable. Line VAT codes can be entered as text until VAT codes are returned.</p>
+          ) : null}
           <div className="mt-1.5 grid gap-1.5 rounded-md border border-stone-200 bg-stone-50 p-1.5 md:grid-cols-3">
             <TotalComparison label="Net" lineValue={lineTotals.net} headerValue={headerTotals.net} />
             <TotalComparison label="VAT" lineValue={lineTotals.vat} headerValue={headerTotals.vat} />
@@ -1309,6 +1709,21 @@ function TextField({ id, label, value, onChange, activeField, setActiveField }) 
   );
 }
 
+function ReadonlyInputField({ id, label, value, activeField, setActiveField }) {
+  const active = activeField === id;
+  return (
+    <div>
+      <Label className="text-xs font-semibold text-stone-700">{label}</Label>
+      <Input
+        value={value || ""}
+        readOnly
+        onFocus={() => setActiveField(id)}
+        className={`mt-0.5 h-8 bg-stone-50 px-2 text-sm ${active ? "border-emerald-500 ring-2 ring-emerald-100" : ""}`}
+      />
+    </div>
+  );
+}
+
 function DatalistField({ id, label, value, options = [], onChange, activeField, setActiveField }) {
   const active = activeField === id;
   const listId = `${id}-options`;
@@ -1326,6 +1741,38 @@ function DatalistField({ id, label, value, options = [], onChange, activeField, 
         {options.map((option) => <option key={option.value} value={option.value} label={option.label}>{option.label}</option>)}
       </datalist>
     </div>
+  );
+}
+
+function SelectOptionField({ id, label, value, options = [], onChange, activeField, setActiveField, placeholder = "Select" }) {
+  const active = activeField === id;
+  return (
+    <div>
+      <Label className="text-xs font-semibold text-stone-700">{label}</Label>
+      <select
+        value={canonicalOptionValue(value, options)}
+        onChange={(e) => onChange(e.target.value)}
+        onFocus={() => setActiveField(id)}
+        className={`mt-0.5 h-8 w-full rounded-md border border-stone-200 bg-white px-2 text-sm ${active ? "border-emerald-500 ring-2 ring-emerald-100" : ""}`}
+      >
+        <option value="">{placeholder}</option>
+        {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select>
+    </div>
+  );
+}
+
+function LineSelect({ value, options = [], placeholder = "Select", onChange, onFocus, active }) {
+  return (
+    <select
+      value={canonicalOptionValue(value, options)}
+      onChange={(e) => onChange(e.target.value)}
+      onFocus={onFocus}
+      className={`h-7 min-w-44 rounded-md border border-stone-200 bg-white px-1.5 text-xs ${active ? "border-emerald-500 ring-2 ring-emerald-100" : ""}`}
+    >
+      <option value="">{placeholder}</option>
+      {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+    </select>
   );
 }
 
@@ -1363,18 +1810,33 @@ function AiReviewField({ row, draft, field }) {
         <span className="font-semibold text-stone-800">{salesFieldLabel(field)}</span>
         {confidence !== null ? <span className={lowConfidence ? "font-semibold text-amber-700" : "text-stone-500"}>{Math.round(confidence)}%</span> : <span className="text-stone-400">-</span>}
       </div>
-      <div className="mt-1 truncate text-stone-600">Extracted: {String(extractedFieldValue(row, field) || "-")}</div>
-      <div className="mt-0.5 truncate text-stone-600">Reviewed: {String(draft[field] || "-")}</div>
+      <div className="mt-1 truncate text-stone-600">Extracted: {formatReadableValue(extractedFieldValue(row, field))}</div>
+      <div className="mt-0.5 truncate text-stone-600">Reviewed: {formatReadableValue(draft[field])}</div>
       {corrected && <div className="mt-1 font-medium text-violet-700">User correction captured as learning feedback</div>}
       {lowConfidence && !corrected && <div className="mt-1 font-medium text-amber-700">Low confidence: review before publishing</div>}
     </div>
   );
 }
 
+function formatReadableValue(value) {
+  if (value === null || value === undefined || value === "") return "-";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return value.map(formatReadableValue).filter((item) => item !== "-").join(", ") || "-";
+  if (typeof value === "object") {
+    return value.message || value.detail || value.reason || value.warning || value.error || Object.entries(value)
+      .map(([key, item]) => `${key}: ${formatReadableValue(item)}`)
+      .join("; ");
+  }
+  return String(value);
+}
+
 function makeDraft(row) {
   const amount = row?.amount || "";
   const description = row?.description || "";
   const suggested = cleanCodingFields(row?.coding_fields) || cleanCodingFields(row?.ai_extracted_fields) || {};
+  const flow = submittedDocumentFlow(row);
+  const documentType = reviewDraftDocumentType(row, suggested, flow);
+  const extractedCustomerName = flow === "sales" ? salesCustomerNameFromSuggested(suggested) : "";
   const lineItems = Array.isArray(suggested.line_items) && suggested.line_items.length > 0
     ? suggested.line_items
     : [{
@@ -1399,7 +1861,8 @@ function makeDraft(row) {
     date: row?.date || "",
     due_date: row?.date || "",
     description,
-    document_type: "bill",
+    classification: "",
+    document_type: documentType,
     bill_number: "",
     reference: "",
     net: amount,
@@ -1412,6 +1875,7 @@ function makeDraft(row) {
     bank_account: "",
     price_is: "Tax Exclusive",
     customer_name: "",
+    customer_display_name: "",
     customer_id: "",
     customer_match_status: "",
     create_new_customer: false,
@@ -1436,8 +1900,10 @@ function makeDraft(row) {
     total: suggested.total || amount,
     currency: suggested.currency || "GBP",
     payment_method: displayPaymentMethod(suggested.payment_method) || paymentMethodLabel(row?.ai_payment_method),
-    document_type: suggested.document_type || (submittedDocumentFlow(row) === "sales" ? "sales_invoice" : "bill"),
-    customer_name: suggested.customer_name || suggested.customer || suggested.client_name || "",
+    classification: suggested.classification || row?.classification || "",
+    document_type: documentType,
+    customer_name: extractedCustomerName,
+    customer_display_name: extractedCustomerName,
     customer_id: suggested.customer_id || "",
     customer_match_status: suggested.customer_match_status || suggested.suggested_customer || "",
     create_new_customer: Boolean(suggested.create_new_customer),
@@ -1512,18 +1978,68 @@ function formatMoney(value) {
 }
 
 function submittedDocumentFlow(row) {
-  const text = [
-    row?.document_type,
-    row?.type,
-    row?.ai_document_type,
-    row?.coding_fields?.document_type,
-    row?.ai_extracted_fields?.document_type,
-    row?.description,
-    row?.comment,
-  ].filter(Boolean).join(" ").toLowerCase();
-  if (/\bsales[ _-]*invoice\b/.test(text) || /\bar[ _-]*invoice\b/.test(text) || /\bcustomer invoice\b/.test(text)) return "sales";
-  if (/\bpurchase[ _-]*invoice\b/.test(text) || /\bbill\b/.test(text) || /\bsupplier invoice\b/.test(text) || /\bap[ _-]*invoice\b/.test(text)) return "purchase";
+  const direction = normaliseRouteValue(row?.document_direction || row?.route || row?.destination || row?.coding_fields?.document_direction || row?.coding_fields?.route);
+  if (direction === "sales" || direction === "ar" || direction === "accounts_receivable") return "sales";
+  if (direction === "purchase" || direction === "ap" || direction === "accounts_payable") return "purchase";
+  const type = normaliseRouteValue(row?.document_type || row?.type || row?.coding_fields?.document_type);
+  if (["sales_invoice", "sales", "customer_credit_note", "customer_credit"].includes(type)) return "sales";
+  if (["purchase_invoice", "purchase", "supplier_credit_note", "supplier_credit", "bill", "credit_note"].includes(type)) return "purchase";
   return "unclassified";
+}
+
+function normaliseRouteValue(value) {
+  return String(value || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+}
+
+function reviewDraftDocumentType(row, suggested, flow) {
+  const type = normaliseRouteValue(suggested?.document_type || row?.document_type || row?.type);
+  if (["supplier_credit_note", "supplier_credit", "credit_note"].includes(type)) return "credit_note";
+  if (["purchase_invoice", "purchase", "bill"].includes(type)) return "bill";
+  if (["customer_credit_note", "customer_credit"].includes(type)) return "customer_credit_note";
+  if (["sales_invoice", "sales"].includes(type)) return "sales_invoice";
+  if (flow === "sales") return "sales_invoice";
+  if (flow === "purchase") return "bill";
+  return "";
+}
+
+function salesCustomerNameFromSuggested(suggested = {}) {
+  return suggested.customer_name
+    || suggested.customer
+    || suggested.customer_business_name
+    || suggested.buyer_name
+    || suggested.buyer
+    || suggested.bill_to_name
+    || suggested.bill_to
+    || suggested.invoice_to
+    || suggested.sold_to
+    || "";
+}
+
+function purchaseReviewReady(draft, codingContext) {
+  if (codingContext?.source === "epos_native" && !draft?.supplier_id) return false;
+  return Boolean(
+    String(draft?.vendor_name || "").trim()
+    && String(draft?.document_type || "").trim()
+    && String(draft?.bill_number || draft?.reference || "").trim()
+  );
+}
+
+function salesReviewProblems(draft) {
+  const problems = [];
+  if (!String(draft?.customer_name || "").trim()) problems.push("Customer name is required");
+  if (!draft?.customer_id) problems.push("Select or create a customer before publishing to Accounts Receivable.");
+  if (!String(draft?.document_type || "").trim()) problems.push("Document type is required");
+  if (!String(draft?.sales_invoice_number || draft?.reference || "").trim()) problems.push("Sales invoice number or reference is required");
+  if (!String(draft?.sales_nominal || draft?.category || "").trim()) problems.push("Sales nominal/category is required");
+  if (!String(draft?.vat_code || "").trim()) problems.push("Header VAT code is required");
+  const lines = Array.isArray(draft?.line_items) ? draft.line_items : [];
+  if (!lines.length) problems.push("At least one line item is required");
+  lines.forEach((line, index) => {
+    if (!String(line?.description || "").trim()) problems.push(`Line ${index + 1} description is required`);
+    if (!String(line?.sales_nominal || line?.category || "").trim()) problems.push(`Line ${index + 1} sales nominal/account code is required`);
+    if (!String(line?.vat_code || "").trim()) problems.push(`Line ${index + 1} VAT code is required`);
+  });
+  return problems;
 }
 
 function submittedDocumentTypeLabel(row) {
@@ -1569,19 +2085,22 @@ function salesFieldAlias(field) {
 
 function extractedFieldValue(row, field) {
   const source = cleanCodingFields(row?.ai_extracted_fields) || {};
+  if (field === "customer_name") return salesCustomerNameFromSuggested(source);
   return source[field] ?? source[salesFieldAlias(field)] ?? "";
 }
 
 function isCorrectedField(row, draft, field) {
-  const extracted = String(extractedFieldValue(row, field) || "").trim();
-  const reviewed = String(draft?.[field] || "").trim();
+  const rawExtracted = extractedFieldValue(row, field);
+  if (rawExtracted === null || rawExtracted === undefined || rawExtracted === "") return false;
+  const extracted = formatReadableValue(rawExtracted).trim();
+  const reviewed = formatReadableValue(draft?.[field]).trim();
   return !!extracted && !!reviewed && extracted !== reviewed;
 }
 
 function salesDuplicateWarning(row, draft) {
   const duplicate = row?.duplicate_warning || row?.ai_extracted_fields?.duplicate_warning || row?.coding_fields?.duplicate_warning;
-  if (duplicate) return String(duplicate);
-  if (draft?.duplicate_invoice_warning) return String(draft.duplicate_invoice_warning);
+  if (duplicate) return formatReadableValue(duplicate);
+  if (draft?.duplicate_invoice_warning) return formatReadableValue(draft.duplicate_invoice_warning);
   return "";
 }
 
@@ -1595,15 +2114,16 @@ function submittedItemAuditRows(row) {
   if (history.length) {
     return history.map((entry) => ({
       action: entry.action || entry.status || "Activity",
-      detail: [formatDateTime(entry.date || entry.created_at || entry.timestamp), entry.user || entry.actor, entry.description || entry.detail]
+      detail: [formatDateTime(entry.date || entry.created_at || entry.timestamp), entry.user || entry.actor, formatReadableValue(entry.description || entry.detail)]
         .filter(Boolean)
+        .filter((value) => value !== "-")
         .join(" - "),
     }));
   }
   return [
     { action: "Submitted", detail: formatDateTime(row?.submitted_at) },
-    { action: "Review status", detail: row?.review_status || "inbox" },
-    { action: "Route", detail: "Accounts Receivable after publish" },
+    { action: "Review status", detail: submissionStatusLabel(row?.review_status) },
+    { action: "Route", detail: submittedDocumentFlow(row) === "sales" ? "Accounts Receivable after publish" : submittedDocumentFlow(row) === "purchase" ? "Accounts Payable after publish" : "Route required before publish" },
   ];
 }
 
@@ -1651,9 +2171,68 @@ function reconcileDraftTotals(draft) {
   return next;
 }
 
-function statusGroup(status) {
-  if (status === "archived" || status === "published") return "archived";
-  return "inbox";
+function submissionStatusValue(status) {
+  return normaliseRouteValue(status || "");
+}
+
+function isPublishedToAp(row) {
+  const status = submissionStatusValue(row?.review_status);
+  return status === "published_to_ap" || (status === "published" && submittedDocumentFlow(row) === "purchase");
+}
+
+function isPublishedToAr(row) {
+  const status = submissionStatusValue(row?.review_status);
+  return status === "published_to_ar" || (status === "published" && submittedDocumentFlow(row) === "sales");
+}
+
+function isCompletedSubmission(row) {
+  const status = submissionStatusValue(row?.review_status);
+  return [
+    "published_to_ap",
+    "published_to_ar",
+    "published",
+    "archived",
+    "rejected",
+    "excluded",
+    "not_required",
+  ].includes(status);
+}
+
+function submissionBelongsToTab(row, tab) {
+  if (!row) return false;
+  const completed = isCompletedSubmission(row);
+  const flow = submittedDocumentFlow(row);
+  if (tab === "archived") return completed;
+  if (completed) return false;
+  if (tab === "purchase") return flow === "purchase";
+  if (tab === "sales") return flow === "sales";
+  return tab === "active";
+}
+
+function submissionStatusLabel(status) {
+  const value = submissionStatusValue(status);
+  const labels = {
+    published_to_ap: "Published to Accounts Payable",
+    published_to_ar: "Published to Accounts Receivable",
+    published: "Published",
+    archived: "Archived",
+    rejected: "Rejected",
+    excluded: "Excluded",
+    not_required: "Not required",
+    purchase_review: "Purchase review",
+    purchase_ready_to_publish: "Purchase ready to publish",
+    sales_review: "Sales review",
+    sales_ready_to_publish: "Sales ready to publish",
+    needs_review: "Needs review",
+    needs_clarification: "Needs clarification",
+    reviewed: "Reviewed",
+    inbox: "Active",
+  };
+  return labels[value] || status || "Active";
+}
+
+function tabLabel(tab) {
+  return listTabs.find((item) => item.key === tab)?.label || tab;
 }
 
 function formatDateTime(value) {
@@ -1776,7 +2355,8 @@ function salesFieldLabel(key) {
 
 function buildCodingContextOptions(context = {}) {
   const native = context.source === "epos_native";
-  const supplierOptions = uniqueOptions((context.suppliers || []).map((record) => ({
+  const activeRecord = (record) => !native || record?.active !== false;
+  const supplierOptions = uniqueOptions((context.suppliers || []).filter(activeRecord).map((record) => ({
     value: native ? record.supplier_id || record.id || record._id || "" : record.supplier_id || record.external_id || record.id || record.name || "",
     label: [record.supplier_code || record.code, record.name].filter(Boolean).join(" - ") || record.name || record.supplier_id || record.external_id || "",
     supplier_id: record.supplier_id || record.id || record._id || "",
@@ -1784,28 +2364,32 @@ function buildCodingContextOptions(context = {}) {
     supplier_code: record.supplier_code || record.code || "",
     external_id: record.external_id || "",
   })));
-  const supplierAccountOptions = uniqueOptions((context.suppliers || []).map((record) => ({
+  const supplierAccountOptions = uniqueOptions((context.suppliers || []).filter(activeRecord).map((record) => ({
     value: record.supplier_code || record.code || record.supplier_id || record.id || record.external_id || "",
     label: [record.supplier_code || record.code, record.name].filter(Boolean).join(" - ") || record.name || "",
   })));
-  const categoryOptions = uniqueOptions((context.purchase_accounts || []).map(accountOption));
-  const customerOptions = uniqueOptions((context.customers || []).map((record) => ({
-    value: native ? record.customer_id || record.id || record._id || "" : record.customer_id || record.external_id || record.id || record.name || "",
-    label: [record.customer_code || record.code, record.name].filter(Boolean).join(" - ") || record.name || record.customer_id || record.external_id || "",
-    customer_id: record.customer_id || record.id || record._id || "",
+  const categoryOptions = uniqueOptions((context.purchase_accounts || []).filter(activeRecord).map(accountOption));
+  const customerOptions = uniqueOptions((context.customers || []).filter(activeRecord).map((record) => ({
+    value: native
+      ? record.customer_id || record.id || record._id || ""
+      : record.external_id || record.customer_id || record.id || record._id || "",
+    label: [record.customer_code || record.code || record.reference || record.account_code, record.name].filter(Boolean).join(" - ") || record.name || record.customer_id || record.external_id || "",
+    customer_id: native
+      ? record.customer_id || record.id || record._id || ""
+      : record.external_id || record.customer_id || record.id || record._id || "",
     customer_name: record.name || "",
-    customer_code: record.customer_code || record.code || "",
+    customer_code: record.customer_code || record.code || record.reference || record.account_code || "",
+    customer_email: record.email || record.customer_email || "",
+    currency: record.currency || "",
+    payment_terms: record.payment_terms_days || record.payment_terms || record.terms || "",
     external_id: record.external_id || "",
   })));
-  const salesAccountOptions = uniqueOptions((context.sales_accounts || []).map(accountOption));
-  const bankAccountOptions = uniqueOptions((context.bank_accounts || []).map((record) => ({
+  const salesAccountOptions = uniqueOptions((context.sales_accounts || []).filter(activeRecord).map(accountOption));
+  const bankAccountOptions = uniqueOptions((context.bank_accounts || []).filter(activeRecord).map((record) => ({
     value: record.code || record.account_code || record.nominal_code || record.bank_account_id || record.id || "",
     label: [record.code || record.account_code || record.nominal_code, record.name].filter(Boolean).join(" - ") || record.name || record.code || "",
   })));
-  const syncedVatOptions = uniqueOptions((context.vat_codes || []).map((record) => ({
-    value: record.code || record.vat_code || record.id || "",
-    label: [record.code || record.vat_code, record.name || record.description || record.rate].filter(Boolean).join(" - ") || record.code || record.vat_code || "",
-  })));
+  const vatOptions = uniqueOptions((context.vat_codes || []).filter(activeRecord).map((record) => vatOption(record, native)));
   return {
     supplierOptions,
     supplierAccountOptions,
@@ -1813,8 +2397,9 @@ function buildCodingContextOptions(context = {}) {
     categoryOptions,
     salesAccountOptions,
     bankAccountOptions,
-    vatOptions: syncedVatOptions,
+    vatOptions,
     vatSource: context.source || "",
+    defaultCurrency: context.default_currency || context.currency || context.client_currency || "GBP",
   };
 }
 
@@ -1822,6 +2407,18 @@ function accountOption(record = {}) {
   return {
     value: record.code || record.account_code || record.nominal_code || record.id || "",
     label: [record.code || record.account_code || record.nominal_code, record.name || record.description].filter(Boolean).join(" - ") || record.name || record.code || "",
+  };
+}
+
+function vatOption(record = {}, native = false) {
+  const code = record.code || record.vat_code || record.tax_code || record.id || "";
+  if (!code) return { value: "", label: "" };
+  const description = native
+    ? record.description || record.detail || (record.name && record.name !== code ? record.name : "")
+    : record.description || record.name || record.detail || record.rate || "";
+  return {
+    value: code,
+    label: `${code}${description ? ` - ${description}` : ""}`.trim(),
   };
 }
 
@@ -1850,10 +2447,23 @@ function setCustomerDraftFromOption(value, options = [], setDraft) {
   const option = options.find((item) => item.value === value || item.label === value);
   setDraft((current) => ({
     ...current,
-    customer_id: option?.customer_id || current.customer_id || "",
-    customer_account_code: option?.customer_code || current.customer_account_code || "",
+    customer_id: option?.customer_id || "",
+    customer_account_code: option?.customer_code || (option ? current.customer_account_code : ""),
     customer_name: option?.customer_name || value,
-    customer_match_status: option ? "Matched" : current.customer_match_status,
+    customer_code: option?.customer_code || (option ? current.customer_code : ""),
+    customer_display_name: option?.label || value,
+    customer_email: option?.customer_email || (option ? current.customer_email : ""),
+    currency: option?.currency || current.currency || "GBP",
+    payment_terms: option?.payment_terms || current.payment_terms || "",
+    customer_match_status: option?.label || "",
+    create_new_customer: option ? false : current.create_new_customer,
+  }));
+}
+
+function customerLookupOptions(options = []) {
+  return options.map((option) => ({
+    ...option,
+    value: option.label || option.customer_name || option.value,
   }));
 }
 
@@ -1874,6 +2484,26 @@ function uniqueOptions(options) {
     });
 }
 
+function normaliseOptionText(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function canonicalOptionValue(value, options = []) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const exact = options.find((option) => normaliseOptionText(option.value) === normaliseOptionText(raw));
+  if (exact) return exact.value;
+  const byLabel = options.find((option) => normaliseOptionText(option.label) === normaliseOptionText(raw));
+  if (byLabel) return byLabel.value;
+  const byPrefix = options.find((option) => {
+    const code = normaliseOptionText(option.value);
+    const label = normaliseOptionText(option.label);
+    const normalisedRaw = normaliseOptionText(raw);
+    return code && (normalisedRaw.startsWith(`${code} -`) || label.startsWith(`${normalisedRaw} -`));
+  });
+  return byPrefix?.value || raw;
+}
+
 function supplierExists(value, options = []) {
   const needle = String(value || "").trim().toLowerCase();
   return !!needle && options.some((option) => [
@@ -1882,5 +2512,16 @@ function supplierExists(value, options = []) {
     option.supplier_id,
     option.supplier_name,
     option.supplier_code,
+  ].some((candidate) => String(candidate || "").trim().toLowerCase() === needle));
+}
+
+function customerExists(value, options = []) {
+  const needle = String(value || "").trim().toLowerCase();
+  return !!needle && options.some((option) => [
+    option.value,
+    option.label,
+    option.customer_id,
+    option.customer_name,
+    option.customer_code,
   ].some((candidate) => String(candidate || "").trim().toLowerCase() === needle));
 }

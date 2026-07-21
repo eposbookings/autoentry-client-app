@@ -77,7 +77,7 @@ export const MODULE_DETAILS = {
     manage: ["Customers", "Sales Invoices", "Credit Notes", "Receipts", "Aged Debtors"],
     statLabel: "Outstanding invoices",
     stat: (workspace) => formatMoney(workspace?.accounts_receivable?.dashboard?.outstanding_total || workspace?.summary?.ar_outstanding || workspace?.summary?.receivables || 0),
-    tabs: ["Dashboard", "Customers", "Sales Invoices", "Credit Notes", "Receipts", "Customer Statements", "Aged Debtors", "Reports", "Settings"],
+    tabs: ["Dashboard", "Customers", "Settings"],
   },
   banking: {
     title: "Banking",

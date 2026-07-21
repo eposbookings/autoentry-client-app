@@ -182,29 +182,25 @@ export default function AdminClientDetail() {
   const [savedAccountingDestination, setSavedAccountingDestination] = useState("");
   const [quickBooksConfig, setQuickBooksConfig] = useState({ configured: false, enabled: true, environment: "sandbox" });
   const [integrationBusy, setIntegrationBusy] = useState(false);
+  const [outstandingLoaded, setOutstandingLoaded] = useState(false);
+  const [outstandingLoading, setOutstandingLoading] = useState(false);
+  const [accountancySoftwareLoaded, setAccountancySoftwareLoaded] = useState(false);
+  const [accountancySoftwareLoading, setAccountancySoftwareLoading] = useState(false);
+  const [externalIntegrationLoaded, setExternalIntegrationLoaded] = useState(false);
+  const [quickBooksConfigLoading, setQuickBooksConfigLoading] = useState(false);
   const [serviceCatalog, setServiceCatalog] = useState(DEFAULT_SERVICES);
   const [clientTypes, setClientTypes] = useState(DEFAULT_CLIENT_TYPES.map(([key, label]) => ({ key, label, service_keys: [] })));
 
   const load = useCallback(async () => {
     try {
-      const [c, p, s, integration, nativeAccounting, quickBooks, services, accountancyClientTypes] = await Promise.all([
+      const [c, services, accountancyClientTypes] = await Promise.all([
         api.get(`/admin/clients/${id}`),
-        api.get(`/admin/clients/${id}/items`, { params: { type: "purchase" } }),
-        api.get(`/admin/clients/${id}/items`, { params: { type: "sales" } }),
-        api.get(`/admin/integrations/clients/${id}`),
-        api.get(`/admin/accounting/clients/${id}`).catch(() => ({ data: null })),
-        api.get("/admin/integrations/quickbooks/config"),
         api.get("/admin/accountancy/services").catch(() => ({ data: { services: DEFAULT_SERVICES } })),
         api.get("/admin/accountancy/client-types").catch(() => ({ data: { client_types: DEFAULT_CLIENT_TYPES.map(([key, label]) => ({ key, label, service_keys: [] })) } })),
       ]);
       setClient(c.data);
       setSavedAccountingDestination(accountingDestinationForClient(c.data));
       setCompanyQuery(c.data?.business_name || "");
-      setItems({ purchase: p.data, sales: s.data });
-      setIntegrationDetail(integration.data);
-      setNativeAccountingDetail(nativeAccounting.data);
-      setIntegrationSettings({ ...DEFAULT_INTEGRATION_SETTINGS, ...(integration.data.integration || {}) });
-      setQuickBooksConfig(quickBooks.data);
       const nextServices = Array.isArray(services.data.services) && services.data.services.length ? services.data.services : DEFAULT_SERVICES;
       const nextClientTypes = Array.isArray(accountancyClientTypes.data.client_types) && accountancyClientTypes.data.client_types.length
         ? accountancyClientTypes.data.client_types
@@ -216,7 +212,80 @@ export default function AdminClientDetail() {
     }
   }, [id]);
 
+  useEffect(() => {
+    setItems({ purchase: [], sales: [] });
+    setOutstandingLoaded(false);
+    setOutstandingLoading(false);
+    setIntegrationDetail({ integration: null, records: {}, counts: {} });
+    setNativeAccountingDetail(null);
+    setIntegrationSettings(DEFAULT_INTEGRATION_SETTINGS);
+    setIntegrationTab("account");
+    setQuickBooksConfig({ configured: false, enabled: true, environment: "sandbox" });
+    setAccountancySoftwareLoaded(false);
+    setAccountancySoftwareLoading(false);
+    setExternalIntegrationLoaded(false);
+    setQuickBooksConfigLoading(false);
+  }, [id]);
+
   useEffect(() => { load(); }, [load]);
+
+  const loadQuickBooksConfig = useCallback(async ({ force = false } = {}) => {
+    if (quickBooksConfigLoading || (externalIntegrationLoaded && !force)) return;
+    setQuickBooksConfigLoading(true);
+    try {
+      const { data } = await api.get("/admin/integrations/quickbooks/config");
+      setQuickBooksConfig(data);
+      setExternalIntegrationLoaded(true);
+    } catch (e) {
+      toast.error(formatApiError(e));
+    } finally {
+      setQuickBooksConfigLoading(false);
+    }
+  }, [externalIntegrationLoaded, quickBooksConfigLoading]);
+
+  const loadOutstandingItems = useCallback(async ({ force = false } = {}) => {
+    if (outstandingLoading || (outstandingLoaded && !force)) return;
+    setOutstandingLoading(true);
+    try {
+      const [purchase, sales] = await Promise.all([
+        api.get(`/admin/clients/${id}/items`, { params: { type: "purchase" } }),
+        api.get(`/admin/clients/${id}/items`, { params: { type: "sales" } }),
+      ]);
+      setItems({ purchase: purchase.data || [], sales: sales.data || [] });
+      setOutstandingLoaded(true);
+    } catch (e) {
+      toast.error(formatApiError(e));
+    } finally {
+      setOutstandingLoading(false);
+    }
+  }, [id, outstandingLoaded, outstandingLoading]);
+
+  const loadAccountancySoftware = useCallback(async ({ force = false } = {}) => {
+    if (accountancySoftwareLoading || (accountancySoftwareLoaded && !force)) return;
+    setAccountancySoftwareLoading(true);
+    try {
+      const [integration, nativeAccounting] = await Promise.all([
+        api.get(`/admin/integrations/clients/${id}`),
+        api.get(`/admin/accounting/clients/${id}`).catch(() => ({ data: null })),
+      ]);
+      setIntegrationDetail(integration.data);
+      setNativeAccountingDetail(nativeAccounting.data);
+      setIntegrationSettings({ ...DEFAULT_INTEGRATION_SETTINGS, ...(integration.data.integration || {}) });
+      setAccountancySoftwareLoaded(true);
+      if (accountingDestinationForClient(client || {}) === "external") {
+        await loadQuickBooksConfig({ force });
+      }
+    } catch (e) {
+      toast.error(formatApiError(e));
+    } finally {
+      setAccountancySoftwareLoading(false);
+    }
+  }, [accountancySoftwareLoaded, accountancySoftwareLoading, client, id, loadQuickBooksConfig]);
+
+  useEffect(() => {
+    if (pageTab === "items") loadOutstandingItems();
+    if (pageTab === "software") loadAccountancySoftware();
+  }, [loadAccountancySoftware, loadOutstandingItems, pageTab]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -224,17 +293,19 @@ export default function AdminClientDetail() {
     const sync = params.get("sync");
     if (quickbooks === "connected" && sync === "ok") {
       toast.success("Accountancy software connected and lists synced");
-      load();
+      setPageTab("software");
+      loadAccountancySoftware({ force: true });
     } else if (quickbooks === "connected" && sync === "error") {
       toast.warning(params.get("message") || "Connected, but list sync needs another try");
-      load();
+      setPageTab("software");
+      loadAccountancySoftware({ force: true });
     } else if (quickbooks === "error") {
       toast.error(params.get("message") || "Connection failed");
     } else if (quickbooks === "missing") {
       toast.error("Connection callback was missing required details");
     }
     if (quickbooks) window.history.replaceState({}, "", window.location.pathname);
-  }, [load]);
+  }, [loadAccountancySoftware]);
 
   const clientTypeOptions = useMemo(
     () => (clientTypes.length ? clientTypes : DEFAULT_CLIENT_TYPES.map(([key, label]) => ({ key, label }))).map((type) => [type.key, type.label]),
@@ -354,7 +425,7 @@ export default function AdminClientDetail() {
       } else {
         toast.success(`Imported ${data.rows_imported} rows successfully`);
       }
-      load();
+      await loadOutstandingItems({ force: true });
     } catch (e) {
       toast.error(formatApiError(e), { duration: 10000 });
     }
@@ -503,6 +574,7 @@ export default function AdminClientDetail() {
     const { data } = await api.get(`/admin/integrations/clients/${id}`);
     setIntegrationDetail(data);
     setIntegrationSettings({ ...DEFAULT_INTEGRATION_SETTINGS, ...(data.integration || {}) });
+    setAccountancySoftwareLoaded(true);
   }
 
   async function persistIntegrationSettings(showToast = true) {
@@ -570,7 +642,7 @@ export default function AdminClientDetail() {
       const warning = (data.warnings || []).filter(Boolean).join(" ");
       toast.success(`Synced ${providerName}: ${counts.account || 0} accounts, ${counts.supplier || 0} suppliers, ${counts.customer || 0} customers, ${counts.tax_code || 0} VAT codes`);
       if (warning) toast.warning(warning, { duration: 9000 });
-      await refreshIntegration();
+      await loadAccountancySoftware({ force: true });
     } catch (e) {
       toast.error(formatApiError(e), { duration: 9000 });
     } finally {
@@ -583,7 +655,7 @@ export default function AdminClientDetail() {
     try {
       await api.delete(`/admin/integrations/records/${recordId}`);
       toast.success("Synced item removed");
-      await refreshIntegration();
+      await loadAccountancySoftware({ force: true });
     } catch (e) {
       toast.error(formatApiError(e));
     } finally {
@@ -726,27 +798,33 @@ export default function AdminClientDetail() {
         </TabsContent>
 
         <TabsContent value="items" className="mt-4">
-          <OutstandingItems items={items} tab={itemsTab} setTab={setItemsTab} onUpload={onUpload} />
+          <OutstandingItems items={items} tab={itemsTab} setTab={setItemsTab} onUpload={onUpload} loading={outstandingLoading || !outstandingLoaded} />
         </TabsContent>
 
         <TabsContent value="software" className="mt-4">
-          <AccountancySoftwarePanel
-            client={client}
-            setClientField={setField}
-            detail={integrationDetail}
-            nativeDetail={nativeAccountingDetail}
-            settings={integrationSettings}
-            setSettings={setIntegrationSettings}
-            recordTab={integrationTab}
-            setRecordTab={setIntegrationTab}
-            quickBooksConfig={quickBooksConfig}
-            busy={integrationBusy}
-            saveSettings={saveIntegrationSettings}
-            refreshNative={refreshNativeAccounting}
-            connect={connectAccountingSoftware}
-            sync={syncAccountingSoftware}
-            deleteRecord={deleteIntegrationRecord}
-          />
+          {accountancySoftwareLoading || !accountancySoftwareLoaded ? (
+            <div className="rounded-md border border-stone-200 bg-white p-6 text-sm text-stone-500">Loading accountancy software records...</div>
+          ) : (
+            <AccountancySoftwarePanel
+              client={client}
+              setClientField={setField}
+              detail={integrationDetail}
+              nativeDetail={nativeAccountingDetail}
+              settings={integrationSettings}
+              setSettings={setIntegrationSettings}
+              recordTab={integrationTab}
+              setRecordTab={setIntegrationTab}
+              quickBooksConfig={quickBooksConfig}
+              quickBooksConfigLoading={quickBooksConfigLoading}
+              busy={integrationBusy || accountancySoftwareLoading}
+              saveSettings={saveIntegrationSettings}
+              refreshNative={refreshNativeAccounting}
+              connect={connectAccountingSoftware}
+              sync={syncAccountingSoftware}
+              deleteRecord={deleteIntegrationRecord}
+              loadExternalConfig={loadQuickBooksConfig}
+            />
+          )}
         </TabsContent>
       </Tabs>
     </div>
@@ -1021,7 +1099,7 @@ function ContactTable({ title, contacts, onUse, empty }) {
   );
 }
 
-function OutstandingItems({ items, tab, setTab, onUpload }) {
+function OutstandingItems({ items, tab, setTab, onUpload, loading = false }) {
   return (
     <section className="rounded-md border border-stone-200 bg-white p-4">
       <Tabs value={tab} onValueChange={setTab}>
@@ -1035,6 +1113,11 @@ function OutstandingItems({ items, tab, setTab, onUpload }) {
             <TabsTrigger value="sales" data-testid="tab-sales">Sales ({items.sales.length})</TabsTrigger>
           </TabsList>
         </div>
+        {loading && (
+          <div className="mb-3 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-500">
+            Loading outstanding items...
+          </div>
+        )}
 
         {["purchase", "sales"].map((type) => (
           <TabsContent value={type} key={type} className="space-y-4">
@@ -1080,12 +1163,14 @@ function AccountancySoftwarePanel({
   recordTab,
   setRecordTab,
   quickBooksConfig,
+  quickBooksConfigLoading,
   busy,
   saveSettings,
   refreshNative,
   connect,
   sync,
   deleteRecord,
+  loadExternalConfig,
 }) {
   const records = detail.records || {};
   const nativeRecords = nativeRecordsFromDetail(nativeDetail);
@@ -1094,7 +1179,7 @@ function AccountancySoftwarePanel({
   const taxOptions = (records.tax_code || []).map((record) => recordLabel(record, true));
   const isQuickBooks = settings.provider === "quickbooks";
   const globallyDisabled = isQuickBooks && quickBooksConfig.enabled === false;
-  const globallyMissing = isQuickBooks && !quickBooksConfig.configured;
+  const globallyMissing = isQuickBooks && !quickBooksConfigLoading && !quickBooksConfig.configured;
   const connectedEnvironment = settings.sandbox ? "sandbox" : "production";
   const accountingDestination = accountingDestinationForClient(client);
   const nativeEnabled = accountingDestination === "native";
@@ -1165,12 +1250,22 @@ function AccountancySoftwarePanel({
         </div>
 
         {nativeEnabled && (
-          <details className="rounded-md border border-stone-200 bg-white p-4">
+          <details
+            className="rounded-md border border-stone-200 bg-white p-4"
+            onToggle={(event) => {
+              if (event.currentTarget.open) loadExternalConfig?.();
+            }}
+          >
             <summary className="cursor-pointer text-sm font-semibold text-stone-800">External integrations</summary>
             <div className="mt-3 space-y-3 text-sm text-stone-600">
               <p>
                 External software connection settings are available here, but EPOS Native Accounting is the active accounting source for this client.
               </p>
+              {quickBooksConfigLoading && (
+                <p className="rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-stone-500">
+                  Loading external integration configuration...
+                </p>
+              )}
               {settings.status === "connected" && (
                 <p className="rounded-md border border-stone-200 bg-stone-50 px-3 py-2">
                   Connected external company: <strong>{settings.company_name || settings.company_id || client.business_name}</strong> ({providerName}, {connectedEnvironment}).
@@ -1180,7 +1275,7 @@ function AccountancySoftwarePanel({
                 <Button type="button" variant="outline" onClick={sync} disabled={busy || !isQuickBooks || settings.status !== "connected"} className="gap-2">
                   <RefreshCw className="h-4 w-4" /> Sync external lists
                 </Button>
-                <Button type="button" variant="outline" onClick={connect} disabled={busy || !isQuickBooks || globallyDisabled || globallyMissing} className="gap-2">
+                <Button type="button" variant="outline" onClick={connect} disabled={busy || quickBooksConfigLoading || !isQuickBooks || globallyDisabled || globallyMissing} className="gap-2">
                   <PlugZap className="h-4 w-4" /> {settings.status === "connected" ? "Reconnect" : "Connect"} {providerName}
                 </Button>
               </div>
