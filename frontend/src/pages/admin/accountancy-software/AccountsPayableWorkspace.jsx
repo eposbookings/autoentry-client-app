@@ -27,7 +27,7 @@ import {
   statusBadgeClass,
 } from "./shared";
 
-const apTabs = ["Dashboard", "Suppliers"];
+const apTabs = ["Suppliers", "Create supplier"];
 const supplierRecordTabs = ["General", "Ledger", "Audit Trail"];
 const transactionTypes = ["Purchase Invoice", "Supplier Credit Note", "Supplier Payment", "Payment on Account"];
 
@@ -107,6 +107,29 @@ function displayStatus(value) {
     .replace(/[_-]+/g, " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
+
+function optionLabel(value, options = []) {
+  const match = options.find((option) => String(option.value) === String(value));
+  return match?.label || displayStatus(value);
+}
+
+const supplierNumberingOptions = [
+  { value: "manual", label: "Manual" },
+  { value: "automatic", label: "Automatic" },
+  { value: "prefix", label: "Prefix based" },
+];
+
+const paymentOnAccountBehaviourOptions = [
+  { value: "hold", label: "Hold for future allocation" },
+  { value: "warn", label: "Warn before saving" },
+  { value: "require_allocation", label: "Require allocation" },
+];
+
+const expenseBehaviourOptions = [
+  { value: "allow", label: "Allow expense entries" },
+  { value: "review", label: "Review expense entries" },
+  { value: "disable", label: "Disable expense entries" },
+];
 
 function isReadOnlyTransaction(draft) {
   if (typeof draft?.view_only === "boolean") return draft.view_only;
@@ -361,7 +384,7 @@ function EditableField({
   );
 }
 
-function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
+function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, busy }) {
   const ap = workspace.accounts_payable || {};
   const clientId = workspace.client?.id;
   const suppliers = useMemo(() => (Array.isArray(ap.suppliers) ? ap.suppliers : []), [ap.suppliers]);
@@ -397,14 +420,15 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
       });
   }, [workspace.accounting?.vat_codes, workspace.native_vat_codes, workspace.vat?.codes, workspace.vat?.vat_codes, workspace.vat_codes]);
   const defaultCurrency = workspace.client?.default_currency || workspace.accounting?.default_currency || workspace.accounting_default_currency || workspace.default_currency || ap.settings?.default_currency || "GBP";
-  const activeTab = apTabs.includes(tab) ? tab : "Dashboard";
+  const activeTab = apTabs.includes(tab) ? tab : "Suppliers";
 
   const [saving, setSaving] = useState(false);
   const [supplierQuery, setSupplierQuery] = useState("");
   const [supplierForm, setSupplierForm] = useState(emptySupplierForm);
+  const [createSupplierOpen, setCreateSupplierOpen] = useState(false);
   const [settingsForm, setSettingsForm] = useState(ap.settings || {});
   const [selectedSupplierId, setSelectedSupplierId] = useState("");
-  const [supplierRecordTab, setSupplierRecordTab] = useState("Ledger");
+  const [supplierRecordTab, setSupplierRecordTab] = useState("General");
   const [supplierEditMode, setSupplierEditMode] = useState(false);
   const [supplierDraft, setSupplierDraft] = useState(normaliseSupplierDraft());
   const [ledgerSearch, setLedgerSearch] = useState("");
@@ -421,6 +445,15 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
   useEffect(() => {
     setSettingsForm(ap.settings || {});
   }, [ap.settings]);
+
+  useEffect(() => {
+    if (activeTab === "Create supplier") setCreateSupplierOpen(true);
+  }, [activeTab]);
+
+  function closeCreateSupplier() {
+    setCreateSupplierOpen(false);
+    setTab?.("Suppliers");
+  }
 
   useEffect(() => {
     if (selectedSupplierId && !suppliers.some((supplier) => supplier.id === selectedSupplierId)) {
@@ -465,10 +498,16 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
     if (!supplierForm.name.trim()) return toast.error("Supplier name is required");
     await run(async () => postJson("/ap/suppliers", supplierForm), "Supplier created");
     setSupplierForm(emptySupplierForm);
+    closeCreateSupplier();
   }
 
   function supplierById(id) {
     return suppliers.find((supplier) => supplier.id === id);
+  }
+
+  function openSupplier(supplierId) {
+    setSelectedSupplierId(supplierId);
+    setSupplierRecordTab("General");
   }
 
   function supplierPaymentOnAccount(supplierId) {
@@ -798,22 +837,12 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
     const saved = await run(
       async () => {
         await putJson(`/ap/suppliers/${selectedSupplier.id}`, supplierDraft);
-        await putJson("/ap/settings", settingsForm);
       },
       "Supplier record saved"
     );
     if (!saved) return;
     setSupplierEditMode(false);
   }
-
-  const overdueSupplierIds = new Set(invoices.filter((invoice) => String(invoice.status || "").toLowerCase() === "overdue").map((invoice) => invoice.supplier_id));
-  const awaitingDocumentSupplierIds = new Set(invoices.filter((invoice) => !invoice.attachment_url && !invoice.document_url).map((invoice) => invoice.supplier_id));
-  const totalPaymentsOnAccount = suppliers.reduce((sum, supplier) => sum + supplierPaymentOnAccount(supplier.id), 0);
-  const recentSupplierActivity = suppliers
-    .map((supplier) => ({ supplier, date: supplierLastActivity(supplier.id) }))
-    .filter((row) => row.date)
-    .sort((a, b) => new Date(b.date) - new Date(a.date))
-    .slice(0, 6);
 
   const selectedLedgerRows = useMemo(() => (
     selectedSupplier ? supplierLedgerRows(selectedSupplier.id) : []
@@ -910,51 +939,7 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
     URL.revokeObjectURL(url);
   }
 
-  if (activeTab === "Dashboard" && !selectedSupplier) {
-    return (
-      <div className="space-y-4">
-        <div className="grid gap-3 md:grid-cols-5">
-          <SummaryCard label="Outstanding supplier balances" value={formatMoney(ap.dashboard?.outstanding_total || workspace.summary?.ap_outstanding || 0)} tone="amber" />
-          <SummaryCard label="Payments on account" value={formatMoney(totalPaymentsOnAccount)} tone="blue" />
-          <SummaryCard label="Awaiting documents" value={awaitingDocumentSupplierIds.size} tone="stone" />
-          <SummaryCard label="Overdue suppliers" value={overdueSupplierIds.size} tone="amber" />
-          <SummaryCard label="Suppliers" value={suppliers.length} tone="emerald" />
-        </div>
-
-        <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
-          <Panel title="Supplier balances">
-            <div className="grid gap-3 md:grid-cols-2">
-              {visibleSuppliers.slice(0, 6).map((supplier) => (
-                <SupplierCard
-                  key={supplier.id}
-                  supplier={supplier}
-                  outstanding={supplier.current_balance ?? supplier.outstanding_balance ?? 0}
-                  paymentOnAccount={supplierPaymentOnAccount(supplier.id)}
-                  lastActivity={supplierLastActivity(supplier.id)}
-                  onOpen={() => setSelectedSupplierId(supplier.id)}
-                />
-              ))}
-            </div>
-          </Panel>
-          <Panel title="Recent supplier activity">
-            <div className="space-y-2">
-              {recentSupplierActivity.length ? recentSupplierActivity.map(({ supplier, date }) => (
-                <button key={supplier.id} type="button" onClick={() => setSelectedSupplierId(supplier.id)} className="flex w-full items-center justify-between rounded-md border border-stone-200 bg-white px-3 py-2 text-left text-sm hover:border-emerald-300">
-                  <span>
-                    <span className="block font-semibold text-stone-900">{supplier.name}</span>
-                    <span className="text-stone-500">Last activity {formatDate(date)}</span>
-                  </span>
-                  <Badge className={statusBadgeClass(supplier.status || "active")}>{supplier.status || "Active"}</Badge>
-                </button>
-              )) : <div className="py-8 text-center text-sm text-stone-500">No supplier activity yet.</div>}
-            </div>
-          </Panel>
-        </div>
-      </div>
-    );
-  }
-
-  if (activeTab === "Suppliers" || (activeTab === "Dashboard" && selectedSupplier)) {
+  if (activeTab === "Suppliers" || activeTab === "Create supplier") {
     if (selectedSupplier) {
       return (
         <div className="space-y-4">
@@ -1011,22 +996,10 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
                 </Section>
                 <Section title="Supplier settings">
                   <div className="grid gap-3 md:grid-cols-2">
-                    <EditableField label="Approval required" checkbox value={settingsForm.approval_required} editable={supplierEditMode} help="Requires supplier transactions to be approved before posting once posting workflow is connected." onChange={(value) => setSettingsForm((form) => ({ ...form, approval_required: value }))} />
-                    <EditableField label="Supplier numbering" value={settingsForm.supplier_numbering || "manual"} editable={supplierEditMode} options={[
-                      { value: "manual", label: "Manual" },
-                      { value: "automatic", label: "Automatic" },
-                      { value: "prefix", label: "Prefix based" },
-                    ]} help="Controls how new supplier records are numbered in the supplier master." onChange={(value) => setSettingsForm((form) => ({ ...form, supplier_numbering: value }))} />
-                    <EditableField label="Payment on account behaviour" value={settingsForm.payment_on_account_behaviour || "hold"} editable={supplierEditMode} options={[
-                      { value: "hold", label: "Hold for future allocation" },
-                      { value: "warn", label: "Warn before saving" },
-                      { value: "require_allocation", label: "Require allocation" },
-                    ]} help="Controls supplier payments where no invoice exists yet." onChange={(value) => setSettingsForm((form) => ({ ...form, payment_on_account_behaviour: value }))} />
-                    <EditableField label="Expense behaviour" value={settingsForm.expense_behaviour || "allow"} editable={supplierEditMode} options={[
-                      { value: "allow", label: "Allow expense entries" },
-                      { value: "review", label: "Review expense entries" },
-                      { value: "disable", label: "Disable expense entries" },
-                    ]} help="Controls whether small supplier purchases can be entered directly as expenses in the supplier ledger." onChange={(value) => setSettingsForm((form) => ({ ...form, expense_behaviour: value }))} />
+                    <EditableField label="Approval required" checkbox value={settingsForm.approval_required} editable={false} help="Requires supplier transactions to be approved before posting once posting workflow is connected." />
+                    <EditableField label="Supplier numbering" value={optionLabel(settingsForm.supplier_numbering || "manual", supplierNumberingOptions)} editable={false} help="Controls how new supplier records are numbered in the supplier master." />
+                    <EditableField label="Payment on account behaviour" value={optionLabel(settingsForm.payment_on_account_behaviour || "hold", paymentOnAccountBehaviourOptions)} editable={false} help="Controls supplier payments where no invoice exists yet." />
+                    <EditableField label="Expense behaviour" value={optionLabel(settingsForm.expense_behaviour || "allow", expenseBehaviourOptions)} editable={false} help="Controls whether small supplier purchases can be entered directly as expenses in the supplier ledger." />
                   </div>
                 </Section>
                 <Section title="Addresses">
@@ -1232,30 +1205,39 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
 
     return (
       <div className="space-y-4">
-        <div className="grid gap-4 xl:grid-cols-[1fr_0.8fr]">
-          <Panel title="Suppliers">
-            <div className="mb-3 flex items-center gap-2">
-              <div className="relative flex-1">
-                <Search className="absolute left-3 top-2.5 h-4 w-4 text-stone-400" />
-                <Input value={supplierQuery} onChange={(e) => setSupplierQuery(e.target.value)} placeholder="Search supplier cards" className="h-9 pl-9" />
+        <Panel title="Suppliers">
+          <div className="mb-3 flex items-center gap-2">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-2.5 h-4 w-4 text-stone-400" />
+              <Input value={supplierQuery} onChange={(e) => setSupplierQuery(e.target.value)} placeholder="Search supplier cards" className="h-9 pl-9" />
+            </div>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
+            {visibleSuppliers.map((supplier) => (
+              <SupplierCard
+                key={supplier.id}
+                supplier={supplier}
+                outstanding={supplier.current_balance ?? supplier.outstanding_balance ?? 0}
+                paymentOnAccount={supplierPaymentOnAccount(supplier.id)}
+                lastActivity={supplierLastActivity(supplier.id)}
+                onOpen={() => openSupplier(supplier.id)}
+              />
+            ))}
+            {!visibleSuppliers.length ? <div className="rounded-md border border-dashed border-stone-200 py-10 text-center text-sm text-stone-500 md:col-span-2">No suppliers found.</div> : null}
+          </div>
+        </Panel>
+        {createSupplierOpen ? (
+          <div className="fixed inset-y-0 right-0 z-40 w-full max-w-xl overflow-auto border-l border-stone-200 bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-stone-200 bg-stone-50 px-4 py-3">
+              <div>
+                <h3 className="font-display text-lg font-semibold text-stone-900">Create supplier</h3>
+                <p className="text-sm text-stone-500">Add a supplier account for Accounts Payable.</p>
               </div>
+              <Button type="button" variant="outline" size="icon" onClick={closeCreateSupplier}>
+                <X className="h-4 w-4" />
+              </Button>
             </div>
-            <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
-              {visibleSuppliers.map((supplier) => (
-                <SupplierCard
-                  key={supplier.id}
-                  supplier={supplier}
-                  outstanding={supplier.current_balance ?? supplier.outstanding_balance ?? 0}
-                  paymentOnAccount={supplierPaymentOnAccount(supplier.id)}
-                  lastActivity={supplierLastActivity(supplier.id)}
-                  onOpen={() => setSelectedSupplierId(supplier.id)}
-                />
-              ))}
-              {!visibleSuppliers.length ? <div className="rounded-md border border-dashed border-stone-200 py-10 text-center text-sm text-stone-500 md:col-span-2">No suppliers found.</div> : null}
-            </div>
-          </Panel>
-          <Panel title="Create supplier">
-            <form onSubmit={createSupplier} className="grid gap-3 md:grid-cols-2">
+            <form onSubmit={createSupplier} className="grid gap-3 p-4 md:grid-cols-2">
               <FieldControl label="Supplier name">
                 <Input value={supplierForm.name} onChange={(e) => setSupplierForm((form) => ({ ...form, name: e.target.value }))} className="h-9" />
               </FieldControl>
@@ -1272,14 +1254,15 @@ function AccountsPayableWorkspace({ workspace, tab, reloadWorkspace, busy }) {
                 <Input type="number" value={supplierForm.payment_terms_days} onChange={(e) => setSupplierForm((form) => ({ ...form, payment_terms_days: e.target.value }))} className="h-9" />
               </FieldControl>
               <AccountCodeSelect accounts={expenseAccounts} value={supplierForm.default_purchase_account} onChange={(value) => setSupplierForm((form) => ({ ...form, default_purchase_account: value }))} label="Default purchase nominal" />
-              <div className="md:col-span-2">
+              <div className="flex justify-end gap-2 md:col-span-2">
+                <Button type="button" variant="outline" onClick={closeCreateSupplier}>Cancel</Button>
                 <Button type="submit" disabled={saving || busy}>
                   <Plus className="mr-2 h-4 w-4" /> Create supplier
                 </Button>
               </div>
             </form>
-          </Panel>
-        </div>
+          </div>
+        ) : null}
       </div>
     );
   }

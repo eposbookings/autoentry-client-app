@@ -200,9 +200,10 @@ export default function AdminSubmissions() {
     const isSalesInvoice = submittedDocumentFlow(selected) === "sales";
     const isPublishStatus = reviewStatus === "published" || reviewStatus === "published_to_ap" || reviewStatus === "published_to_ar";
     const nextInboxId = isPublishStatus ? getNextRowId(rows, selected.id) : "";
+    const codingFields = isSalesInvoice ? normaliseSalesReviewDraftForPayload(draft, codingOptions) : draft;
     setBusy(true);
     try {
-      const { data } = await api.patch(`/admin/submissions/${selected.id}/review-status`, { review_status: reviewStatus, coding_fields: draft });
+      const { data } = await api.patch(`/admin/submissions/${selected.id}/review-status`, { review_status: reviewStatus, coding_fields: codingFields });
       if (isPublishStatus && isSalesInvoice) {
         const arPublish = data?.accounts_receivable_publish || data?.accounts_receivable_invoice || data?.ar_sales_invoice;
         if (arPublish) {
@@ -1011,7 +1012,7 @@ function SalesInvoiceDetailLayer({
   busy,
 }) {
   const [confirmPublish, setConfirmPublish] = useState(false);
-  const publishProblems = salesReviewProblems(draft);
+  const publishProblems = salesReviewProblems(draft, codingOptions);
   const publishSalesInvoice = async () => {
     if (publishProblems.length) {
       toast.error(publishProblems[0]);
@@ -1252,8 +1253,8 @@ function SalesInvoiceReviewForm({ row, draft, setDraft, activeField, setActiveFi
             <SelectOptionField id="vat_code" label="VAT Code" value={draft.vat_code} options={options.vatOptions} onChange={(v) => set("vat_code", v)} activeField={activeField} setActiveField={setActiveField} placeholder="Select VAT code" />
           ) : (
             <div>
-              <DatalistField id="vat_code" label="VAT Code" value={draft.vat_code} options={options.vatOptions} onChange={(v) => set("vat_code", v)} activeField={activeField} setActiveField={setActiveField} />
-              <p className="mt-1 text-xs text-amber-700">VAT code list unavailable. Free text is enabled until VAT codes are returned.</p>
+              <ReadonlyInputField id="vat_code" label="VAT Code" value={draft.vat_code || ""} activeField={activeField} setActiveField={setActiveField} />
+              <p className="mt-1 text-xs text-amber-700">VAT code list unavailable. VAT code must come from the destination-aware VAT codes before publishing.</p>
             </div>
           )}
         </div>
@@ -1330,6 +1331,13 @@ function SalesInvoiceReviewForm({ row, draft, setDraft, activeField, setActiveFi
                             onFocus={() => setActiveField(`line_items.${index}.${key}`)}
                             active={activeField === `line_items.${index}.${key}`}
                           />
+                        ) : key === "vat_code" ? (
+                          <Input
+                            value={line[key] || ""}
+                            readOnly
+                            onFocus={() => setActiveField(`line_items.${index}.${key}`)}
+                            className={`h-7 min-w-16 bg-stone-50 px-1.5 text-xs ${activeField === `line_items.${index}.${key}` ? "border-emerald-500 ring-2 ring-emerald-100" : ""}`}
+                          />
                         ) : (
                           <Input
                             value={line[key] || ""}
@@ -1354,7 +1362,7 @@ function SalesInvoiceReviewForm({ row, draft, setDraft, activeField, setActiveFi
             Add line item
           </Button>
           {!hasVatOptions ? (
-            <p className="mt-1.5 text-xs text-amber-700">VAT code list unavailable. Free text is enabled until VAT codes are returned.</p>
+            <p className="mt-1.5 text-xs text-amber-700">VAT code list unavailable. Line VAT codes must come from the destination-aware VAT codes before publishing.</p>
           ) : null}
           <div className="mt-1.5 grid gap-1.5 rounded-md border border-stone-200 bg-stone-50 p-1.5 md:grid-cols-3">
             <TotalComparison label="Net" lineValue={lineTotals.net} headerValue={headerTotals.net} />
@@ -2024,13 +2032,15 @@ function purchaseReviewReady(draft, codingContext) {
   );
 }
 
-function salesReviewProblems(draft) {
+function salesReviewProblems(draft, codingOptions = {}) {
   const problems = [];
+  const hasVatOptions = (codingOptions.vatOptions || []).length > 0;
   if (!String(draft?.customer_name || "").trim()) problems.push("Customer name is required");
   if (!draft?.customer_id) problems.push("Select or create a customer before publishing to Accounts Receivable.");
   if (!String(draft?.document_type || "").trim()) problems.push("Document type is required");
   if (!String(draft?.sales_invoice_number || draft?.reference || "").trim()) problems.push("Sales invoice number or reference is required");
   if (!String(draft?.sales_nominal || draft?.category || "").trim()) problems.push("Sales nominal/category is required");
+  if (!hasVatOptions) problems.push("VAT code list unavailable. VAT codes must come from the destination-aware VAT codes before publishing.");
   if (!String(draft?.vat_code || "").trim()) problems.push("Header VAT code is required");
   const lines = Array.isArray(draft?.line_items) ? draft.line_items : [];
   if (!lines.length) problems.push("At least one line item is required");
@@ -2040,6 +2050,27 @@ function salesReviewProblems(draft) {
     if (!String(line?.vat_code || "").trim()) problems.push(`Line ${index + 1} VAT code is required`);
   });
   return problems;
+}
+
+function normaliseSalesReviewDraftForPayload(draft = {}, codingOptions = {}) {
+  const vatOptions = codingOptions.vatOptions || [];
+  const salesOptions = codingOptions.salesAccountOptions?.length ? codingOptions.salesAccountOptions : codingOptions.categoryOptions || [];
+  const salesNominal = canonicalOptionValue(draft.sales_nominal || draft.category, salesOptions);
+  return {
+    ...draft,
+    sales_nominal: salesNominal,
+    category: salesNominal,
+    vat_code: canonicalOptionValue(draft.vat_code, vatOptions),
+    line_items: (draft.line_items || []).map((line) => {
+      const lineSalesNominal = canonicalOptionValue(line.sales_nominal || line.category, salesOptions);
+      return {
+        ...line,
+        sales_nominal: lineSalesNominal,
+        category: lineSalesNominal,
+        vat_code: canonicalOptionValue(line.vat_code, vatOptions),
+      };
+    }),
+  };
 }
 
 function submittedDocumentTypeLabel(row) {
