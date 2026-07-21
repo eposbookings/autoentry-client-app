@@ -594,6 +594,10 @@ accounting_ar_settings = Table(
     Column("duplicate_invoice_warning", Boolean, default=True),
     Column("credit_limit_warnings", Boolean, default=True),
     Column("automatic_customer_numbering", Boolean, default=True),
+    Column("customer_numbering", String(64), default="Automatic"),
+    Column("receipt_on_account_behaviour", String(255)),
+    Column("sales_behaviour", String(255)),
+    Column("credit_control_behaviour", String(255)),
     Column("created_at", String(64)),
     Column("updated_at", String(64)),
 )
@@ -662,7 +666,9 @@ accounting_ar_invoices = Table(
     Column("reference", String(255)),
     Column("invoice_date", String(32), index=True),
     Column("due_date", String(32), index=True),
+    Column("payment_terms_days", Integer, default=30),
     Column("currency", String(8), default="GBP"),
+    Column("description", Text),
     Column("status", String(32), default="draft", index=True),
     Column("net_amount", String(64), default="0.00"),
     Column("vat_amount", String(64), default="0.00"),
@@ -671,6 +677,7 @@ accounting_ar_invoices = Table(
     Column("vat_code", String(255)),
     Column("source_submission_id", String(36), index=True),
     Column("attachment_path", Text),
+    Column("original_filename", String(255)),
     Column("extracted_json", Text),
     Column("posted_journal_id", String(36)),
     Column("approved_by", String(36)),
@@ -3526,6 +3533,37 @@ def submitted_item_attachment_url(filename: Any) -> str:
     return f"/api/admin/uploads/{name}" if name else ""
 
 
+def upload_path_candidates(filename: Any) -> list[Path]:
+    raw = str(filename or "").strip().replace("\\", "/")
+    if not raw:
+        return []
+    trimmed = raw.lstrip("/")
+    if not trimmed or ":" in trimmed:
+        return []
+    candidates: list[Path] = []
+    parts = [part for part in trimmed.split("/") if part and part != "."]
+    if parts and ".." not in parts:
+        candidates.append(UPLOAD_DIR.joinpath(*parts))
+    basename = Path(trimmed).name
+    if basename and basename != trimmed:
+        candidates.append(UPLOAD_DIR / basename)
+    unique: list[Path] = []
+    seen = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key not in seen:
+            unique.append(candidate)
+            seen.add(key)
+    return unique
+
+
+def resolve_upload_path(filename: Any) -> Optional[Path]:
+    for candidate in upload_path_candidates(filename):
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
+
+
 def ap_invoice_attachment_url(client_id: Any, invoice: dict) -> str:
     invoice_id = str(invoice.get("id") or "").strip()
     has_source = bool(str(invoice.get("source_submission_id") or "").strip())
@@ -3544,13 +3582,66 @@ async def ap_invoice_attachment_file(session: AsyncSession, client_id: str, invo
         if submission:
             filename = str(submission.get("image_filename") or filename or "").strip()
             original_filename = str(submission.get("original_filename") or original_filename or filename).strip()
-    safe_name = Path(filename).name
-    if not safe_name:
+    path = resolve_upload_path(filename)
+    if not filename:
         raise HTTPException(status_code=404, detail="AP invoice source document not found")
-    path = UPLOAD_DIR / safe_name
-    if not path.exists():
+    if not path:
         raise HTTPException(status_code=404, detail="AP invoice source document file not found")
-    return path, Path(original_filename or safe_name).name
+    return path, Path(original_filename or Path(str(filename)).name).name
+
+
+def ar_invoice_attachment_url(client_id: Any, invoice: dict) -> str:
+    invoice_id = str(invoice.get("id") or "").strip()
+    has_source = bool(str(invoice.get("source_submission_id") or "").strip())
+    has_attachment = bool(str(invoice.get("attachment_path") or "").strip())
+    if client_id and invoice_id and (has_source or has_attachment):
+        return f"/api/admin/accounting/clients/{client_id}/ar/invoices/{invoice_id}/attachment"
+    return ""
+
+
+async def ar_invoice_attachment_file(session: AsyncSession, client_id: str, invoice: dict) -> tuple[Path, str]:
+    filename = str(invoice.get("attachment_path") or "").strip()
+    original_filename = str(invoice.get("original_filename") or "").strip()
+    submission_id = str(invoice.get("source_submission_id") or "").strip()
+    if submission_id:
+        submission = await one(session, select(submissions).where(submissions.c.id == submission_id, submissions.c.client_id == client_id))
+        if submission:
+            filename = str(submission.get("image_filename") or filename or "").strip()
+            original_filename = str(submission.get("original_filename") or original_filename or filename).strip()
+    path = resolve_upload_path(filename)
+    if not filename:
+        raise HTTPException(status_code=404, detail="AR invoice source document not found")
+    if not path:
+        raise HTTPException(status_code=404, detail="AR invoice source document file not found")
+    return path, Path(original_filename or Path(str(filename)).name).name
+
+
+async def invoice_source_document_reference(session: AsyncSession, client_id: str, invoice: dict, attachment_url: str, label: str) -> dict:
+    filename = str(invoice.get("attachment_path") or "").strip()
+    original_filename = str(invoice.get("original_filename") or "").strip()
+    submission_id = str(invoice.get("source_submission_id") or "").strip()
+    if submission_id:
+        submission = await one(session, select(submissions).where(submissions.c.id == submission_id, submissions.c.client_id == client_id))
+        if submission:
+            filename = str(submission.get("image_filename") or filename or "").strip()
+            original_filename = str(submission.get("original_filename") or original_filename or filename).strip()
+    has_reference = bool(submission_id or filename)
+    available = bool(resolve_upload_path(filename)) if filename else False
+    status = "available" if available else ("missing" if has_reference else "none")
+    message = ""
+    if status == "missing":
+        message = f"{label} source document file not found"
+    return {
+        "source_submission_id": submission_id,
+        "attachment_path": filename,
+        "original_filename": Path(original_filename or Path(str(filename)).name).name if (original_filename or filename) else "",
+        "attachment_url": attachment_url if has_reference else "",
+        "document_url": attachment_url if has_reference else "",
+        "available": available,
+        "missing": status == "missing",
+        "status": status,
+        "message": message,
+    }
 
 
 def ap_line_values(raw_line: dict, default_account: str = "5000") -> dict:
@@ -3625,8 +3716,13 @@ def serialize_ap_invoice(row: dict, lines: Optional[list[dict]] = None, supplier
     item["bill_number"] = item.get("invoice_number") or ""
     item["source_submission_id"] = item.get("source_submission_id") or ""
     item["attachment_path"] = item.get("attachment_path") or ""
+    item["original_filename"] = item.get("original_filename") or ""
     item["attachment_url"] = ap_invoice_attachment_url(item.get("client_id"), item)
     item["document_url"] = item["attachment_url"]
+    has_source_reference = bool(item["source_submission_id"] or item["attachment_path"])
+    has_source_file = bool(resolve_upload_path(item["attachment_path"]))
+    item["source_document_status"] = "available" if has_source_file else ("missing" if has_source_reference else "none")
+    item["source_document_missing"] = item["source_document_status"] == "missing"
     item["editable"] = item.get("status") in AP_EDITABLE_STATUSES
     item["view_only"] = not item["editable"]
     if supplier:
@@ -4008,6 +4104,10 @@ def default_ar_settings(client_id: str, accounting_defaults: Optional[dict] = No
         "duplicate_invoice_warning": True,
         "credit_limit_warnings": True,
         "automatic_customer_numbering": True,
+        "customer_numbering": "Automatic",
+        "receipt_on_account_behaviour": "Keep unallocated until matched",
+        "sales_behaviour": "Post sales invoices to selected nominal",
+        "credit_control_behaviour": "Use customer credit control settings",
         "created_at": timestamp,
         "updated_at": timestamp,
     }
@@ -4033,7 +4133,12 @@ def ar_totals(lines: list[dict]) -> dict:
 
 
 def serialize_ar_settings(row: dict) -> dict:
-    return dict(row)
+    item = dict(row)
+    item["customer_numbering"] = item.get("customer_numbering") or ("Automatic" if item.get("automatic_customer_numbering", True) else "Manual")
+    item["receipt_on_account_behaviour"] = item.get("receipt_on_account_behaviour") or "Keep unallocated until matched"
+    item["sales_behaviour"] = item.get("sales_behaviour") or "Post sales invoices to selected nominal"
+    item["credit_control_behaviour"] = item.get("credit_control_behaviour") or "Use customer credit control settings"
+    return item
 
 
 def serialize_ar_customer(
@@ -4065,7 +4170,19 @@ def serialize_ar_invoice(row: dict, lines: Optional[list[dict]] = None, customer
     item = dict(row)
     item["extracted_json"] = parse_json_object(item.get("extracted_json")) or {}
     item["lines"] = [dict(line) for line in (lines or [])]
+    item["source_submission_id"] = item.get("source_submission_id") or ""
+    item["attachment_path"] = item.get("attachment_path") or ""
+    item["original_filename"] = item.get("original_filename") or ""
+    item["attachment_url"] = ar_invoice_attachment_url(item.get("client_id"), item)
+    item["document_url"] = item["attachment_url"]
+    has_source_reference = bool(item["source_submission_id"] or item["attachment_path"])
+    has_source_file = bool(resolve_upload_path(item["attachment_path"]))
+    item["source_document_status"] = "available" if has_source_file else ("missing" if has_source_reference else "none")
+    item["source_document_missing"] = item["source_document_status"] == "missing"
+    item["editable"] = item.get("status") in AR_EDITABLE_STATUSES
+    item["view_only"] = not item["editable"]
     if customer:
+        item["customer"] = dict(customer)
         item["customer_name"] = customer.get("name")
         item["customer_code"] = customer.get("customer_code")
     return item
@@ -9460,12 +9577,18 @@ async def create_ar_customer_profile(session: AsyncSession, client_id: str, payl
         raise HTTPException(status_code=400, detail="Customer business name is required.")
     ar_settings = await ensure_ar_settings(session, client_id)
     customer_code = str(payload.get("customer_code") or payload.get("customer_reference") or payload.get("account_code") or "").strip()
+    email = str(payload.get("email") or payload.get("customer_email") or "").strip()
+    match_conditions = [func.lower(accounting_contacts.c.name) == name.lower()]
+    if email:
+        match_conditions.append(func.lower(accounting_contacts.c.email) == email.lower())
+    if customer_code:
+        match_conditions.append(func.lower(accounting_contacts.c.account_code) == customer_code.lower())
     existing_contact = await one(
         session,
         select(accounting_contacts).where(
             accounting_contacts.c.client_id == client_id,
             accounting_contacts.c.contact_type == "customer",
-            func.lower(accounting_contacts.c.name) == name.lower(),
+            or_(*match_conditions),
         ),
     )
     if not customer_code and existing_contact and existing_contact.get("account_code"):
@@ -9478,7 +9601,7 @@ async def create_ar_customer_profile(session: AsyncSession, client_id: str, payl
         "client_id": client_id,
         "contact_type": "customer",
         "name": name,
-        "email": str(payload.get("email") or payload.get("customer_email") or "").strip(),
+        "email": email,
         "external_id": str(payload.get("external_id") or "").strip(),
         "account_code": customer_code,
         "active": bool(payload.get("active", True)),
@@ -9490,7 +9613,7 @@ async def create_ar_customer_profile(session: AsyncSession, client_id: str, payl
         await session.execute(insert(accounting_contacts).values(**contact))
     else:
         contact_updates = {
-            "email": str(payload.get("email") or payload.get("customer_email") or existing_contact.get("email") or "").strip(),
+            "email": str(email or existing_contact.get("email") or "").strip(),
             "account_code": str(customer_code or existing_contact.get("account_code") or "").strip(),
             "active": bool(payload.get("active", existing_contact.get("active", True))),
             "updated_at": now,
@@ -9536,6 +9659,8 @@ async def create_ar_invoice_record(session: AsyncSession, client_id: str, payloa
     settings_row = await ensure_accounting_settings(session, client_id)
     customer_id = str(payload.get("customer_id") or "").strip()
     customer = await get_ar_customer_or_404(session, client_id, customer_id) if customer_id else None
+    if not customer and str(payload.get("source_submission_id") or "").strip():
+        raise HTTPException(status_code=400, detail="Select or create a customer before publishing to Accounts Receivable.")
     if not customer:
         customer = await create_ar_customer_profile(session, client_id, payload, actor_id)
     invoice_number = str(payload.get("invoice_number") or "").strip()
@@ -9549,7 +9674,11 @@ async def create_ar_invoice_record(session: AsyncSession, client_id: str, payloa
         if duplicate:
             raise HTTPException(status_code=409, detail={"has_warning": True, "message": "A sales invoice with this number already exists for this customer.", "matches": [serialize_ar_invoice(duplicate)]})
     invoice_date = parse_date_or_today(payload.get("invoice_date") or payload.get("date")).isoformat()
-    due_date = str(payload.get("due_date") or (date.fromisoformat(invoice_date) + timedelta(days=int(customer.get("payment_terms_days") or ar_settings.get("default_payment_terms_days") or 30))).isoformat())
+    try:
+        payment_terms_days = int(payload.get("payment_terms_days") or customer.get("payment_terms_days") or ar_settings.get("default_payment_terms_days") or 30)
+    except (TypeError, ValueError):
+        payment_terms_days = int(ar_settings.get("default_payment_terms_days") or 30)
+    due_date = str(payload.get("due_date") or (date.fromisoformat(invoice_date) + timedelta(days=payment_terms_days)).isoformat())
     default_account = customer.get("default_sales_account") or ar_settings.get("default_sales_account") or settings_row.get("default_sales_account") or "4000"
     lines = [ar_line_values(line, default_account) for line in (payload.get("lines") or [])]
     if not lines:
@@ -9566,12 +9695,15 @@ async def create_ar_invoice_record(session: AsyncSession, client_id: str, payloa
         "reference": str(payload.get("reference") or "").strip(),
         "invoice_date": invoice_date,
         "due_date": due_date,
+        "payment_terms_days": payment_terms_days,
         "currency": str(payload.get("currency") or customer.get("default_currency") or "GBP").strip().upper()[:8],
+        "description": str(payload.get("description") or "").strip(),
         "status": "awaiting_approval" if bool(ar_settings.get("approval_required", True)) else "approved",
         "outstanding_amount": totals["gross_amount"],
         "vat_code": header_vat_code,
         "source_submission_id": str(payload.get("source_submission_id") or "").strip(),
         "attachment_path": str(payload.get("attachment_path") or "").strip(),
+        "original_filename": str(payload.get("original_filename") or payload.get("filename") or "").strip()[:255],
         "extracted_json": json.dumps(payload.get("extracted_json") or payload.get("extracted") or {}, default=str),
         "created_at": now,
         "updated_at": now,
@@ -9696,6 +9828,7 @@ def sales_submission_payload_for_ar(submission: dict, fields: dict, allow_duplic
         ],
         "source_submission_id": str(submission["id"]),
         "attachment_path": submission.get("image_filename") or "",
+        "original_filename": submission.get("original_filename") or submission.get("image_filename") or "",
         "extracted_json": fields,
         "allow_duplicate": allow_duplicate,
     }
@@ -10046,6 +10179,12 @@ async def get_ap_invoice_detail(
     item["journal"] = journal or {}
     item["ledger_impact"] = ap_ledger_effect("purchase_invoice")
     item["audit_trail"] = await ap_audit_events(session, client_id, invoice_id)
+    source_document = await invoice_source_document_reference(session, client_id, item, item["attachment_url"], "AP invoice")
+    item["source_document"] = source_document
+    item["source_document_status"] = source_document["status"]
+    item["source_document_missing"] = source_document["missing"]
+    item["attachment_path"] = source_document["attachment_path"] or item["attachment_path"]
+    item["original_filename"] = source_document["original_filename"] or item.get("original_filename") or ""
     response = ap_document_response("purchase_invoice", item, lines)
     response.update(
         {
@@ -10058,8 +10197,12 @@ async def get_ap_invoice_detail(
             "editable": item["editable"],
             "source_submission_id": item["source_submission_id"],
             "attachment_path": item["attachment_path"],
+            "original_filename": item["original_filename"],
             "attachment_url": item["attachment_url"],
             "document_url": item["document_url"],
+            "source_document": source_document,
+            "source_document_status": source_document["status"],
+            "source_document_missing": source_document["missing"],
         }
     )
     return response
@@ -10769,15 +10912,45 @@ async def get_ar_invoice_detail(
     item["allocation_summary"] = {"allocated_amount": money_str(sum((money(row.get("amount")) for row in allocations), Decimal("0.00"))), "outstanding_amount": invoice.get("outstanding_amount")}
     item["journal"] = journal
     item["audit_trail"] = await ar_audit_events(session, client_id, invoice_id)
+    source_document = await invoice_source_document_reference(session, client_id, item, item["attachment_url"], "AR invoice")
+    item["source_document"] = source_document
+    item["source_document_status"] = source_document["status"]
+    item["source_document_missing"] = source_document["missing"]
+    item["attachment_path"] = source_document["attachment_path"] or item["attachment_path"]
+    item["original_filename"] = source_document["original_filename"] or item.get("original_filename") or ""
     response = ar_document_response("sales_invoice", item, lines)
     response.update({
         "customer": serialized_customer,
+        "allocations": allocations,
+        "receipt_allocations": allocations,
         "journal": journal,
         "audit_trail": item["audit_trail"],
         "ledger_effect": ar_ledger_effect("sales_invoice"),
+        "source_submission_id": item.get("source_submission_id"),
+        "attachment_path": item.get("attachment_path"),
+        "original_filename": item.get("original_filename"),
+        "attachment_url": item.get("attachment_url"),
+        "document_url": item.get("document_url"),
+        "source_document": source_document,
+        "source_document_status": source_document["status"],
+        "source_document_missing": source_document["missing"],
+        "editable": item["editable"],
         "view_only": item["view_only"],
     })
     return response
+
+
+@api.get("/admin/accounting/clients/{client_id}/ar/invoices/{invoice_id}/attachment")
+async def get_ar_invoice_attachment(
+    client_id: str,
+    invoice_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    invoice = await get_ar_invoice_or_404(session, client_id, invoice_id)
+    path, original_filename = await ar_invoice_attachment_file(session, client_id, invoice)
+    media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return FileResponse(path, media_type=media_type, filename=original_filename, content_disposition_type="inline")
 
 
 @api.put("/admin/accounting/clients/{client_id}/ar/invoices/{invoice_id}")
@@ -10817,6 +10990,10 @@ async def update_ar_invoice(
     totals = validate_ar_document_totals({**invoice, **payload}, lines, "Sales invoice")
     invoice_date = parse_date_or_today(payload.get("invoice_date") or payload.get("date") or invoice.get("invoice_date")).isoformat()
     due_date = parse_date_or_today(payload.get("due_date") or invoice.get("due_date")).isoformat()
+    try:
+        payment_terms_days = int(payload.get("payment_terms_days", invoice.get("payment_terms_days") or customer.get("payment_terms_days") or 30) or 30)
+    except (TypeError, ValueError):
+        payment_terms_days = int(ar_settings.get("default_payment_terms_days") or 30)
     status = str(payload.get("status") or invoice.get("status") or "draft").strip().lower()
     if status not in AR_EDITABLE_STATUSES:
         status = invoice.get("status")
@@ -10828,9 +11005,12 @@ async def update_ar_invoice(
         "reference": str(payload.get("reference", invoice.get("reference") or "") or "").strip(),
         "invoice_date": invoice_date,
         "due_date": due_date,
+        "payment_terms_days": payment_terms_days,
         "currency": str(payload.get("currency", invoice.get("currency") or "GBP") or "GBP").strip().upper()[:8],
+        "description": str(payload.get("description", invoice.get("description") or "") or "").strip(),
         "status": status,
         "attachment_path": str(payload.get("attachment_path", invoice.get("attachment_path") or "") or "").strip(),
+        "original_filename": str(payload.get("original_filename", invoice.get("original_filename") or "") or "").strip()[:255],
         "vat_code": header_vat_code,
         "outstanding_amount": totals["gross_amount"],
         "extracted_json": json.dumps(payload.get("extracted_json") or parse_json_object(invoice.get("extracted_json")) or {}, default=str),
@@ -11301,6 +11481,10 @@ async def update_ar_settings(
         "duplicate_invoice_warning": bool(payload.get("duplicate_invoice_warning", existing.get("duplicate_invoice_warning", True))),
         "credit_limit_warnings": bool(payload.get("credit_limit_warnings", existing.get("credit_limit_warnings", True))),
         "automatic_customer_numbering": bool(payload.get("automatic_customer_numbering", existing.get("automatic_customer_numbering", True))),
+        "customer_numbering": str(payload.get("customer_numbering", existing.get("customer_numbering") or "Automatic") or "Automatic"),
+        "receipt_on_account_behaviour": str(payload.get("receipt_on_account_behaviour", existing.get("receipt_on_account_behaviour") or "Keep unallocated until matched") or "Keep unallocated until matched"),
+        "sales_behaviour": str(payload.get("sales_behaviour", existing.get("sales_behaviour") or "Post sales invoices to selected nominal") or "Post sales invoices to selected nominal"),
+        "credit_control_behaviour": str(payload.get("credit_control_behaviour", existing.get("credit_control_behaviour") or "Use customer credit control settings") or "Use customer credit control settings"),
         "updated_at": utc_now_iso(),
     }
     await session.execute(update(accounting_ar_settings).where(accounting_ar_settings.c.client_id == client_id).values(**values))

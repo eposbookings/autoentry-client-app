@@ -657,6 +657,7 @@ function ModuleWorkspace(props) {
   const [filters, setFilters] = useState({ date_from: "", date_to: "", financial_year_id: "", period_id: "", search: "" });
   const detail = MODULE_DETAILS[module];
   const isBankingModule = module === "banking";
+  const suppressGlobalFilterBar = isBankingModule || module === "payables" || module === "receivables";
 
   function renderTab() {
     if (module === "ai_workspace") {
@@ -664,11 +665,11 @@ function ModuleWorkspace(props) {
     }
 
     if (module === "payables") {
-      return <AccountsPayableWorkspace workspace={workspace} tab={moduleTab} reloadWorkspace={reloadWorkspace} busy={busy} />;
+      return <AccountsPayableWorkspace workspace={workspace} tab={moduleTab} setTab={setModuleTab} reloadWorkspace={reloadWorkspace} busy={busy} />;
     }
 
     if (module === "receivables") {
-      return <AccountsReceivableWorkspace workspace={workspace} tab={moduleTab} reloadWorkspace={reloadWorkspace} busy={busy} />;
+      return <AccountsReceivableWorkspace workspace={workspace} tab={moduleTab} setTab={setModuleTab} reloadWorkspace={reloadWorkspace} busy={busy} />;
     }
 
     if (module === "banking") {
@@ -778,7 +779,7 @@ function ModuleWorkspace(props) {
           ) : null}
         </div>
       </header>
-      {!isBankingModule ? <AccountingFilterBar workspace={workspace} filters={filters} setFilters={setFilters} /> : null}
+      {!suppressGlobalFilterBar ? <AccountingFilterBar workspace={workspace} filters={filters} setFilters={setFilters} /> : null}
       {renderTab()}
     </div>
   );

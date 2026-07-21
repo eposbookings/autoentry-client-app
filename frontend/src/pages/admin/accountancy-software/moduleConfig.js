@@ -67,17 +67,17 @@ export const MODULE_DETAILS = {
   },
   payables: {
     title: "Accounts Payable",
-    manage: ["Supplier cards", "Supplier records", "Supplier ledger", "Settings"],
+    manage: ["Supplier cards", "Supplier records", "Supplier ledger"],
     statLabel: "Supplier balances",
     stat: (workspace) => formatMoney(workspace?.accounts_payable?.dashboard?.outstanding_total || workspace?.summary?.ap_outstanding || 0),
-    tabs: ["Dashboard", "Suppliers", "Settings"],
+    tabs: ["Suppliers", "Create supplier"],
   },
   receivables: {
     title: "Accounts Receivable",
-    manage: ["Customers", "Sales Invoices", "Credit Notes", "Receipts", "Aged Debtors"],
+    manage: ["Customer cards", "Customer records", "Customer ledger"],
     statLabel: "Outstanding invoices",
     stat: (workspace) => formatMoney(workspace?.accounts_receivable?.dashboard?.outstanding_total || workspace?.summary?.ar_outstanding || workspace?.summary?.receivables || 0),
-    tabs: ["Dashboard", "Customers", "Settings"],
+    tabs: ["Customers", "Create customer"],
   },
   banking: {
     title: "Banking",
