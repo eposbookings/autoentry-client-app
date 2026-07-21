@@ -67,6 +67,69 @@ export function SelectField({ label, value, onChange, options = [] }) {
   );
 }
 
+export function normaliseVatOption(vat = {}) {
+  const code = vat.code || vat.vat_code || vat.tax_code || vat.id || "";
+  if (!code) return null;
+  const description = vat.description || vat.detail || vat.name || vat.label || "";
+  return {
+    value: String(code),
+    label: `${code}${description && description !== code ? ` - ${description}` : ""}`,
+  };
+}
+
+export function vatCodeOptionsFromWorkspace(workspace = {}) {
+  const lists = [
+    workspace.vat_codes,
+    workspace.native_vat_codes,
+    workspace.vat?.codes,
+    workspace.vat?.vat_codes,
+    workspace.vat_engine?.codes,
+    workspace.accounting?.vat_codes,
+  ];
+  const seen = new Set();
+  return lists
+    .flatMap((list) => (Array.isArray(list) ? list : []))
+    .filter((record) => record?.active !== false)
+    .map(normaliseVatOption)
+    .filter((option) => {
+      if (!option || seen.has(option.value)) return false;
+      seen.add(option.value);
+      return true;
+    });
+}
+
+export function canonicalVatCodeValue(rawValue, options = []) {
+  const raw = String(rawValue || "").trim();
+  if (!raw) return "";
+  const rawKey = raw.toLowerCase();
+  const prefixKey = raw.split(" - ")[0].trim().toLowerCase();
+  const match = options.find((option) => {
+    const valueKey = String(option.value || "").trim().toLowerCase();
+    const labelKey = String(option.label || "").trim().toLowerCase();
+    return valueKey === rawKey || labelKey === rawKey || valueKey === prefixKey;
+  });
+  return match?.value || raw;
+}
+
+export function VatCodeSelect({ label = "VAT code", value, onChange, options = [], disabled = false, compact = false }) {
+  const hasOptions = options.length > 0;
+  return (
+    <div>
+      {label ? <Label className="text-xs font-semibold text-stone-600">{label}</Label> : null}
+      <select
+        value={canonicalVatCodeValue(value, options)}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled || !hasOptions}
+        className={`${compact ? "h-7 text-xs" : "h-9 text-sm"} mt-1 w-full rounded-md border border-stone-200 bg-white px-3 shadow-sm disabled:bg-stone-50`}
+      >
+        <option value="">Select VAT code</option>
+        {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select>
+      {!hasOptions ? <p className="mt-1 text-xs text-amber-700">Native VAT code list unavailable. VAT code must come from EPOS Native VAT Codes.</p> : null}
+    </div>
+  );
+}
+
 export function AccountCodeSelect({ accounts, value, onChange, label }) {
   const accountRows = Array.isArray(accounts) ? accounts : [];
   return (
