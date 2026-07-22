@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API, api, formatApiError } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import {
   Download,
   Edit3,
+  Filter,
   FileText,
   Plus,
   ReceiptText,
@@ -35,9 +36,31 @@ import {
   vatCodeOptionsFromWorkspace,
 } from "./shared";
 
-const arTabs = ["Customers", "Create customer"];
+const arTabs = ["Customers", "Create customer", "General Settings"];
 const customerRecordTabs = ["General", "Ledger", "Audit Trail"];
 const transactionTypes = ["Sales Invoice", "Customer Credit Note", "Receipt", "Receipt on Account"];
+const ledgerColumnDefinitions = [
+  { key: "date", label: "Date" },
+  { key: "type", label: "Type" },
+  { key: "reference", label: "Reference" },
+  { key: "description", label: "Description" },
+  { key: "invoice_value", label: "Invoice value" },
+  { key: "allocated", label: "Paid / allocated" },
+  { key: "balance", label: "Invoice balance" },
+  { key: "status", label: "Status" },
+  { key: "attachment", label: "Attachment" },
+];
+const defaultLedgerColumnWidths = {
+  date: 120,
+  type: 160,
+  reference: 160,
+  description: 280,
+  invoice_value: 150,
+  allocated: 160,
+  balance: 170,
+  status: 170,
+  attachment: 140,
+};
 const editableStatuses = ["draft", "awaiting approval", "awaiting_approval"];
 const customerNumberingOptions = [
   { value: "manual", label: "Manual" },
@@ -99,9 +122,20 @@ function toInputDate(value) {
   return value ? String(value).slice(0, 10) : "";
 }
 
+function copiedDocumentNumber(value) {
+  const base = String(value || "").trim();
+  return base ? `${base}-COPY` : "";
+}
+
 function asNumber(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
+}
+
+function addDaysInput(value, days) {
+  const date = value ? new Date(value) : new Date();
+  date.setDate(date.getDate() + asNumber(days));
+  return date.toISOString().slice(0, 10);
 }
 
 function formatAmount(value) {
@@ -202,6 +236,7 @@ function vatCodeLabel(value, vatOptions = []) {
 }
 
 function displayStatus(value) {
+  if (String(value || "").trim().toLowerCase() === "draft") return "Awaiting Approval";
   return String(value || "")
     .replace(/[_-]+/g, " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -259,18 +294,15 @@ function requiresVatOptions(value, vatOptions = []) {
 }
 
 function arInvoiceValue(row = {}) {
-  return asNumber(row.invoice_value ?? row.gross_amount ?? row.gross ?? row.total ?? row.amount ?? row.debit);
+  return asNumber(row.invoice_value);
 }
 
 function arAllocatedValue(row = {}) {
-  return asNumber(row.paid_allocated ?? row.paid_amount ?? row.allocated_amount ?? row.amount_paid ?? row.credit);
+  return asNumber(row.paid_allocated);
 }
 
 function arInvoiceBalance(row = {}) {
-  const supplied = row.invoice_balance ?? row.balance ?? row.outstanding_amount ?? row.amount_due ?? row.outstanding;
-  if (supplied !== undefined && supplied !== null && supplied !== "") return asNumber(supplied);
-  if (isReceiptDocument(row.type) || isCreditDocument(row.type)) return 0;
-  return arInvoiceValue(row) - arAllocatedValue(row);
+  return asNumber(row.invoice_balance);
 }
 
 function normaliseArLedgerType(type = "") {
@@ -301,6 +333,8 @@ function ledgerImpactFor(type) {
 
 function emptyTransactionDraft(type, customer, bankAccountCode) {
   const isReceipt = isReceiptDocument(type);
+  const today = todayInput();
+  const paymentTerms = customer?.payment_terms_days || "30";
   return {
     id: "",
     ledgerKey: "",
@@ -310,13 +344,13 @@ function emptyTransactionDraft(type, customer, bankAccountCode) {
     customer_name: customer?.name || customer?.business_name || "",
     customer_code: customer?.customer_code || "",
     type,
-    status: "Draft",
-    date: todayInput(),
-    invoice_date: todayInput(),
-    due_date: todayInput(),
-    credit_note_date: todayInput(),
-    receipt_date: todayInput(),
-    payment_terms: customer?.payment_terms_days || "30",
+    status: "Awaiting approval",
+    date: today,
+    invoice_date: today,
+    due_date: addDaysInput(today, paymentTerms),
+    credit_note_date: today,
+    receipt_date: today,
+    payment_terms: paymentTerms,
     currency: customer?.default_currency || "GBP",
     document_number: "",
     reference: "",
@@ -337,7 +371,7 @@ function emptyTransactionDraft(type, customer, bankAccountCode) {
   };
 }
 
-export default function AccountsReceivableWorkspace({ workspace, tab, setTab, reloadWorkspace, busy }) {
+export default function AccountsReceivableWorkspace({ workspace, tab, setTab, reloadWorkspace, busy, setHeaderContext }) {
   const ar = workspace.accounts_receivable || {};
   const clientId = workspace.client?.id;
   const [customerSummaries, setCustomerSummaries] = useState(() => (Array.isArray(ar.customers) ? ar.customers : []));
@@ -360,6 +394,7 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
   const [customerEditMode, setCustomerEditMode] = useState(false);
   const [customerDraft, setCustomerDraft] = useState(normaliseCustomerDraft());
   const [transactionDraft, setTransactionDraft] = useState(null);
+  const [transactionEntryMode, setTransactionEntryMode] = useState("");
   const [transactionEditMode, setTransactionEditMode] = useState(false);
   const [transactionErrors, setTransactionErrors] = useState({});
   const [ledgerSearch, setLedgerSearch] = useState("");
@@ -367,6 +402,21 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
   const [ledgerStatusFilter, setLedgerStatusFilter] = useState("All");
   const [ledgerDateFrom, setLedgerDateFrom] = useState("");
   const [ledgerDateTo, setLedgerDateTo] = useState("");
+  const [ledgerReferenceFilter, setLedgerReferenceFilter] = useState("");
+  const [ledgerDescriptionFilter, setLedgerDescriptionFilter] = useState("");
+  const [ledgerAttachmentFilter, setLedgerAttachmentFilter] = useState("All");
+  const [ledgerInvoiceValueMin, setLedgerInvoiceValueMin] = useState("");
+  const [ledgerInvoiceValueMax, setLedgerInvoiceValueMax] = useState("");
+  const [ledgerAllocatedMin, setLedgerAllocatedMin] = useState("");
+  const [ledgerAllocatedMax, setLedgerAllocatedMax] = useState("");
+  const [ledgerBalanceMin, setLedgerBalanceMin] = useState("");
+  const [ledgerBalanceMax, setLedgerBalanceMax] = useState("");
+  const [ledgerSort, setLedgerSort] = useState({ key: "date", direction: "desc" });
+  const [openLedgerFilter, setOpenLedgerFilter] = useState("");
+  const [selectedLedgerKeys, setSelectedLedgerKeys] = useState([]);
+  const [columnSelectorOpen, setColumnSelectorOpen] = useState(false);
+  const [visibleLedgerColumns, setVisibleLedgerColumns] = useState(() => ledgerColumnDefinitions.map((column) => column.key));
+  const [ledgerColumnWidths, setLedgerColumnWidths] = useState(defaultLedgerColumnWidths);
   const [ledgerPage, setLedgerPage] = useState(1);
   const [ledgerPageSize, setLedgerPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [ledgerData, setLedgerData] = useState(() => normalisePaginatedResponse({ rows: [], page_size: DEFAULT_PAGE_SIZE }));
@@ -415,10 +465,20 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
 
   useEffect(() => {
     setLedgerPage(1);
-  }, [selectedCustomerId, ledgerSearch, ledgerTypeFilter, ledgerStatusFilter, ledgerDateFrom, ledgerDateTo]);
+  }, [selectedCustomerId, ledgerSearch, ledgerTypeFilter, ledgerStatusFilter, ledgerDateFrom, ledgerDateTo, ledgerReferenceFilter, ledgerDescriptionFilter, ledgerAttachmentFilter, ledgerInvoiceValueMin, ledgerInvoiceValueMax, ledgerAllocatedMin, ledgerAllocatedMax, ledgerBalanceMin, ledgerBalanceMax]);
 
   useEffect(() => {
-    if (activeTab === "Create customer") setCreateCustomerOpen(true);
+    setSelectedLedgerKeys([]);
+  }, [selectedCustomerId, ledgerPage, ledgerPageSize, ledgerTypeFilter, ledgerStatusFilter, ledgerDateFrom, ledgerDateTo, ledgerReferenceFilter, ledgerDescriptionFilter, ledgerAttachmentFilter, ledgerInvoiceValueMin, ledgerInvoiceValueMax, ledgerAllocatedMin, ledgerAllocatedMax, ledgerBalanceMin, ledgerBalanceMax]);
+
+  useEffect(() => {
+    if (activeTab === "Create customer") {
+      setSelectedCustomerId("");
+      setTransactionDraft(null);
+      setTransactionEntryMode("");
+      setTransactionEditMode(false);
+      setCreateCustomerOpen(true);
+    }
   }, [activeTab]);
 
   function closeCreateCustomer() {
@@ -430,6 +490,8 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
     if (selectedCustomerId && !customers.some((customer) => customer.id === selectedCustomerId)) {
       setSelectedCustomerId("");
       setTransactionDraft(null);
+      setTransactionEntryMode("");
+      setTransactionEditMode(false);
     }
   }, [customers, selectedCustomerId]);
 
@@ -449,7 +511,9 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
       if (selectedCustomerId) await refreshCustomerLedger();
       return true;
     } catch (e) {
-      toast.error(formatApiError(e));
+      const message = formatApiError(e);
+      setTransactionErrors((current) => ({ ...current, backend: message }));
+      toast.error(message);
       return false;
     } finally {
       setSaving(false);
@@ -514,7 +578,10 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
 
   function openCustomer(customerId) {
     setSelectedCustomerId(customerId);
-    setCustomerRecordTab("General");
+    setCustomerRecordTab("Ledger");
+    setTransactionDraft(null);
+    setTransactionEntryMode("");
+    setTransactionEditMode(false);
   }
 
   const customerLedgerRows = useCallback((customerId) => {
@@ -545,18 +612,66 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
   }, [ledgerData.rows]);
 
   const selectedLedgerRows = useMemo(() => selectedCustomer ? customerLedgerRows(selectedCustomer.id) : [], [customerLedgerRows, selectedCustomer]);
-  const visibleLedgerRows = selectedLedgerRows;
-
-  const ledgerStatuses = useMemo(() => ["All", ...Array.from(new Set(selectedLedgerRows.map((row) => row.status).filter(Boolean)))], [selectedLedgerRows]);
-  const ledgerTotals = {
-    debit: asNumber(ledgerData.summary.debit),
-    credit: asNumber(ledgerData.summary.credit),
-    invoiceValue: asNumber(ledgerData.summary.invoice_value ?? ledgerData.summary.total_invoice_value ?? ledgerData.summary.visible_invoice_value),
-    allocated: asNumber(ledgerData.summary.paid_allocated ?? ledgerData.summary.receipts_credits_allocated ?? ledgerData.summary.allocated),
-    balance: asNumber(ledgerData.summary.invoice_balance ?? ledgerData.summary.outstanding ?? ledgerData.summary.outstanding_balance),
+  const ledgerRowKey = (row) => row.ledgerKey || `${row.source}-${row.id}`;
+  const toggleLedgerSort = (key, direction) => setLedgerSort((current) => (
+    direction
+      ? { key, direction }
+      : current.key === key
+        ? { key, direction: current.direction === "asc" ? "desc" : "asc" }
+        : { key, direction: key === "date" ? "desc" : "asc" }
+  ));
+  const clearLedgerColumnFilters = () => {
+    setLedgerSearch("");
+    setLedgerTypeFilter("All");
+    setLedgerStatusFilter("All");
+    setLedgerDateFrom("");
+    setLedgerDateTo("");
+    setLedgerReferenceFilter("");
+    setLedgerDescriptionFilter("");
+    setLedgerAttachmentFilter("All");
+    setLedgerInvoiceValueMin("");
+    setLedgerInvoiceValueMax("");
+    setLedgerAllocatedMin("");
+    setLedgerAllocatedMax("");
+    setLedgerBalanceMin("");
+    setLedgerBalanceMax("");
+    setLedgerSort({ key: "date", direction: "desc" });
   };
+  const visibleLedgerRows = useMemo(() => {
+    const refNeedle = ledgerReferenceFilter.trim().toLowerCase();
+    const descriptionNeedle = ledgerDescriptionFilter.trim().toLowerCase();
+    const attachmentMode = ledgerAttachmentFilter;
+    const inRange = (value, min, max) => (
+      (!String(min).trim() || value >= asNumber(min)) &&
+      (!String(max).trim() || value <= asNumber(max))
+    );
+    const filtered = selectedLedgerRows.filter((row) => {
+      const refOk = !refNeedle || String(row.reference || "").toLowerCase().includes(refNeedle);
+      const descriptionOk = !descriptionNeedle || String(row.description || "").toLowerCase().includes(descriptionNeedle);
+      const attachmentOk = attachmentMode === "All" || (attachmentMode === "Attached" ? hasAttachment(row) : !hasAttachment(row));
+      const invoiceValueOk = inRange(arInvoiceValue(row), ledgerInvoiceValueMin, ledgerInvoiceValueMax);
+      const allocatedOk = inRange(arAllocatedValue(row), ledgerAllocatedMin, ledgerAllocatedMax);
+      const balanceOk = inRange(arInvoiceBalance(row), ledgerBalanceMin, ledgerBalanceMax);
+      return refOk && descriptionOk && attachmentOk && invoiceValueOk && allocatedOk && balanceOk;
+    });
+    const direction = ledgerSort.direction === "asc" ? 1 : -1;
+    return [...filtered].sort((a, b) => {
+      const key = ledgerSort.key;
+      if (key === "date") return (new Date(a.date || 0) - new Date(b.date || 0)) * direction;
+      if (key === "invoice_value") return (arInvoiceValue(a) - arInvoiceValue(b)) * direction;
+      if (key === "allocated") return (arAllocatedValue(a) - arAllocatedValue(b)) * direction;
+      if (key === "balance") return (arInvoiceBalance(a) - arInvoiceBalance(b)) * direction;
+      if (key === "attachment") return ((hasAttachment(a) ? 1 : 0) - (hasAttachment(b) ? 1 : 0)) * direction;
+      return String(a[key] || "").localeCompare(String(b[key] || "")) * direction;
+    });
+  }, [ledgerAllocatedMax, ledgerAllocatedMin, ledgerAttachmentFilter, ledgerBalanceMax, ledgerBalanceMin, ledgerDescriptionFilter, ledgerInvoiceValueMax, ledgerInvoiceValueMin, ledgerReferenceFilter, ledgerSort, selectedLedgerRows]);
+
+  const ledgerStatuses = useMemo(() => ["All", ...Array.from(new Set(selectedLedgerRows.map((row) => row.status).filter((status) => status && String(status).toLowerCase() !== "draft")))], [selectedLedgerRows]);
   const ledgerVisibleCount = Number(ledgerData.summary.visible_transaction_count ?? ledgerData.total_rows ?? visibleLedgerRows.length) || 0;
   const pagedLedgerRows = visibleLedgerRows;
+  const selectedLedgerRowsForExport = visibleLedgerRows.filter((row) => selectedLedgerKeys.includes(ledgerRowKey(row)));
+  const allVisibleLedgerSelected = pagedLedgerRows.length > 0 && pagedLedgerRows.every((row) => selectedLedgerKeys.includes(ledgerRowKey(row)));
+  const hasLedgerFilters = Boolean(ledgerSearch || ledgerTypeFilter !== "All" || ledgerStatusFilter !== "All" || ledgerDateFrom || ledgerDateTo || ledgerReferenceFilter || ledgerDescriptionFilter || ledgerAttachmentFilter !== "All" || ledgerInvoiceValueMin || ledgerInvoiceValueMax || ledgerAllocatedMin || ledgerAllocatedMax || ledgerBalanceMin || ledgerBalanceMax);
   const visibleCustomers = useMemo(() => customers.filter((customer) => {
     const needle = customerQuery.trim().toLowerCase();
     if (!needle) return true;
@@ -600,6 +715,16 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
   }
 
   function openTransaction(type, row) {
+    if (row && transactionEntryMode === "inline" && transactionDraft && (
+      transactionDraft.ledgerKey === row.ledgerKey ||
+      (transactionDraft.id && transactionDraft.id === row.id && transactionDraft.source === row.source)
+    )) {
+      setTransactionErrors({});
+      setTransactionEditMode(false);
+      setTransactionDraft(null);
+      setTransactionEntryMode("");
+      return;
+    }
     setTransactionErrors({});
     setTransactionEditMode(false);
     const customer = selectedCustomer || customers.find((item) => item.id === row?.customer_id);
@@ -614,7 +739,7 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
       originalKey: row?.ledgerKey || "",
       source: row?.source || "frontend",
       type: row?.type || type || next.type,
-      status: raw.status || row?.status || "Draft",
+      status: raw.status || row?.status || "Awaiting approval",
       customer_id: customer?.id || raw.customer_id || "",
       customer_name: customer?.name || customer?.business_name || raw.customer_name || "",
       customer_code: customer?.customer_code || "",
@@ -644,6 +769,7 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
       }]),
       showImpact: true,
     };
+    setTransactionEntryMode(row ? "inline" : "modal");
     setTransactionDraft(draft);
     loadTransactionDetail({ ...row, source: row?.source || draft.source, id: draft.id }, draft);
   }
@@ -691,8 +817,11 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
       const existing = transactionDraft.source === "invoice" && transactionDraft.id;
       const { data } = existing ? await putJson(`/ar/invoices/${transactionDraft.id}`, { ...payload, payment_terms_days: transactionDraft.payment_terms }) : await postJson("/ar/invoices", { ...payload, payment_terms_days: transactionDraft.payment_terms });
       if (approve && data?.id) await postJson(`/ar/invoices/${data.id}/approve`, {});
-    }, approve ? "Sales invoice approved" : transactionDraft.source === "invoice" && transactionDraft.id ? "Sales invoice updated" : "Sales invoice draft saved");
-    if (saved) setTransactionDraft(null);
+    }, approve ? "Sales invoice approved" : transactionDraft.source === "invoice" && transactionDraft.id ? "Sales invoice updated" : "Sales invoice submitted for approval");
+    if (saved) {
+      setTransactionDraft(null);
+      setTransactionEntryMode("");
+    }
   }
 
   async function postInvoice(invoice) {
@@ -700,7 +829,46 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
   }
 
   async function approveInvoice(invoice) {
-    await run(async () => postJson(`/ar/invoices/${invoice.id}/approve`, {}), "Sales invoice approved");
+    setSaving(true);
+    setTransactionErrors({});
+    try {
+      const { data } = await postJson(`/ar/invoices/${invoice.id}/approve`, {});
+      const detailResponse = data?.detail || data;
+      const detail = detailResponse?.invoice || data?.invoice_or_transaction || data?.invoice || detailResponse;
+      const detailLines = detailResponse?.lines || data?.lines || detail?.lines || [];
+      setTransactionDraft((current) => current?.id === invoice.id ? {
+        ...current,
+        ...detail,
+        source: "invoice",
+        type: "Sales Invoice",
+        status: "posted",
+        lines: detailLines,
+        audit_trail: detailResponse?.audit_trail || data?.audit_trail || [],
+        ledger_effect: detailResponse?.ledger_effect || data?.ledger_impact,
+      } : current);
+      toast.success("Sales invoice approved and posted");
+      await reloadWorkspace?.();
+      await refreshCustomerLedger();
+    } catch (error) {
+      const message = formatApiError(error);
+      setTransactionErrors((current) => ({ ...current, backend: message }));
+      toast.error(message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function unallocateArRow(row) {
+    const allocations = row?.allocation_summary?.allocations || [];
+    if (!allocations.length || !window.confirm(`Unallocate ${allocations.length === 1 ? "this allocation" : `all ${allocations.length} allocations`}? The customer receipt will be preserved.`)) return;
+    const saved = await run(async () => {
+      for (const allocation of allocations) {
+        const receiptId = allocation.receipt_id || (row.source === "receipt" ? row.id : "");
+        if (!receiptId) throw new Error("The allocation is missing its customer receipt reference.");
+        await postJson(`/ar/receipts/${receiptId}/allocations/${allocation.id}/unallocate`, {});
+      }
+    }, "Invoice allocation removed");
+    if (saved) await refreshCustomerLedger();
   }
 
   async function archiveInvoice(invoice) {
@@ -729,8 +897,11 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
       const existing = transactionDraft.source === "credit_note" && transactionDraft.id;
       const { data } = existing ? await putJson(`/ar/credit-notes/${transactionDraft.id}`, payload) : await postJson("/ar/credit-notes", payload);
       if (post && data?.id) await postJson(`/ar/credit-notes/${data.id}/post`, {});
-    }, post ? "Customer credit note posted" : transactionDraft.source === "credit_note" && transactionDraft.id ? "Customer credit note updated" : "Customer credit note draft saved");
-    if (saved) setTransactionDraft(null);
+    }, post ? "Customer credit note posted" : transactionDraft.source === "credit_note" && transactionDraft.id ? "Customer credit note updated" : "Customer credit note submitted for approval");
+    if (saved) {
+      setTransactionDraft(null);
+      setTransactionEntryMode("");
+    }
   }
 
   async function createReceiptFromDraft(e) {
@@ -749,7 +920,10 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
       allocations,
     };
     const saved = await run(async () => postJson("/ar/receipts", payload), "Customer receipt posted");
-    if (saved) setTransactionDraft(null);
+    if (saved) {
+      setTransactionDraft(null);
+      setTransactionEntryMode("");
+    }
   }
 
   function saveTransactionDraft(e) {
@@ -758,20 +932,42 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
     return createInvoiceFromDraft(e, false);
   }
 
-  async function copyInvoiceToNew() {
+  function copyInvoiceToNew() {
     if (!transactionDraft?.id || transactionDraft.source !== "invoice") return;
-    setSaving(true);
-    try {
-      const { data } = await postJson(`/ar/invoices/${transactionDraft.id}/copy`, {});
-      const invoice = data?.invoice || data;
-      toast.success("Copied to a new draft sales invoice");
-      await reloadWorkspace?.();
-      openTransaction("Sales Invoice", { ...invoice, raw: invoice, source: "invoice", type: "Sales Invoice" });
-    } catch (error) {
-      toast.error(formatApiError(error));
-    } finally {
-      setSaving(false);
-    }
+    const today = todayInput();
+    const paymentTerms = selectedCustomer?.payment_terms_days || transactionDraft.payment_terms || "30";
+    const copied = {
+      ...transactionDraft,
+      id: "",
+      ledgerKey: "",
+      originalKey: "",
+      source: "frontend",
+      type: "Sales Invoice",
+      status: "Awaiting approval",
+      date: today,
+      invoice_date: today,
+      due_date: addDaysInput(today, paymentTerms),
+      payment_terms: paymentTerms,
+      document_number: copiedDocumentNumber(transactionDraft.document_number),
+      reference: copiedDocumentNumber(transactionDraft.document_number || transactionDraft.reference),
+      posted_journal_id: "",
+      reconciliation_status: "",
+      allocation_summary: {},
+      audit_trail: [],
+      source_document: null,
+      attachment_name: "",
+      attachment_path: "",
+      attachment_url: "",
+      document_url: "",
+      source_document_url: "",
+      source_submission_id: "",
+      showAudit: false,
+      lines: (transactionDraft.lines || []).map((line) => ({ ...line })),
+    };
+    setTransactionErrors({});
+    setTransactionEditMode(false);
+    setTransactionEntryMode("modal");
+    setTransactionDraft(copied);
   }
 
   function primaryPostAction(e) {
@@ -805,25 +1001,60 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
     return realRows;
   }, [auditTrail, selectedCustomer]);
 
+  async function saveGeneralSettings() {
+    await run(async () => {
+      await putJson("/ar/settings", settingsForm);
+      await reloadWorkspace?.();
+    }, "Accounts Receivable settings saved");
+  }
+
+  useEffect(() => {
+    if (!setHeaderContext) return undefined;
+    if (!selectedCustomer) {
+      setHeaderContext(null);
+      return undefined;
+    }
+    setHeaderContext({
+      backLabel: "Back to customers",
+      onBack: () => setSelectedCustomerId(""),
+      title: customerDraft.business_name || selectedCustomer.name,
+      subtitle: `${customerDraft.customer_code || "No customer code"} - ${customerDraft.email || "No email"}`,
+      tabs: customerRecordTabs,
+      activeTab: customerRecordTab,
+      onTabChange: setCustomerRecordTab,
+      actions: customerRecordTab === "Ledger" ? [
+        { label: "Add sales invoice", onClick: () => openTransaction("Sales Invoice") },
+        { label: "Add customer credit note", onClick: () => openTransaction("Customer Credit Note") },
+        { label: "Add receipt", onClick: () => openTransaction("Receipt") },
+        { label: "Select Columns", icon: false, onClick: () => setColumnSelectorOpen((open) => !open) },
+      ] : [],
+    });
+    return () => setHeaderContext(null);
+    // Header action callbacks intentionally use the current workspace handlers without forcing the header context to churn every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCustomer, customerDraft.business_name, customerDraft.customer_code, customerDraft.email, customerRecordTab, setHeaderContext]);
+
+  if (activeTab === "General Settings") {
+    return (
+      <Panel title="Accounts Receivable General Settings">
+        <div className="grid gap-4 md:grid-cols-2">
+          <EditableField label="Approval required" checkbox value={settingsForm.approval_required} editable onChange={(value) => setSettingsForm((row) => ({ ...row, approval_required: value }))} />
+          <EditableField label="Customer numbering" value={settingsForm.customer_numbering || "automatic"} editable options={customerNumberingOptions} onChange={(value) => setSettingsForm((row) => ({ ...row, customer_numbering: value }))} />
+          <EditableField label="Default payment terms (days)" type="number" value={settingsForm.default_payment_terms_days || 30} editable onChange={(value) => setSettingsForm((row) => ({ ...row, default_payment_terms_days: value }))} />
+          <EditableField label="Default sales nominal" value={settingsForm.default_sales_account || "4000"} editable options={incomeAccounts.map((account) => ({ value: account.code, label: `${account.code} - ${account.name}` }))} onChange={(value) => setSettingsForm((row) => ({ ...row, default_sales_account: value }))} />
+          <EditableField label="Default VAT code" value={settingsForm.default_vat_code || ""} editable options={vatCodes} onChange={(value) => setSettingsForm((row) => ({ ...row, default_vat_code: value }))} />
+          <EditableField label="Receipt on account behaviour" value={settingsForm.receipt_on_account_behaviour || "hold"} editable options={receiptOnAccountBehaviourOptions} onChange={(value) => setSettingsForm((row) => ({ ...row, receipt_on_account_behaviour: value }))} />
+          <EditableField label="Credit control behaviour" value={settingsForm.credit_control_behaviour || "warn"} editable options={salesCreditControlBehaviourOptions} onChange={(value) => setSettingsForm((row) => ({ ...row, credit_control_behaviour: value }))} />
+        </div>
+        <div className="mt-5 flex justify-end"><Button type="button" disabled={saving} onClick={saveGeneralSettings}><Save className="mr-2 h-4 w-4" />Save settings</Button></div>
+      </Panel>
+    );
+  }
+
   if (activeTab === "Customers" || activeTab === "Create customer") {
     if (selectedCustomer) {
       return (
-        <div className="space-y-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <Button type="button" variant="outline" onClick={() => setSelectedCustomerId("")}>Back to customers</Button>
-              <h3 className="mt-3 font-display text-2xl font-semibold text-stone-900">{customerDraft.business_name || selectedCustomer.name}</h3>
-              <p className="text-sm text-stone-500">{customerDraft.customer_code || "No customer code"} - {customerDraft.email || "No email"}</p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {customerRecordTabs.map((recordTab) => (
-                <Button key={recordTab} type="button" variant={customerRecordTab === recordTab ? "default" : "outline"} onClick={() => setCustomerRecordTab(recordTab)}>
-                  {recordTab}
-                </Button>
-              ))}
-            </div>
-          </div>
-
+        <div className="space-y-3">
           {customerRecordTab === "General" ? (
             <Panel title="Customer general details">
               <div className="mb-4 flex justify-end gap-2">
@@ -847,14 +1078,6 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
                     <EditableField label="Phone" value={customerDraft.phone} editable={customerEditMode} onChange={(value) => setCustomerDraft((current) => ({ ...current, phone: value }))} />
                     <EditableField label="Website" value={customerDraft.website} editable={customerEditMode} onChange={(value) => setCustomerDraft((current) => ({ ...current, website: value }))} />
                     <EditableField label="Currency" value={customerDraft.default_currency} editable={customerEditMode} onChange={(value) => setCustomerDraft((current) => ({ ...current, default_currency: value }))} />
-                  </div>
-                </Section>
-                <Section title="Customer settings">
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <EditableField label="Approval required" checkbox value={settingsForm.approval_required} editable={false} />
-                    <EditableField label="Customer numbering" value={optionLabel(settingsForm.customer_numbering || (settingsForm.automatic_customer_numbering ? "automatic" : "manual"), customerNumberingOptions)} editable={false} />
-                    <EditableField label="Receipt/on-account behaviour" value={optionLabel(settingsForm.receipt_on_account_behaviour || "hold", receiptOnAccountBehaviourOptions)} editable={false} />
-                    <EditableField label="Sales/credit control behaviour" value={optionLabel(settingsForm.sales_credit_control_behaviour || (settingsForm.credit_limit_warnings ? "warn" : "allow"), salesCreditControlBehaviourOptions)} editable={false} />
                   </div>
                 </Section>
                 <Section title="Addresses">
@@ -906,47 +1129,31 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
 
           {customerRecordTab === "Ledger" ? (
             <Panel title="Customer ledger">
-              <div className="mb-3 grid gap-3 md:grid-cols-4">
-                <SummaryCard label="Visible transactions" value={ledgerVisibleCount} />
-                <SummaryCard label="Invoice value" value={formatMoney(ledgerTotals.invoiceValue)} />
-                <SummaryCard label="Invoice balance / outstanding" value={formatMoney(ledgerTotals.balance)} />
-                <SummaryCard label="Receipts / credits allocated" value={formatMoney(ledgerTotals.allocated)} />
-              </div>
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <div className="flex flex-wrap gap-2">
-                  <Button type="button" variant="outline" onClick={() => openTransaction("Sales Invoice")}>
-                    <Plus className="mr-2 h-4 w-4" /> Add sales invoice
-                  </Button>
-                  <Button type="button" variant="outline" onClick={() => openTransaction("Customer Credit Note")}>
-                    <Plus className="mr-2 h-4 w-4" /> Add customer credit note
-                  </Button>
-                  <Button type="button" variant="outline" onClick={() => openTransaction("Receipt")}>
-                    <Plus className="mr-2 h-4 w-4" /> Add receipt
-                  </Button>
-                </div>
-                <div className="flex min-w-72 flex-1 flex-wrap justify-end gap-2">
-                  <div className="relative max-w-sm flex-1">
-                    <Search className="absolute left-3 top-2.5 h-4 w-4 text-stone-400" />
-                    <Input value={ledgerSearch} onChange={(e) => setLedgerSearch(e.target.value)} placeholder="Search ledger" className="h-9 pl-9" />
-                  </div>
-                  <select value={ledgerTypeFilter} onChange={(e) => setLedgerTypeFilter(e.target.value)} className="h-9 rounded-md border border-stone-200 bg-white px-3 text-sm">
-                    <option value="All">All types</option>
-                    {transactionTypes.map((type) => <option key={type} value={type}>{type}</option>)}
-                  </select>
-                  <select value={ledgerStatusFilter} onChange={(e) => setLedgerStatusFilter(e.target.value)} className="h-9 rounded-md border border-stone-200 bg-white px-3 text-sm">
-                    {ledgerStatuses.map((status) => <option key={status} value={status}>{status === "All" ? "All statuses" : status}</option>)}
-                  </select>
-                  <Input type="date" value={ledgerDateFrom} onChange={(e) => setLedgerDateFrom(e.target.value)} className="h-9 w-36" />
-                  <Input type="date" value={ledgerDateTo} onChange={(e) => setLedgerDateTo(e.target.value)} className="h-9 w-36" />
-                  <Button type="button" variant="outline" onClick={() => exportRows(visibleLedgerRows, `${selectedCustomer?.name || "customer"}-ledger.csv`)}>
-                    <Download className="mr-2 h-4 w-4" /> Export
-                  </Button>
-                </div>
-              </div>
+              {columnSelectorOpen ? (
+                <ColumnSelectorPanel
+                  columns={ledgerColumnDefinitions}
+                  visibleColumns={visibleLedgerColumns}
+                  setVisibleColumns={setVisibleLedgerColumns}
+                  onClose={() => setColumnSelectorOpen(false)}
+                />
+              ) : null}
               {ledgerError ? <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{ledgerError}</div> : null}
               {ledgerLoading ? <div className="mb-3 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-600">Loading customer ledger...</div> : null}
+              {(selectedLedgerRowsForExport.length || hasLedgerFilters) ? (
+                <div className="mb-2 flex flex-wrap justify-end gap-2">
+                  {hasLedgerFilters ? <Button type="button" variant="outline" size="sm" onClick={clearLedgerColumnFilters}>Clear filters</Button> : null}
+                  {selectedLedgerRowsForExport.length ? (
+                    <Button type="button" variant="outline" size="sm" onClick={() => exportRows(selectedLedgerRowsForExport, `${selectedCustomer?.name || "customer"}-selected-ledger.csv`)}>
+                      <Download className="mr-2 h-4 w-4" /> Export selected ({selectedLedgerRowsForExport.length})
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
               <LedgerTable
-                rows={pagedLedgerRows}
+                rows={pagedLedgerRows.map((row) => ({
+                  ...row,
+                  selected: Boolean(transactionEntryMode === "inline" && transactionDraft && (transactionDraft.ledgerKey === row.ledgerKey || (transactionDraft.id && transactionDraft.id === row.id && transactionDraft.source === row.source))),
+                }))}
                 totalRows={ledgerVisibleCount}
                 page={ledgerPage}
                 pageSize={ledgerPageSize}
@@ -958,7 +1165,76 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
                   setLedgerPage(1);
                 }}
                 onOpen={(row) => openTransaction(row.type, row)}
-                totals={ledgerTotals}
+                onUnallocate={unallocateArRow}
+                rowKey={ledgerRowKey}
+                selectedKeys={selectedLedgerKeys}
+                setSelectedKeys={setSelectedLedgerKeys}
+                allVisibleSelected={allVisibleLedgerSelected}
+                sort={ledgerSort}
+                onSort={toggleLedgerSort}
+                filterOpenKey={openLedgerFilter}
+                setFilterOpenKey={setOpenLedgerFilter}
+                visibleColumns={visibleLedgerColumns}
+                columnWidths={ledgerColumnWidths}
+                setColumnWidths={setLedgerColumnWidths}
+                filters={{
+                  dateFrom: ledgerDateFrom,
+                  dateTo: ledgerDateTo,
+                  type: ledgerTypeFilter,
+                  reference: ledgerReferenceFilter,
+                  description: ledgerDescriptionFilter,
+                  status: ledgerStatusFilter,
+                  attachment: ledgerAttachmentFilter,
+                  invoiceValueMin: ledgerInvoiceValueMin,
+                  invoiceValueMax: ledgerInvoiceValueMax,
+                  allocatedMin: ledgerAllocatedMin,
+                  allocatedMax: ledgerAllocatedMax,
+                  balanceMin: ledgerBalanceMin,
+                  balanceMax: ledgerBalanceMax,
+                }}
+                setters={{
+                  dateFrom: setLedgerDateFrom,
+                  dateTo: setLedgerDateTo,
+                  type: setLedgerTypeFilter,
+                  reference: setLedgerReferenceFilter,
+                  description: setLedgerDescriptionFilter,
+                  status: setLedgerStatusFilter,
+                  attachment: setLedgerAttachmentFilter,
+                  invoiceValueMin: setLedgerInvoiceValueMin,
+                  invoiceValueMax: setLedgerInvoiceValueMax,
+                  allocatedMin: setLedgerAllocatedMin,
+                  allocatedMax: setLedgerAllocatedMax,
+                  balanceMin: setLedgerBalanceMin,
+                  balanceMax: setLedgerBalanceMax,
+                }}
+                statuses={ledgerStatuses}
+                renderExpanded={(row) => row.selected ? (
+                  <ManualSalesDocumentDrawer
+                    draft={transactionDraft}
+                    setDraft={setTransactionDraft}
+                    errors={transactionErrors}
+                    customer={selectedCustomer}
+                    customers={customers}
+                    invoices={invoices}
+                    incomeAccounts={incomeAccounts}
+                    vatCodes={vatCodes}
+                    approvalRequired={Boolean(settingsForm.approval_required)}
+                    bankAccounts={bankAccounts}
+                    onClose={() => {
+                      setTransactionDraft(null);
+                      setTransactionEntryMode("");
+                    }}
+                    onSave={saveTransactionDraft}
+                    onPost={primaryPostAction}
+                    onApproveInvoice={approveInvoice}
+                    onPostInvoice={postInvoice}
+                    onArchiveInvoice={archiveInvoice}
+                    editMode={transactionEditMode}
+                    setEditMode={setTransactionEditMode}
+                    onCopyInvoice={copyInvoiceToNew}
+                    saving={saving || busy}
+                  />
+                ) : null}
               />
             </Panel>
           ) : null}
@@ -976,29 +1252,39 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
             </Panel>
           ) : null}
 
-          {transactionDraft ? (
-            <ManualSalesDocumentDrawer
-              draft={transactionDraft}
-              setDraft={setTransactionDraft}
-              errors={transactionErrors}
-              customer={selectedCustomer}
-              customers={customers}
-              invoices={invoices}
-              incomeAccounts={incomeAccounts}
-              vatCodes={vatCodes}
-              bankAccounts={bankAccounts}
-              onClose={() => setTransactionDraft(null)}
-              onSave={saveTransactionDraft}
-              onPost={primaryPostAction}
-              onApproveInvoice={approveInvoice}
-              onPostInvoice={postInvoice}
-              onArchiveInvoice={archiveInvoice}
-              editMode={transactionEditMode}
-              setEditMode={setTransactionEditMode}
-              onCopyInvoice={copyInvoiceToNew}
-              saving={saving || busy}
-            />
+          {transactionEntryMode === "modal" && transactionDraft ? (
+            <TransactionEntryModal onClose={() => {
+              setTransactionDraft(null);
+              setTransactionEntryMode("");
+            }}>
+              <ManualSalesDocumentDrawer
+                draft={transactionDraft}
+                setDraft={setTransactionDraft}
+                errors={transactionErrors}
+                customer={selectedCustomer}
+                customers={customers}
+                invoices={invoices}
+                incomeAccounts={incomeAccounts}
+                vatCodes={vatCodes}
+                approvalRequired={Boolean(settingsForm.approval_required)}
+                bankAccounts={bankAccounts}
+                onClose={() => {
+                  setTransactionDraft(null);
+                  setTransactionEntryMode("");
+                }}
+                onSave={saveTransactionDraft}
+                onPost={primaryPostAction}
+                onApproveInvoice={approveInvoice}
+                onPostInvoice={postInvoice}
+                onArchiveInvoice={archiveInvoice}
+                editMode={transactionEditMode}
+                setEditMode={setTransactionEditMode}
+                onCopyInvoice={copyInvoiceToNew}
+                saving={saving || busy}
+              />
+            </TransactionEntryModal>
           ) : null}
+
         </div>
       );
     }
@@ -1012,7 +1298,7 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
               <Input value={customerQuery} onChange={(e) => setCustomerQuery(e.target.value)} placeholder="Search customer cards" className="h-9 pl-9" />
             </div>
           </div>
-          <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
+          <div className="grid gap-2 md:grid-cols-2 2xl:grid-cols-3">
             {visibleCustomers.map((customer) => (
               <CustomerCard
                 key={customer.id}
@@ -1050,9 +1336,42 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
               </div>
             </form>
           </div>
-        ) : null}
-      </div>
-    );
+          ) : null}
+
+          {transactionEntryMode === "modal" && transactionDraft ? (
+            <TransactionEntryModal onClose={() => {
+              setTransactionDraft(null);
+              setTransactionEntryMode("");
+            }}>
+              <ManualSalesDocumentDrawer
+                draft={transactionDraft}
+                setDraft={setTransactionDraft}
+                errors={transactionErrors}
+                customer={selectedCustomer}
+                customers={customers}
+                invoices={invoices}
+                incomeAccounts={incomeAccounts}
+                vatCodes={vatCodes}
+                approvalRequired={Boolean(settingsForm.approval_required)}
+                bankAccounts={bankAccounts}
+                onClose={() => {
+                  setTransactionDraft(null);
+                  setTransactionEntryMode("");
+                }}
+                onSave={saveTransactionDraft}
+                onPost={primaryPostAction}
+                onApproveInvoice={approveInvoice}
+                onPostInvoice={postInvoice}
+                onArchiveInvoice={archiveInvoice}
+                editMode={transactionEditMode}
+                setEditMode={setTransactionEditMode}
+                onCopyInvoice={copyInvoiceToNew}
+                saving={saving || busy}
+              />
+            </TransactionEntryModal>
+          ) : null}
+        </div>
+      );
   }
 
   if (activeTab === "Sales Invoices") {
@@ -1094,84 +1413,235 @@ function Section({ title, children }) {
 
 function CustomerCard({ customer, outstanding, receiptsOnAccount, lastActivity, onOpen }) {
   return (
-    <button type="button" onClick={onOpen} className="rounded-md border border-stone-200 bg-white p-4 text-left shadow-sm transition hover:border-emerald-300 hover:shadow-md">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h4 className="font-display text-base font-semibold text-stone-900">{customer.name || customer.business_name || "Unnamed customer"}</h4>
-          <p className="mt-0.5 text-xs text-stone-500">{customer.customer_code || customer.email || "No customer code"}</p>
+    <button type="button" onClick={onOpen} className="rounded-md border border-stone-200 bg-white p-2.5 text-left shadow-sm transition hover:border-emerald-300 hover:shadow-md">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <h4 className="truncate font-display text-sm font-semibold text-stone-900">{customer.name || customer.business_name || "Unnamed customer"}</h4>
+          <p className="mt-0.5 truncate text-[11px] text-stone-500">{customer.customer_code || customer.email || "No customer code"}</p>
         </div>
-        <Badge className={statusBadgeClass(customer.status || "active")}>{customer.status || "Active"}</Badge>
+        <Badge className={`${statusBadgeClass(customer.status || "active")} shrink-0`}>{customer.status || "Active"}</Badge>
       </div>
-      <div className="mt-4 grid grid-cols-2 gap-2">
-        <div className="rounded-md bg-amber-50 px-3 py-2">
-          <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-amber-700"><ReceiptText className="h-3.5 w-3.5" /> Outstanding</div>
-          <div className="mt-1 font-display text-lg font-bold text-amber-900">{formatMoney(outstanding)}</div>
+      <div className="mt-2 grid grid-cols-2 gap-1.5">
+        <div className="min-w-0 rounded-md bg-amber-50 px-2 py-1">
+          <div className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-amber-700"><ReceiptText className="h-3 w-3 shrink-0" /> Outstanding</div>
+          <div className="mt-0.5 truncate font-display text-sm font-bold text-amber-900">{formatMoney(outstanding)}</div>
         </div>
-        <div className="rounded-md bg-sky-50 px-3 py-2">
-          <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-sky-700"><WalletCards className="h-3.5 w-3.5" /> On account</div>
-          <div className="mt-1 font-display text-lg font-bold text-sky-900">{formatMoney(receiptsOnAccount)}</div>
+        <div className="min-w-0 rounded-md bg-sky-50 px-2 py-1">
+          <div className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-sky-700"><WalletCards className="h-3 w-3 shrink-0" /> On account</div>
+          <div className="mt-0.5 truncate font-display text-sm font-bold text-sky-900">{formatMoney(receiptsOnAccount)}</div>
         </div>
       </div>
-      <div className="mt-3 flex items-center justify-between text-xs text-stone-500">
-        <span className="inline-flex items-center gap-1.5"><FileText className="h-3.5 w-3.5" /> Last transaction</span>
-        <span className="font-medium text-stone-700">{lastActivity ? formatDate(lastActivity) : "-"}</span>
+      <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px] text-stone-500">
+        <span className="inline-flex min-w-0 items-center gap-1"><FileText className="h-3 w-3 shrink-0" /> <span className="truncate">Last transaction</span></span>
+        <span className="shrink-0 font-medium text-stone-700">{lastActivity ? formatDate(lastActivity) : "-"}</span>
       </div>
     </button>
   );
 }
 
-function LedgerTable({ rows, onOpen, totals, totalRows, totalPages, page, pageSize, loading = false, onPageChange, onPageSizeChange }) {
+function LedgerTable({
+  rows,
+  onOpen = () => {},
+  totalRows,
+  totalPages,
+  page,
+  pageSize,
+  loading = false,
+  onPageChange,
+  onPageSizeChange,
+  onUnallocate = () => {},
+  renderExpanded,
+  rowKey = (row) => row.ledgerKey || row.id,
+  selectedKeys = [],
+  setSelectedKeys = () => {},
+  allVisibleSelected = false,
+  sort = { key: "date", direction: "desc" },
+  onSort = () => {},
+  filterOpenKey,
+  setFilterOpenKey,
+  filters = {},
+  setters = {},
+  statuses = ["All"],
+  visibleColumns = ledgerColumnDefinitions.map((column) => column.key),
+  columnWidths = defaultLedgerColumnWidths,
+  setColumnWidths = () => {},
+}) {
+  const safeFilters = {
+    dateFrom: "",
+    dateTo: "",
+    type: "All",
+    reference: "",
+    description: "",
+    status: "All",
+    attachment: "All",
+    invoiceValueMin: "",
+    invoiceValueMax: "",
+    allocatedMin: "",
+    allocatedMax: "",
+    balanceMin: "",
+    balanceMax: "",
+    ...filters,
+  };
+  const safeSetters = {
+    dateFrom: () => {},
+    dateTo: () => {},
+    type: () => {},
+    reference: () => {},
+    description: () => {},
+    status: () => {},
+    attachment: () => {},
+    invoiceValueMin: () => {},
+    invoiceValueMax: () => {},
+    allocatedMin: () => {},
+    allocatedMax: () => {},
+    balanceMin: () => {},
+    balanceMax: () => {},
+    ...setters,
+  };
   const footerTotalRows = totalRows;
+  const [localFilterOpenKey, setLocalFilterOpenKey] = useState("");
+  const activeFilterOpenKey = filterOpenKey ?? localFilterOpenKey;
+  const activeSetFilterOpenKey = setFilterOpenKey || setLocalFilterOpenKey;
+  const tableColumnCount = visibleColumns.length + 1;
+  const tableMinWidth = 48 + visibleColumns.reduce((total, key) => total + (columnWidths[key] || 120), 0);
+  const isVisible = (key) => visibleColumns.includes(key);
+  const cellStyle = (key) => ({ width: columnWidths[key] || 120, minWidth: columnWidths[key] || 120 });
+  const resizeColumn = (key, width) => setColumnWidths((current) => ({ ...current, [key]: width }));
   return (
-    <div className="overflow-hidden rounded-md border border-stone-200">
-      <table className="w-full text-sm">
+    <div className="overflow-auto rounded-md border border-stone-200">
+      <table className="w-full text-sm" style={{ minWidth: tableMinWidth }}>
         <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
           <tr>
-            <th className="px-3 py-2 text-left">Date</th>
-            <th className="px-3 py-2 text-left">Type</th>
-            <th className="px-3 py-2 text-left">Reference</th>
-            <th className="px-3 py-2 text-left">Description</th>
-            <th className="px-3 py-2 text-right">Invoice value</th>
-            <th className="px-3 py-2 text-right">Paid / allocated</th>
-            <th className="px-3 py-2 text-right">Invoice balance</th>
-            <th className="px-3 py-2 text-left">Status</th>
-            <th className="px-3 py-2 text-left">Attachment</th>
+            <th className="w-9 px-2 py-1.5">
+              <input
+                type="checkbox"
+                checked={allVisibleSelected}
+                onChange={(event) => {
+                  const pageKeys = rows.map(rowKey);
+                  setSelectedKeys((current) => event.target.checked
+                    ? Array.from(new Set([...current, ...pageKeys]))
+                    : current.filter((key) => !pageKeys.includes(key)));
+                }}
+                aria-label="Select visible ledger rows"
+              />
+            </th>
+            {isVisible("date") ? <LedgerColumnHeader label="Date" sortKey="date" sort={sort} onSort={onSort} openKey={activeFilterOpenKey} setOpenKey={activeSetFilterOpenKey} activeFilter={Boolean(safeFilters.dateFrom || safeFilters.dateTo)} width={columnWidths.date} onResize={(width) => resizeColumn("date", width)}>
+              <div className="grid gap-2">
+                <SortControls sortKey="date" onSort={onSort} />
+                <Label className="text-[10px] uppercase text-stone-500">From</Label>
+                <Input type="date" value={safeFilters.dateFrom} onChange={(e) => safeSetters.dateFrom(e.target.value)} className="h-8 text-xs" />
+                <Label className="text-[10px] uppercase text-stone-500">To</Label>
+                <Input type="date" value={safeFilters.dateTo} onChange={(e) => safeSetters.dateTo(e.target.value)} className="h-8 text-xs" />
+                <ClearFilterButton onClick={() => { safeSetters.dateFrom(""); safeSetters.dateTo(""); }}>Clear date filter</ClearFilterButton>
+              </div>
+            </LedgerColumnHeader> : null}
+            {isVisible("type") ? <LedgerColumnHeader label="Type" sortKey="type" sort={sort} onSort={onSort} openKey={activeFilterOpenKey} setOpenKey={activeSetFilterOpenKey} activeFilter={safeFilters.type !== "All"} width={columnWidths.type} onResize={(width) => resizeColumn("type", width)}>
+              <SortControls sortKey="type" onSort={onSort} />
+              <select value={safeFilters.type} onChange={(e) => safeSetters.type(e.target.value)} className="mt-2 h-8 w-full rounded-md border border-stone-200 bg-white px-2 text-xs normal-case">
+                <option value="All">All types</option>
+                {transactionTypes.map((type) => <option key={type} value={type}>{type}</option>)}
+              </select>
+              <ClearFilterButton onClick={() => safeSetters.type("All")} />
+            </LedgerColumnHeader> : null}
+            {isVisible("reference") ? <LedgerColumnHeader label="Reference" sortKey="reference" sort={sort} onSort={onSort} openKey={activeFilterOpenKey} setOpenKey={activeSetFilterOpenKey} activeFilter={Boolean(safeFilters.reference)} width={columnWidths.reference} onResize={(width) => resizeColumn("reference", width)}>
+              <SortControls sortKey="reference" onSort={onSort} />
+              <Input value={safeFilters.reference} onChange={(e) => safeSetters.reference(e.target.value)} placeholder="Filter reference" className="mt-2 h-8 text-xs normal-case" />
+              <ClearFilterButton onClick={() => safeSetters.reference("")} />
+            </LedgerColumnHeader> : null}
+            {isVisible("description") ? <LedgerColumnHeader label="Description" sortKey="description" sort={sort} onSort={onSort} openKey={activeFilterOpenKey} setOpenKey={activeSetFilterOpenKey} activeFilter={Boolean(safeFilters.description)} width={columnWidths.description} onResize={(width) => resizeColumn("description", width)}>
+              <SortControls sortKey="description" onSort={onSort} />
+              <Input value={safeFilters.description} onChange={(e) => safeSetters.description(e.target.value)} placeholder="Filter description" className="mt-2 h-8 text-xs normal-case" />
+              <ClearFilterButton onClick={() => safeSetters.description("")} />
+            </LedgerColumnHeader> : null}
+            {isVisible("invoice_value") ? <LedgerColumnHeader label="Invoice value" sortKey="invoice_value" sort={sort} onSort={onSort} openKey={activeFilterOpenKey} setOpenKey={activeSetFilterOpenKey} align="right" activeFilter={Boolean(safeFilters.invoiceValueMin || safeFilters.invoiceValueMax)} width={columnWidths.invoice_value} onResize={(width) => resizeColumn("invoice_value", width)}>
+              <SortControls sortKey="invoice_value" onSort={onSort} />
+              <div className="mt-2 grid grid-cols-2 gap-1">
+                <Input type="number" step="0.01" value={safeFilters.invoiceValueMin} onChange={(e) => safeSetters.invoiceValueMin(e.target.value)} placeholder="Min" className="h-8 text-xs" />
+                <Input type="number" step="0.01" value={safeFilters.invoiceValueMax} onChange={(e) => safeSetters.invoiceValueMax(e.target.value)} placeholder="Max" className="h-8 text-xs" />
+              </div>
+              <ClearFilterButton onClick={() => { safeSetters.invoiceValueMin(""); safeSetters.invoiceValueMax(""); }} />
+            </LedgerColumnHeader> : null}
+            {isVisible("allocated") ? <LedgerColumnHeader label="Paid / allocated" sortKey="allocated" sort={sort} onSort={onSort} openKey={activeFilterOpenKey} setOpenKey={activeSetFilterOpenKey} align="right" activeFilter={Boolean(safeFilters.allocatedMin || safeFilters.allocatedMax)} width={columnWidths.allocated} onResize={(width) => resizeColumn("allocated", width)}>
+              <SortControls sortKey="allocated" onSort={onSort} />
+              <div className="mt-2 grid grid-cols-2 gap-1">
+                <Input type="number" step="0.01" value={safeFilters.allocatedMin} onChange={(e) => safeSetters.allocatedMin(e.target.value)} placeholder="Min" className="h-8 text-xs" />
+                <Input type="number" step="0.01" value={safeFilters.allocatedMax} onChange={(e) => safeSetters.allocatedMax(e.target.value)} placeholder="Max" className="h-8 text-xs" />
+              </div>
+              <ClearFilterButton onClick={() => { safeSetters.allocatedMin(""); safeSetters.allocatedMax(""); }} />
+            </LedgerColumnHeader> : null}
+            {isVisible("balance") ? <LedgerColumnHeader label="Invoice balance" sortKey="balance" sort={sort} onSort={onSort} openKey={activeFilterOpenKey} setOpenKey={activeSetFilterOpenKey} align="right" activeFilter={Boolean(safeFilters.balanceMin || safeFilters.balanceMax)} width={columnWidths.balance} onResize={(width) => resizeColumn("balance", width)}>
+              <SortControls sortKey="balance" onSort={onSort} />
+              <div className="mt-2 grid grid-cols-2 gap-1">
+                <Input type="number" step="0.01" value={safeFilters.balanceMin} onChange={(e) => safeSetters.balanceMin(e.target.value)} placeholder="Min" className="h-8 text-xs" />
+                <Input type="number" step="0.01" value={safeFilters.balanceMax} onChange={(e) => safeSetters.balanceMax(e.target.value)} placeholder="Max" className="h-8 text-xs" />
+              </div>
+              <ClearFilterButton onClick={() => { safeSetters.balanceMin(""); safeSetters.balanceMax(""); }} />
+            </LedgerColumnHeader> : null}
+            {isVisible("status") ? <LedgerColumnHeader label="Status" sortKey="status" sort={sort} onSort={onSort} openKey={activeFilterOpenKey} setOpenKey={activeSetFilterOpenKey} activeFilter={safeFilters.status !== "All"} width={columnWidths.status} onResize={(width) => resizeColumn("status", width)}>
+              <SortControls sortKey="status" onSort={onSort} />
+              <select value={safeFilters.status} onChange={(e) => safeSetters.status(e.target.value)} className="mt-2 h-8 w-full rounded-md border border-stone-200 bg-white px-2 text-xs normal-case">
+                {statuses.map((status) => <option key={status} value={status}>{status === "All" ? "All statuses" : status}</option>)}
+              </select>
+              <ClearFilterButton onClick={() => safeSetters.status("All")} />
+            </LedgerColumnHeader> : null}
+            {isVisible("attachment") ? <LedgerColumnHeader label="Attachment" sortKey="attachment" sort={sort} onSort={onSort} openKey={activeFilterOpenKey} setOpenKey={activeSetFilterOpenKey} align="right" activeFilter={safeFilters.attachment !== "All"} width={columnWidths.attachment} onResize={(width) => resizeColumn("attachment", width)}>
+              <SortControls sortKey="attachment" onSort={onSort} />
+              <select value={safeFilters.attachment} onChange={(e) => safeSetters.attachment(e.target.value)} className="mt-2 h-8 w-full rounded-md border border-stone-200 bg-white px-2 text-xs normal-case">
+                <option value="All">All</option>
+                <option value="Attached">Attached</option>
+                <option value="Missing">Missing</option>
+              </select>
+              <ClearFilterButton onClick={() => safeSetters.attachment("All")} />
+            </LedgerColumnHeader> : null}
           </tr>
         </thead>
         <tbody>
-          {rows.length ? rows.map((row) => (
-            <tr key={row.ledgerKey || row.id} onClick={() => onOpen(row)} className="cursor-pointer border-t border-stone-100 hover:bg-emerald-50/50">
-              <td className="px-3 py-2">{formatDate(row.date)}</td>
-              <td className="px-3 py-2 font-medium">
-                <div className="flex flex-wrap items-center gap-2">
-                  {row.type}
-                  {row.source === "frontend" ? <Badge className="bg-amber-100 text-amber-800">Staged</Badge> : null}
-                </div>
-              </td>
-              <td className="px-3 py-2">{row.reference || "-"}</td>
-              <td className="px-3 py-2 text-stone-600">{row.description}</td>
-              <td className="px-3 py-2 text-right">{arInvoiceValue(row) ? formatMoney(arInvoiceValue(row)) : "-"}</td>
-              <td className="px-3 py-2 text-right">{arAllocatedValue(row) ? formatMoney(arAllocatedValue(row)) : "-"}</td>
-              <td className="px-3 py-2 text-right font-semibold">{arInvoiceBalance(row) ? formatMoney(arInvoiceBalance(row)) : "-"}</td>
-              <td className="px-3 py-2"><Badge className={statusBadgeClass(row.status)}>{row.status || "Open"}</Badge></td>
-              <td className="px-3 py-2">{hasAttachment(row) ? <Badge className="bg-emerald-100 text-emerald-800">Attached</Badge> : "-"}</td>
-            </tr>
-          )) : (
-            <tr><td colSpan="9" className="px-3 py-10 text-center text-stone-500">No customer ledger activity yet.</td></tr>
+          {rows.length ? rows.map((row) => {
+            const expanded = renderExpanded?.(row);
+            return (
+              <React.Fragment key={row.ledgerKey || row.id}>
+                <tr onClick={() => onOpen(row)} className={`cursor-pointer border-t border-stone-100 hover:bg-emerald-50/50 ${row.selected ? "bg-emerald-50 ring-1 ring-inset ring-emerald-200" : ""}`}>
+                  <td className="px-2 py-1.5" onClick={(event) => event.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      checked={selectedKeys.includes(rowKey(row))}
+                      onChange={(event) => {
+                        const key = rowKey(row);
+                        setSelectedKeys((current) => event.target.checked ? [...current, key] : current.filter((item) => item !== key));
+                      }}
+                      aria-label={`Select ${row.reference || row.type}`}
+                    />
+                  </td>
+                  {isVisible("date") ? <td className="px-2 py-1.5" style={cellStyle("date")}>{formatDate(row.date)}</td> : null}
+                  {isVisible("type") ? <td className="px-2 py-1.5 font-medium" style={cellStyle("type")}>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {row.type}
+                      {row.source === "frontend" ? <Badge className="bg-amber-100 text-amber-800">Staged</Badge> : null}
+                    </div>
+                  </td> : null}
+                  {isVisible("reference") ? <td className="px-2 py-1.5" style={cellStyle("reference")}>{row.reference || "-"}</td> : null}
+                  {isVisible("description") ? <td className="px-2 py-1.5 text-stone-600" style={cellStyle("description")}>{row.description}</td> : null}
+                  {isVisible("invoice_value") ? <td className="px-2 py-1.5 text-right" style={cellStyle("invoice_value")}>{arInvoiceValue(row) ? formatMoney(arInvoiceValue(row)) : "-"}</td> : null}
+                  {isVisible("allocated") ? <td className="px-2 py-1.5 text-right" style={cellStyle("allocated")}>{arAllocatedValue(row) ? formatMoney(arAllocatedValue(row)) : "-"}</td> : null}
+                  {isVisible("balance") ? <td className="px-2 py-1.5 text-right font-semibold" style={cellStyle("balance")}>{arInvoiceBalance(row) ? formatMoney(arInvoiceBalance(row)) : "-"}</td> : null}
+                  {isVisible("status") ? <td className="px-2 py-1.5" style={cellStyle("status")}>
+                    <Badge className={row.is_over_allocated ? "bg-red-100 text-red-800" : statusBadgeClass(row.status)}>{row.display_status || displayStatus(row.status || "Open")}</Badge>
+                    {row.is_over_allocated ? <div className="mt-1 text-xs font-medium text-red-700">Allocation exceeds invoice value</div> : null}
+                    {row.can_unallocate ? <Button type="button" variant="outline" size="sm" className="mt-1" onClick={(event) => { event.stopPropagation(); onUnallocate(row); }}>Unallocate</Button> : null}
+                  </td> : null}
+                  {isVisible("attachment") ? <td className="px-2 py-1.5" style={cellStyle("attachment")}>{hasAttachment(row) ? <Badge className="bg-emerald-100 text-emerald-800">Attached</Badge> : "-"}</td> : null}
+                </tr>
+                {expanded ? (
+                  <tr className="border-t border-emerald-200 bg-emerald-50/40">
+                    <td colSpan={tableColumnCount} className="p-0">{expanded}</td>
+                  </tr>
+                ) : null}
+              </React.Fragment>
+            );
+          }) : (
+            <tr><td colSpan={tableColumnCount} className="px-3 py-10 text-center text-stone-500">No customer ledger activity yet.</td></tr>
           )}
         </tbody>
-        {totals && rows.length ? (
-          <tfoot className="border-t border-stone-200 bg-stone-50 text-sm font-semibold">
-            <tr>
-              <td colSpan="4" className="px-3 py-2 text-right">Visible total</td>
-              <td className="px-3 py-2 text-right">{formatMoney(totals.invoiceValue)}</td>
-              <td className="px-3 py-2 text-right">{formatMoney(totals.allocated)}</td>
-              <td className="px-3 py-2 text-right">{formatMoney(totals.balance)}</td>
-              <td className="px-3 py-2" />
-              <td className="px-3 py-2" />
-            </tr>
-          </tfoot>
-        ) : null}
       </table>
       {footerTotalRows ? (
         <PaginationFooter
@@ -1230,7 +1700,171 @@ function RegisterPanel({ title, rows = [], numberKey, dateKey, amountKey, empty,
   );
 }
 
-function ManualSalesDocumentDrawer({ draft, setDraft, errors, customer, customers, invoices, incomeAccounts, vatCodes, bankAccounts, onClose, onSave, onPost, onApproveInvoice, onPostInvoice, onArchiveInvoice, editMode, setEditMode, onCopyInvoice, saving }) {
+function TransactionEntryModal({ children, onClose }) {
+  const dialogRef = useRef(null);
+  const initialDraftRef = useRef(JSON.stringify(children?.props?.draft || {}));
+  const isDirty = JSON.stringify(children?.props?.draft || {}) !== initialDraftRef.current;
+  const requestClose = useCallback(() => {
+    if (isDirty && !window.confirm("You have unsaved changes. Close this transaction without saving?")) return;
+    onClose();
+  }, [isDirty, onClose]);
+
+  useEffect(() => {
+    const scrollY = window.scrollY;
+    const previous = { overflow: document.body.style.overflow, htmlOverflow: document.documentElement.style.overflow };
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+    const focusable = dialogRef.current?.querySelector('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])');
+    focusable?.focus();
+    return () => {
+      document.body.style.overflow = previous.overflow;
+      document.documentElement.style.overflow = previous.htmlOverflow;
+      window.scrollTo(0, scrollY);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") { event.preventDefault(); requestClose(); return; }
+      if (event.key !== "Tab") return;
+      const focusable = [...(dialogRef.current?.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])];
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [requestClose]);
+
+  const guardedChildren = React.isValidElement(children) ? React.cloneElement(children, { onClose: requestClose }) : children;
+  return (
+    <div className="fixed inset-0 z-50 h-[100dvh] w-screen overflow-hidden bg-stone-950/60 p-0 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose(); }}>
+      <div className="mx-auto flex h-full w-full max-w-[1500px] items-stretch sm:items-center" onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose(); }}>
+        <div ref={dialogRef} role="dialog" aria-modal="true" tabIndex={-1} className="relative flex max-h-full min-h-0 w-full max-w-[min(1380px,calc(100vw-24px))] overflow-hidden rounded-none bg-white shadow-2xl sm:max-h-[calc(100dvh-32px)] sm:rounded-md">
+          <Button type="button" variant="outline" size="icon" onClick={requestClose} className="absolute right-3 top-3 z-20 bg-white">
+            <X className="h-4 w-4" />
+          </Button>
+          <div className="min-h-0 w-full overflow-hidden">
+            {guardedChildren}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LedgerColumnHeader({ label, sortKey, sort, onSort, children, align = "left", activeFilter = false, openKey = "", setOpenKey = () => {}, width, onResize }) {
+  const wrapperRef = useRef(null);
+  const open = openKey === sortKey;
+  const sorted = sort?.key === sortKey;
+  const indicator = sorted ? (sort.direction === "asc" ? "Asc" : "Desc") : "";
+  const startResize = (event) => {
+    if (!onResize) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startWidth = width || wrapperRef.current?.getBoundingClientRect().width || 120;
+    const handleMouseMove = (moveEvent) => {
+      onResize(Math.max(88, Math.round(startWidth + moveEvent.clientX - startX)));
+    };
+    const handleMouseUp = () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+  };
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeOnOutsideClick = (event) => {
+      if (wrapperRef.current?.contains(event.target)) return;
+      setOpenKey("");
+    };
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    return () => document.removeEventListener("mousedown", closeOnOutsideClick);
+  }, [open, setOpenKey]);
+
+  return (
+    <th ref={wrapperRef} className={`relative select-none px-2 py-1.5 align-top ${align === "right" ? "text-right" : "text-left"}`} style={width ? { width, minWidth: width } : undefined}>
+      <div className={`flex items-center gap-1 ${align === "right" ? "justify-end" : "justify-start"}`}>
+        <span className="font-semibold text-stone-600">{label}</span>
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            setOpenKey(open ? "" : sortKey);
+          }}
+          className={`inline-flex h-6 w-6 items-center justify-center rounded-md border transition ${activeFilter || sorted ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-transparent text-stone-400 hover:border-stone-200 hover:bg-white hover:text-stone-700"}`}
+          aria-label={`${label} filter and sort`}
+          title={`${label} filter and sort`}
+        >
+          <Filter className="h-3.5 w-3.5" />
+        </button>
+        {indicator ? <span className="text-[10px] normal-case text-emerald-700">{indicator}</span> : null}
+      </div>
+      {open ? (
+        <div className={`absolute z-30 mt-1 w-56 rounded-md border border-stone-200 bg-white p-2 text-left normal-case tracking-normal shadow-lg ${align === "right" ? "right-0" : "left-0"}`}>
+          {children || <SortControls sortKey={sortKey} onSort={onSort} />}
+        </div>
+      ) : null}
+      {onResize ? <span role="separator" aria-orientation="vertical" className="absolute right-0 top-0 h-full w-1 cursor-col-resize bg-transparent hover:bg-emerald-200" onMouseDown={startResize} /> : null}
+    </th>
+  );
+}
+
+function ColumnSelectorPanel({ columns, visibleColumns, setVisibleColumns, onClose }) {
+  const visibleSet = new Set(visibleColumns);
+  const toggleColumn = (key) => {
+    setVisibleColumns((current) => {
+      if (current.includes(key)) return current.length === 1 ? current : current.filter((item) => item !== key);
+      const order = columns.map((column) => column.key);
+      return [...current, key].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+    });
+  };
+  return (
+    <div className="mb-3 flex justify-end">
+      <div className="w-full max-w-sm rounded-md border border-stone-200 bg-white p-3 shadow-lg">
+        <div className="mb-2 flex items-start justify-between gap-3">
+          <div>
+            <h4 className="text-sm font-semibold text-stone-900">Select columns</h4>
+            <p className="text-xs text-stone-500">Choose the columns shown in this ledger.</p>
+          </div>
+          <Button type="button" variant="outline" size="sm" onClick={onClose}>Close</Button>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {columns.map((column) => (
+            <label key={column.key} className="flex items-center gap-2 text-sm text-stone-700">
+              <input type="checkbox" checked={visibleSet.has(column.key)} onChange={() => toggleColumn(column.key)} />
+              <span>{column.label}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SortControls({ sortKey, onSort }) {
+  return (
+    <div className="grid grid-cols-2 gap-1">
+      <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={() => onSort(sortKey, "asc")}>Asc</Button>
+      <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={() => onSort(sortKey, "desc")}>Desc</Button>
+    </div>
+  );
+}
+
+function ClearFilterButton({ children = "Clear filter", onClick }) {
+  return (
+    <Button type="button" variant="ghost" size="sm" className="mt-2 h-7 w-full justify-center text-xs" onClick={onClick}>
+      {children}
+    </Button>
+  );
+}
+
+function ManualSalesDocumentDrawer({ draft, setDraft, errors, customer, customers, invoices, incomeAccounts, vatCodes, approvalRequired, bankAccounts, onClose, onSave, onPost, onApproveInvoice, onPostInvoice, onArchiveInvoice, editMode, setEditMode, onCopyInvoice, saving }) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const readOnly = isReadOnlyTransaction(draft);
   const existingLedgerRecord = Boolean(draft.id) && draft.source !== "frontend";
@@ -1248,7 +1882,7 @@ function ManualSalesDocumentDrawer({ draft, setDraft, errors, customer, customer
   const customerInvoices = invoices.filter((invoice) => invoice.customer_id === draft.customer_id && Number(invoice.outstanding_amount || 0) > 0);
   const set = (key, value) => setDraft((current) => ({ ...current, [key]: value }));
   const setLine = (index, key, value) => setDraft((current) => ({ ...current, lines: current.lines.map((line, lineIndex) => lineIndex === index ? { ...line, [key]: value } : line) }));
-  const existingInvoiceStatus = String(draft.status || "").toLowerCase();
+  const existingInvoiceStatus = String(draft.status || "").trim().toLowerCase().replaceAll(" ", "_");
   const canApproveExistingInvoice = draft.source === "invoice" && !draft.posted_journal_id && ["draft", "awaiting_approval"].includes(existingInvoiceStatus);
   const canPostExistingInvoice = draft.source === "invoice" && !draft.posted_journal_id && existingInvoiceStatus === "approved";
   const canArchiveExistingInvoice = draft.source === "invoice" && ["posted", "paid", "part_paid"].includes(String(draft.status || "").toLowerCase());
@@ -1259,15 +1893,15 @@ function ManualSalesDocumentDrawer({ draft, setDraft, errors, customer, customer
   const sourceLabel = draft.source_submission_id ? "Source: Submitted Items" : "Source document";
 
   return (
-    <div className="fixed inset-2 z-40 overflow-hidden rounded-md border border-stone-200 bg-white shadow-2xl sm:inset-4">
-      <div className="flex h-full min-h-0 flex-col">
-        <header className="border-b border-stone-200 bg-stone-50 px-4 py-3">
+    <div className="w-full overflow-hidden rounded-b-md border-t border-emerald-200 bg-white shadow-inner">
+      <div className="flex max-h-[calc(100dvh-32px)] min-h-0 flex-col">
+        <header className="sticky top-0 z-10 border-b border-stone-200 bg-stone-50 px-4 py-3">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="font-display text-lg font-semibold text-stone-900">{customer?.name || customer?.business_name || draft.customer_name || "Customer"}</h3>
                 <Badge variant="secondary">{customer?.customer_code || draft.customer_code || "No customer code"}</Badge>
-                <Badge className={statusBadgeClass(draft.status)}>{displayStatus(draft.status || "Draft")}</Badge>
+                <Badge className={statusBadgeClass(draft.status)}>{displayStatus(draft.status || "Awaiting approval")}</Badge>
               </div>
               <p className="mt-1 text-sm text-stone-500">
                 Manual Accounts Receivable sales document entry. Customer is locked from the open customer account.
@@ -1276,11 +1910,11 @@ function ManualSalesDocumentDrawer({ draft, setDraft, errors, customer, customer
             <div className="flex flex-wrap gap-2">
               {existingLedgerRecord ? <Button type="button" variant="outline" onClick={() => set("showImpact", !draft.showImpact)}>View ledger impact</Button> : null}
               {existingLedgerRecord ? <Button type="button" variant="outline" onClick={() => set("showAudit", !draft.showAudit)}>View audit trail</Button> : null}
-              {draft.source === "invoice" && draft.id ? <Button type="button" variant="outline" disabled={saving} onClick={onCopyInvoice}>Copy to new invoice</Button> : null}
+              {draft.source === "invoice" && draft.id ? <Button type="button" variant="outline" disabled={saving} onClick={onCopyInvoice}>Copy to new sales invoice</Button> : null}
               {existingLedgerRecord && !readOnly && !editMode ? <Button type="button" onClick={() => setEditMode(true)} style={{ background: "var(--brand)" }}><Edit3 className="mr-2 h-4 w-4" /> Edit</Button> : null}
               {existingLedgerRecord && editMode ? <Button type="button" variant="outline" onClick={() => setEditMode(false)}>Cancel edit</Button> : null}
               <Button type="button" variant="outline" onClick={onClose}>Cancel / close</Button>
-              {!formReadOnly && !isReceipt ? <Button type="button" variant="outline" disabled={saving} onClick={(event) => onSave(event)}>Save draft</Button> : null}
+              {!formReadOnly && !isReceipt ? <Button type="button" variant="outline" disabled={saving} onClick={(event) => onSave(event)}>{approvalRequired ? "Submit for approval" : "Post to AR"}</Button> : null}
               {!formReadOnly && !existingLedgerRecord ? <Button type="button" disabled={saving} onClick={onPost} style={{ background: "var(--brand)" }}>{isReceipt ? "Post receipt" : "Post to AR"}</Button> : null}
               {canApproveExistingInvoice ? <Button type="button" disabled={saving} onClick={() => onApproveInvoice(draft)} style={{ background: "var(--brand)" }}>Approve</Button> : null}
               {canPostExistingInvoice ? <Button type="button" disabled={saving} onClick={() => onPostInvoice(draft)} style={{ background: "var(--brand)" }}>Post</Button> : null}
@@ -1290,10 +1924,11 @@ function ManualSalesDocumentDrawer({ draft, setDraft, errors, customer, customer
           </div>
         </header>
 
-        <div className="grid min-h-0 flex-1 gap-0 xl:grid-cols-[minmax(0,1fr)_340px]">
-          <form onSubmit={onSave} className="min-h-0 overflow-auto p-4">
+        <div className="grid min-h-0 flex-1 gap-0 overflow-y-auto overflow-x-hidden xl:grid-cols-[minmax(0,1fr)_340px]">
+          <form onSubmit={onSave} className="min-h-0 min-w-0 p-3">
             {readOnly ? <div className="mb-3 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-600">Posted, paid, part-paid, allocated and archived customer ledger records are view only. Corrections should be entered as a customer credit note or receipt allocation flow.</div> : null}
             {existingLedgerRecord && !readOnly && !editMode ? <div className="mb-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">This document is open in read-only view mode. Select Edit to update its header or line items.</div> : null}
+            {errors.backend ? <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{errors.backend}</div> : null}
             {errors.customer ? <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{errors.customer}</div> : null}
             <div className="grid gap-4">
               <Section title="Coding / accounting fields">
@@ -1404,7 +2039,7 @@ function ManualSalesDocumentDrawer({ draft, setDraft, errors, customer, customer
               ) : null}
             </div>
           </form>
-          <aside className="min-h-0 space-y-3 overflow-auto border-t border-stone-200 bg-stone-50 p-4 lg:border-l lg:border-t-0">
+          <aside className="min-h-0 min-w-0 space-y-3 border-t border-stone-200 bg-stone-50 p-3 xl:border-l xl:border-t-0">
             <Section title="Source document">
               <div className="flex min-h-56 items-center justify-center rounded-md border border-dashed border-stone-300 bg-stone-50 p-4 text-center text-sm text-stone-500">
                 {hasAttachment(draft) ? (

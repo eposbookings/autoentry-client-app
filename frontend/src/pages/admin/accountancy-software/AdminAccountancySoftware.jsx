@@ -64,6 +64,15 @@ const EMPTY_ACCOUNT_FORM = {
   banking_enabled: false,
   active: true,
   description: "",
+  opening_balance: "",
+  original_opening_balance: "",
+  bank_account_id: "",
+  bank_name: "",
+  account_number: "",
+  sort_code: "",
+  currency: "GBP",
+  allow_payments: true,
+  allow_receipts: true,
 };
 
 export default function AdminAccountancySoftware() {
@@ -192,7 +201,7 @@ export default function AdminAccountancySoftware() {
     }
     setBusy(true);
     try {
-      await api.put(`/admin/accounting/clients/${workspace.client.id}/accounts/${selectedAccount.id}`, accountForm);
+      await api.put(`/admin/accounting/clients/${workspace.client.id}/accounts/${selectedAccount.id}`, accountUpdatePayload(accountForm));
       toast.success("Account updated");
       setAccountDrawerMode("");
       setSelectedAccount(null);
@@ -205,6 +214,24 @@ export default function AdminAccountancySoftware() {
       } else {
         toast.error(formatApiError(e));
       }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteAccount(account) {
+    if (!workspace?.client?.id || !account?.id || !account.can_delete) return;
+    if (!window.confirm(`Permanently delete inactive nominal ${account.code} - ${account.name}?`)) return;
+    setBusy(true);
+    try {
+      await api.delete(`/admin/accounting/clients/${workspace.client.id}/accounts/${account.id}`);
+      toast.success("Inactive nominal deleted");
+      setAccountDrawerMode("");
+      setSelectedAccount(null);
+      setAccountForm(EMPTY_ACCOUNT_FORM);
+      await loadWorkspace(workspace.client.id);
+    } catch (e) {
+      toast.error(formatApiError(e));
     } finally {
       setBusy(false);
     }
@@ -438,6 +465,7 @@ export default function AdminAccountancySoftware() {
           setAccountForm={setAccountForm}
           createAccount={createAccount}
           updateAccount={updateAccount}
+          deleteAccount={deleteAccount}
           accountDrawerMode={accountDrawerMode}
           selectedAccount={selectedAccount}
           accountBackendMessage={accountBackendMessage}
@@ -543,8 +571,8 @@ function AccountingClientCards({ clients, q, setQ, openClient, refresh, busy }) 
 
 function ClientAccountingHome({ workspace, openModule, backToClients, refresh, busy }) {
   return (
-    <div className="space-y-4">
-      <header className="flex flex-col gap-3 rounded-md border border-stone-200 bg-white p-4 xl:flex-row xl:items-start xl:justify-between">
+    <div className="space-y-3">
+      <header className="flex flex-col gap-3 rounded-md border border-stone-200 bg-white p-3 xl:flex-row xl:items-start xl:justify-between">
         <div className="min-w-0">
           <Button variant="outline" onClick={backToClients} className="mb-3 gap-2">
             <ArrowRight className="h-4 w-4 rotate-180" /> Accounting Software
@@ -562,12 +590,12 @@ function ClientAccountingHome({ workspace, openModule, backToClients, refresh, b
         </Button>
       </header>
 
-      <section className="rounded-md border border-stone-200 bg-white p-4">
-        <div className="mb-4">
-          <h2 className="font-display text-xl font-bold text-stone-900">Accounting Software</h2>
-          <p className="mt-1 text-sm text-stone-600">Choose the module you want to work in.</p>
+      <section className="rounded-md border border-stone-200 bg-white p-2.5">
+        <div className="mb-2">
+          <h2 className="font-display text-lg font-bold text-stone-900">Accounting Software</h2>
+          <p className="mt-0.5 text-xs text-stone-600">Choose the module you want to work in.</p>
         </div>
-        <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
+        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
           {MODULES.map((item) => (
             <AccountingModuleCard
               key={item.key}
@@ -590,22 +618,22 @@ function AccountingModuleCard({ moduleKey, icon: Icon, workspace, onOpen }) {
     <button
       type="button"
       onClick={onOpen}
-      className="group flex min-h-72 flex-col rounded-md border border-stone-200 bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-md"
+      className="group flex min-h-36 flex-col rounded-md border border-stone-200 bg-white p-2.5 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-md"
     >
-      <span className="flex items-start justify-between gap-3">
-        <span className="rounded-md bg-emerald-50 p-2 text-emerald-800">
-          <Icon className="h-5 w-5" />
+      <span className="flex items-start justify-between gap-2">
+        <span className="rounded-md bg-emerald-50 p-1 text-emerald-800">
+          <Icon className="h-3.5 w-3.5" />
         </span>
-        <ArrowRight className="h-4 w-4 text-stone-400 transition group-hover:translate-x-1 group-hover:text-emerald-800" />
+        <ArrowRight className="h-3 w-3 text-stone-400 transition group-hover:translate-x-1 group-hover:text-emerald-800" />
       </span>
-      <span className="mt-4 block font-display text-xl font-bold text-stone-900">{detail.title}</span>
-      <span className="mt-3 block text-xs font-semibold uppercase tracking-wide text-stone-500">Manage</span>
-      <span className="mt-2 grid gap-1 text-sm text-stone-600">
-        {detail.manage.map((item) => <span key={item}>- {item}</span>)}
+      <span className="mt-2 block font-display text-sm font-bold text-stone-900">{detail.title}</span>
+      <span className="mt-1 block text-[9px] font-semibold uppercase tracking-wide text-stone-500">Manage</span>
+      <span className="mt-0.5 grid grid-cols-2 gap-x-2 gap-y-0.5 text-[11px] text-stone-600">
+        {detail.manage.map((item) => <span key={item} className="truncate">- {item}</span>)}
       </span>
-      <span className="mt-auto border-t border-stone-100 pt-3">
-        <span className="block text-xs font-semibold uppercase tracking-wide text-stone-500">{detail.statLabel}</span>
-        <span className="mt-1 block font-display text-lg font-bold text-stone-900">{statValue}</span>
+      <span className="mt-1.5 border-t border-stone-100 pt-1.5">
+        <span className="block text-[9px] font-semibold uppercase tracking-wide text-stone-500">{detail.statLabel}</span>
+        <span className="mt-0.5 block font-display text-sm font-bold text-stone-900">{statValue}</span>
       </span>
     </button>
   );
@@ -622,6 +650,7 @@ function ModuleWorkspace(props) {
     setAccountForm,
     createAccount,
     updateAccount,
+    deleteAccount,
     accountDrawerMode,
     selectedAccount,
     accountBackendMessage,
@@ -658,9 +687,20 @@ function ModuleWorkspace(props) {
     busy,
   } = props;
   const [filters, setFilters] = useState({ date_from: "", date_to: "", financial_year_id: "", period_id: "", search: "" });
+  const [recordHeaderContext, setRecordHeaderContext] = useState(null);
+  const [recordActionMenuOpen, setRecordActionMenuOpen] = useState(false);
   const detail = MODULE_DETAILS[module];
   const isBankingModule = module === "banking";
   const suppressGlobalFilterBar = isBankingModule || module === "payables" || module === "receivables";
+
+  useEffect(() => {
+    setRecordHeaderContext(null);
+    setRecordActionMenuOpen(false);
+  }, [module, moduleTab]);
+
+  useEffect(() => {
+    setRecordActionMenuOpen(false);
+  }, [recordHeaderContext?.activeTab, recordHeaderContext?.title]);
 
   function renderTab() {
     if (module === "ai_workspace") {
@@ -668,15 +708,15 @@ function ModuleWorkspace(props) {
     }
 
     if (module === "payables") {
-      return <AccountsPayableWorkspace workspace={workspace} tab={moduleTab} setTab={setModuleTab} reloadWorkspace={reloadWorkspace} busy={busy} />;
+      return <AccountsPayableWorkspace workspace={workspace} tab={moduleTab} setTab={setModuleTab} reloadWorkspace={reloadWorkspace} busy={busy} setHeaderContext={setRecordHeaderContext} />;
     }
 
     if (module === "receivables") {
-      return <AccountsReceivableWorkspace workspace={workspace} tab={moduleTab} setTab={setModuleTab} reloadWorkspace={reloadWorkspace} busy={busy} />;
+      return <AccountsReceivableWorkspace workspace={workspace} tab={moduleTab} setTab={setModuleTab} reloadWorkspace={reloadWorkspace} busy={busy} setHeaderContext={setRecordHeaderContext} />;
     }
 
     if (module === "banking") {
-      return <BankingWorkspace workspace={workspace} tab={moduleTab} reloadWorkspace={reloadWorkspace} busy={busy} />;
+      return <BankingWorkspace workspace={workspace} tab={moduleTab} reloadWorkspace={reloadWorkspace} busy={busy} setHeaderContext={setRecordHeaderContext} />;
     }
 
     if (module === "vat") {
@@ -705,6 +745,7 @@ function ModuleWorkspace(props) {
             setForm={setAccountForm}
             createAccount={createAccount}
             updateAccount={updateAccount}
+            deleteAccount={deleteAccount}
             busy={busy}
             drawerMode={accountDrawerMode}
             selectedAccount={selectedAccount}
@@ -745,16 +786,31 @@ function ModuleWorkspace(props) {
   return (
     <div className="space-y-4">
       <header className="rounded-md border border-stone-200 bg-white p-4">
-        <Button variant="outline" onClick={backToClientHome} className="mb-3 gap-2">
-          <ArrowRight className="h-4 w-4 rotate-180" /> {workspace.client.business_name}
-        </Button>
-        <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
-          <div>
-            <p className="text-sm font-semibold uppercase tracking-wide text-emerald-800">Accounting Software</p>
-            <h1 className="mt-1 font-display text-2xl font-bold text-stone-900">{detail.title}</h1>
-            <p className="mt-1 text-sm text-stone-500">{workspace.client.business_name}</p>
+        <div className="mb-3 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" onClick={backToClientHome} className="gap-2">
+              <ArrowRight className="h-4 w-4 rotate-180" /> {workspace.client.business_name}
+            </Button>
+            {recordHeaderContext?.backLabel ? (
+              <Button type="button" variant="outline" onClick={recordHeaderContext.onBack} className="gap-2">
+                <ArrowRight className="h-4 w-4 rotate-180" /> {recordHeaderContext.backLabel}
+              </Button>
+            ) : null}
           </div>
-          {!isBankingModule ? (
+          {recordHeaderContext?.variant === "banking" && recordHeaderContext?.tabs?.length ? (
+            <div className="flex flex-wrap gap-2">
+              {recordHeaderContext.tabs.map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => recordHeaderContext.onTabChange?.(tab)}
+                  className={`rounded-md px-3 py-2 text-sm font-semibold ${recordHeaderContext.activeTab === tab ? "bg-[var(--brand)] text-white" : "bg-stone-100 text-stone-700 hover:bg-stone-200"}`}
+                >
+                  {tab}
+                </button>
+              ))}
+            </div>
+          ) : !isBankingModule ? (
             <div className="flex flex-wrap gap-2">
               {detail.tabs.map((tab) => (
                 <button
@@ -766,7 +822,7 @@ function ModuleWorkspace(props) {
                   {tab}
                 </button>
               ))}
-              {module === "coa" && moduleTab === "Chart of Accounts" ? (
+              {!recordHeaderContext && module === "coa" && moduleTab === "Chart of Accounts" ? (
                 <>
                   <Button type="button" variant="outline" onClick={openAccountHistoryDrawer}>History</Button>
                   <Button type="button" className="gap-2" onClick={openAddAccountDrawer} style={{ background: "var(--brand)" }}>
@@ -774,6 +830,72 @@ function ModuleWorkspace(props) {
                   </Button>
                 </>
               ) : null}
+            </div>
+          ) : null}
+        </div>
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+          <div className="flex flex-wrap items-end gap-4">
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-wide text-emerald-800">Accounting Software</p>
+              <h1 className="mt-1 font-display text-2xl font-bold text-stone-900">{detail.title}</h1>
+              <p className="mt-1 text-sm text-stone-500">{workspace.client.business_name}</p>
+            </div>
+            {recordHeaderContext?.title ? (
+              <div className="border-l border-stone-200 pl-4">
+                <h2 className="font-display text-xl font-semibold text-stone-900">{recordHeaderContext.title}</h2>
+                <p className="mt-1 text-sm text-stone-500">{recordHeaderContext.subtitle}</p>
+              </div>
+            ) : null}
+          </div>
+          {recordHeaderContext?.variant === "banking" ? (
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {recordHeaderContext.actionMenu?.length ? (
+                <div className="relative">
+                  <Button type="button" variant="outline" onClick={() => setRecordActionMenuOpen((open) => !open)}>
+                    Action
+                  </Button>
+                  {recordActionMenuOpen ? (
+                    <div className="absolute right-0 z-40 mt-2 w-56 rounded-md border border-stone-200 bg-white p-1 shadow-lg">
+                      {recordHeaderContext.actionMenu.map((action) => (
+                        <button
+                          key={action.label}
+                          type="button"
+                          onClick={() => {
+                            setRecordActionMenuOpen(false);
+                            action.onClick?.();
+                          }}
+                          className="block w-full rounded px-3 py-2 text-left text-sm font-semibold text-stone-700 hover:bg-stone-100"
+                        >
+                          {action.label}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              {recordHeaderContext.actions?.map((action) => (
+                <Button key={action.label} type="button" variant="outline" className="gap-2" onClick={action.onClick}>
+                  {action.icon === false ? null : <Plus className="h-4 w-4" />} {action.label}
+                </Button>
+              ))}
+            </div>
+          ) : recordHeaderContext?.tabs?.length ? (
+            <div className="flex flex-wrap gap-2">
+              {recordHeaderContext.tabs.map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => recordHeaderContext.onTabChange?.(tab)}
+                  className={`rounded-md px-3 py-2 text-sm font-semibold ${recordHeaderContext.activeTab === tab ? "bg-[var(--brand)] text-white" : "bg-stone-100 text-stone-700 hover:bg-stone-200"}`}
+                >
+                  {tab}
+                </button>
+              ))}
+              {recordHeaderContext.actions?.map((action) => (
+                <Button key={action.label} type="button" variant="outline" className="gap-2" onClick={action.onClick}>
+                  {action.icon === false ? null : <Plus className="h-4 w-4" />} {action.label}
+                </Button>
+              ))}
             </div>
           ) : null}
         </div>
@@ -908,16 +1030,106 @@ function PaginatedGlTransactions({ workspace, filters }) {
 function PaginatedGlJournals({ workspace, filters }) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [openId, setOpenId] = useState("");
+  const [detail, setDetail] = useState(null);
+  const [editMode, setEditMode] = useState(false);
+  const [modalDraft, setModalDraft] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const clientId = workspace?.client?.id;
+  const accounts = (workspace?.accounts || []).filter((account) => account.active !== false);
   useEffect(() => { setPage(1); }, [filters?.date_from, filters?.date_to, filters?.financial_year_id, filters?.period_id, filters?.search, pageSize]);
-  const { data, loading, error } = useGlPage(workspace, "journals", filters, page, pageSize);
+  const { data, loading, error } = useGlPage(workspace, "journals", filters, page, pageSize, { _refresh: refreshKey });
+  const refresh = () => setRefreshKey((value) => value + 1);
+  async function loadJournalDetail(journalId) {
+    const { data: response } = await api.get(`/admin/accounting/clients/${clientId}/general-ledger/journals/${journalId}`);
+    setDetail(response);
+  }
+  async function toggleJournal(row) {
+    if (openId === row.journal_id) { setOpenId(""); setDetail(null); setEditMode(false); return; }
+    setOpenId(row.journal_id); setDetail(null); setEditMode(false);
+    try { await loadJournalDetail(row.journal_id); }
+    catch (requestError) { toast.error(formatApiError(requestError)); setOpenId(""); }
+  }
+  async function saveJournal(draft, closeModal = false) {
+    const validation = validateJournalDraft(draft);
+    if (validation) return toast.error(validation);
+    setSaving(true);
+    try {
+      if (closeModal) await api.post(`/admin/accounting/clients/${clientId}/general-ledger/journals`, draft);
+      else { const { data: response } = await api.patch(`/admin/accounting/clients/${clientId}/general-ledger/journals/${openId}`, draft); setDetail(response); setEditMode(false); }
+      toast.success(closeModal ? "Journal created" : "Journal saved");
+      if (closeModal) setModalDraft(null);
+      refresh();
+    } catch (requestError) { toast.error(formatApiError(requestError)); } finally { setSaving(false); }
+  }
+  function copyToModal(sourceDetail) {
+    if (!sourceDetail) return;
+    setModalDraft({ entry_date: new Date().toISOString().slice(0, 10), reference: "", description: `Copy of ${sourceDetail.journal?.description || sourceDetail.journal?.reference || "journal"}`, status: "draft", lines: (sourceDetail.lines || []).map((line) => ({ account_code: line.account_code, description: line.description || "", debit: line.debit || "0.00", credit: line.credit || "0.00", vat_code: line.vat_code || "" })) });
+  }
+  async function copySelected() {
+    if (selectedIds.length !== 1) return toast.error("Copy supports one selected journal at a time.");
+    try { const { data: response } = await api.get(`/admin/accounting/clients/${clientId}/general-ledger/journals/${selectedIds[0]}`); copyToModal(response); }
+    catch (requestError) { toast.error(formatApiError(requestError)); }
+  }
+  async function deleteSelected(ids = selectedIds) {
+    if (!ids.length || !window.confirm(`Delete ${ids.length} selected journal${ids.length === 1 ? "" : "s"}?`)) return;
+    try {
+      const { data: response } = await api.post(`/admin/accounting/clients/${clientId}/general-ledger/journals/bulk-delete`, { journal_ids: ids });
+      const blocked = (response.results || []).filter((row) => !row.deleted);
+      if (blocked.length) toast.error(blocked.map((row) => row.reason).join(" ")); else toast.success("Journal deleted");
+      setSelectedIds([]); setOpenId(""); setDetail(null); refresh();
+    } catch (requestError) { toast.error(formatApiError(requestError)); }
+  }
   return (
     <Panel title="Journals">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <Button type="button" onClick={() => setModalDraft(emptyJournalDraft())} style={{ background: "var(--brand)" }}><Plus className="mr-2 h-4 w-4" />Add journal</Button>
+        {selectedIds.length ? <div className="flex items-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-3 py-2"><span className="text-sm font-semibold">{selectedIds.length} selected</span><Button type="button" variant="outline" onClick={copySelected}>Copy</Button><Button type="button" variant="destructive" onClick={() => deleteSelected()}>Delete</Button></div> : null}
+      </div>
       {error ? <p className="py-8 text-center text-sm text-red-700">{error}</p> : loading && !data.rows.length ? <p className="py-8 text-center text-sm text-stone-500">Loading journals...</p> : data.rows.length ? (
-        <div className="overflow-auto"><table className="min-w-full text-left text-sm"><thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500"><tr><th className="px-3 py-2">Date</th><th className="px-3 py-2">Reference</th><th className="px-3 py-2">Description</th><th className="px-3 py-2">Source</th><th className="px-3 py-2 text-right">Lines</th><th className="px-3 py-2 text-right">Debit</th><th className="px-3 py-2 text-right">Credit</th><th className="px-3 py-2">Status</th></tr></thead><tbody>{data.rows.map((row) => <tr key={row.journal_id} className="border-t border-stone-100"><td className="px-3 py-2">{formatDate(row.date)}</td><td className="px-3 py-2 font-medium text-stone-900">{row.reference || "-"}</td><td className="px-3 py-2 text-stone-600">{row.description || "-"}</td><td className="px-3 py-2">{row.source_module}</td><td className="px-3 py-2 text-right">{row.line_count}</td><td className="px-3 py-2 text-right">{formatMoney(row.debit_total)}</td><td className="px-3 py-2 text-right">{formatMoney(row.credit_total)}</td><td className="px-3 py-2"><Badge variant="outline">{row.status || "posted"}</Badge></td></tr>)}</tbody></table></div>
+        <div className="overflow-auto"><table className="min-w-full text-left text-sm"><thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500"><tr><th className="px-3 py-2">Select</th><th className="px-3 py-2">Date</th><th className="px-3 py-2">Reference</th><th className="px-3 py-2">Description</th><th className="px-3 py-2">Source</th><th className="px-3 py-2 text-right">Lines</th><th className="px-3 py-2 text-right">Debit</th><th className="px-3 py-2 text-right">Credit</th><th className="px-3 py-2">Status</th></tr></thead><tbody>{data.rows.map((row) => <React.Fragment key={row.journal_id}><tr onClick={() => toggleJournal(row)} className={`cursor-pointer border-t border-stone-100 ${openId === row.journal_id ? "bg-emerald-50" : "hover:bg-stone-50"}`}><td className="px-3 py-2"><input type="checkbox" checked={selectedIds.includes(row.journal_id)} onClick={(event) => event.stopPropagation()} onChange={(event) => setSelectedIds((current) => event.target.checked ? [...current, row.journal_id] : current.filter((id) => id !== row.journal_id))} /></td><td className="px-3 py-2">{formatDate(row.date)}</td><td className="px-3 py-2 font-medium text-stone-900">{row.reference || "-"}</td><td className="px-3 py-2 text-stone-600">{row.description || "-"}</td><td className="px-3 py-2">{row.source_module}</td><td className="px-3 py-2 text-right">{row.line_count}</td><td className="px-3 py-2 text-right">{formatMoney(row.debit_total)}</td><td className="px-3 py-2 text-right">{formatMoney(row.credit_total)}</td><td className="px-3 py-2"><Badge variant="outline">{row.status || "posted"}</Badge></td></tr>{openId === row.journal_id ? <tr className="bg-emerald-50/40"><td colSpan="9" className="p-3">{detail ? <GlJournalEditor detail={detail} accounts={accounts} editMode={editMode} setEditMode={setEditMode} onChange={setDetail} onSave={saveJournal} onCancel={async () => { setEditMode(false); await loadJournalDetail(row.journal_id); }} onCopy={() => copyToModal(detail)} onDelete={() => deleteSelected([row.journal_id])} onClose={() => toggleJournal(row)} saving={saving} /> : <p className="py-6 text-center text-sm text-stone-500">Loading journal detail...</p>}</td></tr> : null}</React.Fragment>)}</tbody></table></div>
       ) : <p className="py-10 text-center text-sm text-stone-500">No journals match the selected filters.</p>}
       <GlPagination data={data} loading={loading} setPage={setPage} setPageSize={setPageSize} />
+      {modalDraft ? <GlJournalModal draft={modalDraft} setDraft={setModalDraft} accounts={accounts} saving={saving} onSave={saveJournal} onClose={() => setModalDraft(null)} /> : null}
     </Panel>
   );
+}
+
+function emptyJournalDraft() {
+  return { entry_date: new Date().toISOString().slice(0, 10), reference: "", description: "", status: "draft", lines: [{ account_code: "", description: "", debit: "", credit: "", vat_code: "" }, { account_code: "", description: "", debit: "", credit: "", vat_code: "" }] };
+}
+
+function validateJournalDraft(draft = {}) {
+  if ((draft.lines || []).length < 2) return "A journal requires at least two lines.";
+  let debit = 0; let credit = 0;
+  for (const line of draft.lines || []) {
+    const lineDebit = Number(line.debit || 0); const lineCredit = Number(line.credit || 0);
+    if (!line.account_code) return "Every journal line requires a nominal account.";
+    if (lineDebit < 0 || lineCredit < 0) return "Debit and credit values cannot be negative.";
+    if (lineDebit && lineCredit) return "A journal line cannot contain both a debit and a credit.";
+    if (!lineDebit && !lineCredit) return "Every journal line requires a debit or credit value.";
+    debit += lineDebit; credit += lineCredit;
+  }
+  if (Math.abs(debit - credit) > 0.005) return "Journal debits and credits must balance.";
+  return "";
+}
+
+function GlJournalFields({ draft, setDraft, accounts, disabled }) {
+  const setLine = (index, key, value) => setDraft((current) => ({ ...current, lines: current.lines.map((line, lineIndex) => lineIndex === index ? { ...line, [key]: value } : line) }));
+  return <div className="space-y-3"><div className="grid gap-3 md:grid-cols-3"><Field label="Journal date" type="date" value={draft.entry_date || draft.date} disabled={disabled} onChange={(value) => setDraft((current) => ({ ...current, entry_date: value }))} /><Field label="Reference" value={draft.reference} disabled={disabled} onChange={(value) => setDraft((current) => ({ ...current, reference: value }))} /><Field label="Description" value={draft.description} disabled={disabled} onChange={(value) => setDraft((current) => ({ ...current, description: value }))} /></div><div className="overflow-auto"><table className="min-w-full text-sm"><thead className="bg-stone-50 text-xs uppercase text-stone-500"><tr><th className="px-2 py-2">Nominal</th><th className="px-2 py-2">Description</th><th className="px-2 py-2">VAT code</th><th className="px-2 py-2 text-right">Debit</th><th className="px-2 py-2 text-right">Credit</th>{!disabled ? <th /> : null}</tr></thead><tbody>{(draft.lines || []).map((line, index) => <tr key={line.id || index} className="border-t border-stone-100"><td className="p-2"><select disabled={disabled} value={line.account_code || ""} onChange={(event) => setLine(index, "account_code", event.target.value)} className="h-9 min-w-48 rounded-md border border-stone-200 px-2"><option value="">Select nominal</option>{accounts.map((account) => <option key={account.id || account.code} value={account.code}>{account.code} - {account.name}</option>)}</select></td><td className="p-2"><Input disabled={disabled} value={line.description || ""} onChange={(event) => setLine(index, "description", event.target.value)} /></td><td className="p-2"><Input disabled={disabled} value={line.vat_code || ""} onChange={(event) => setLine(index, "vat_code", event.target.value)} /></td><td className="p-2"><Input disabled={disabled} type="number" min="0" step="0.01" value={line.debit || ""} onChange={(event) => setLine(index, "debit", event.target.value)} /></td><td className="p-2"><Input disabled={disabled} type="number" min="0" step="0.01" value={line.credit || ""} onChange={(event) => setLine(index, "credit", event.target.value)} /></td>{!disabled ? <td className="p-2"><Button type="button" variant="outline" size="sm" disabled={draft.lines.length <= 2} onClick={() => setDraft((current) => ({ ...current, lines: current.lines.filter((_, lineIndex) => lineIndex !== index) }))}>Remove</Button></td> : null}</tr>)}</tbody></table></div>{!disabled ? <Button type="button" variant="outline" onClick={() => setDraft((current) => ({ ...current, lines: [...current.lines, { account_code: "", description: "", debit: "", credit: "", vat_code: "" }] }))}>Add line</Button> : null}</div>;
+}
+
+function GlJournalEditor({ detail, accounts, editMode, setEditMode, onChange, onSave, onCancel, onCopy, onDelete, onClose, saving }) {
+  const draft = { ...detail.journal, entry_date: detail.journal?.entry_date, lines: detail.lines || [] };
+  const setDraft = (updater) => { const next = typeof updater === "function" ? updater(draft) : updater; onChange((current) => ({ ...current, journal: { ...current.journal, ...next }, lines: next.lines || current.lines })); };
+  return <div className="rounded-md border border-emerald-200 bg-white"><header className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-stone-200 bg-stone-50 p-3"><div><div className="font-semibold">{detail.journal?.reference || "Journal"}</div><div className="text-xs text-stone-500">{formatDate(detail.journal?.entry_date)} · {detail.journal?.source_type || "General Ledger"} · {detail.journal?.status || "posted"}</div></div><div className="flex flex-wrap gap-2">{!editMode && detail.editable ? <Button type="button" variant="outline" onClick={() => setEditMode(true)}>Edit</Button> : null}{editMode ? <><Button type="button" variant="outline" onClick={onCancel}>Cancel</Button><Button type="button" disabled={saving} onClick={() => onSave(draft)}>Save</Button></> : null}<Button type="button" variant="outline" onClick={onCopy}>Copy to new journal</Button>{detail.deletable ? <Button type="button" variant="destructive" onClick={onDelete}>Delete</Button> : null}<Button type="button" variant="outline" onClick={onClose}>Close</Button></div></header>{!detail.editable && detail.delete_blockers?.length ? <div className="m-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{detail.delete_blockers[0]}</div> : null}<div className="p-3"><GlJournalFields draft={draft} setDraft={setDraft} accounts={accounts} disabled={!editMode} /></div></div>;
+}
+
+function GlJournalModal({ draft, setDraft, accounts, saving, onSave, onClose }) {
+  useEffect(() => { const previous = document.body.style.overflow; document.body.style.overflow = "hidden"; return () => { document.body.style.overflow = previous; }; }, []);
+  return <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true"><div className="flex max-h-[calc(100dvh-2rem)] w-full max-w-6xl flex-col overflow-hidden rounded-lg bg-white shadow-2xl"><header className="sticky top-0 z-10 flex items-center justify-between border-b border-stone-200 bg-white p-4"><div><h3 className="font-display text-lg font-semibold">New journal</h3><p className="text-sm text-stone-500">Manual General Ledger journal</p></div><div className="flex gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="button" variant="outline" disabled={saving} onClick={() => onSave({ ...draft, status: "draft" }, true)}>Save draft</Button><Button type="button" disabled={saving} onClick={() => onSave({ ...draft, status: "posted" }, true)} style={{ background: "var(--brand)" }}>Post journal</Button></div></header><div className="min-h-0 flex-1 overflow-y-auto p-4"><GlJournalFields draft={draft} setDraft={setDraft} accounts={accounts} disabled={false} /></div></div></div>;
 }
 
 function PaginatedGlAccountActivity({ workspace, filters }) {
@@ -2731,9 +2943,10 @@ function SettingsWorkspace({ workspace, form, setForm, createPeriod, busy }) {
   );
 }
 
-function ChartOfAccounts({ accounts, clientId, form, setForm, createAccount, updateAccount, busy, drawerMode, selectedAccount, backendMessage, openEditAccount, closeDrawer }) {
+function ChartOfAccounts({ accounts, clientId, form, setForm, createAccount, updateAccount, deleteAccount, busy, drawerMode, selectedAccount, backendMessage, openEditAccount, closeDrawer }) {
   const [filters, setFilters] = useState({ category: "", account_type: "", purpose: "", active: "active", search: "" });
   const [drawerTab, setDrawerTab] = useState("General");
+  const [bankAccountRows, setBankAccountRows] = useState([]);
   const [accountHistory, setAccountHistory] = useState([]);
   const [allHistory, setAllHistory] = useState([]);
   const [historyPage, setHistoryPage] = useState(1);
@@ -2749,6 +2962,35 @@ function ChartOfAccounts({ accounts, clientId, form, setForm, createAccount, upd
   const protectedAccount = isEditing && isProtectedAccount(selectedAccount);
   const bankCompatible = isBankCompatibleAccount(form);
   const duplicateCode = drawerMode === "add" && !!form.code && accountRows.some((account) => String(account.code || "").trim().toLowerCase() === form.code.trim().toLowerCase());
+
+  const loadBankAccountRows = useCallback(async () => {
+    if (!clientId) {
+      setBankAccountRows([]);
+      return;
+    }
+    try {
+      const { data } = await api.get(`/admin/accounting/clients/${clientId}/banking/accounts?page=1&page_size=250`);
+      const paged = normalisePaginatedResponse(data, 250);
+      const rows = paged.rows.length ? paged.rows : (Array.isArray(data?.bank_accounts) ? data.bank_accounts : Array.isArray(data?.accounts) ? data.accounts : []);
+      setBankAccountRows(rows);
+    } catch {
+      setBankAccountRows([]);
+    }
+  }, [clientId]);
+
+  useEffect(() => { loadBankAccountRows(); }, [loadBankAccountRows]);
+
+  const bankMetadataByCode = useMemo(() => {
+    const rows = new Map();
+    bankAccountRows.forEach((row) => {
+      const code = String(row.nominal_account_code || row.account_code || row.code || "").trim();
+      if (code) rows.set(code, row);
+    });
+    return rows;
+  }, [bankAccountRows]);
+
+  const selectedBankMetadata = selectedAccount ? bankMetadataByCode.get(String(selectedAccount.code || selectedAccount.account_code || "").trim()) : null;
+  const selectedEditorAccount = selectedAccount && selectedBankMetadata ? { ...selectedAccount, bank_metadata: selectedBankMetadata } : selectedAccount;
 
   const loadAccountHistory = useCallback(async () => {
     if (!clientId || !selectedAccount?.code) return;
@@ -2792,6 +3034,16 @@ function ChartOfAccounts({ accounts, clientId, form, setForm, createAccount, upd
     setAccountHistory([]);
     setHistoryPage(1);
   }, [drawerMode, selectedAccount?.id, selectedAccount?.code]);
+
+  useEffect(() => {
+    if (drawerMode !== "edit" || !selectedAccount) return;
+    setForm((current) => mergeBankMetadataIntoForm(current, selectedBankMetadata));
+  }, [
+    drawerMode,
+    selectedAccount,
+    selectedBankMetadata,
+    setForm,
+  ]);
 
   useEffect(() => { setHistoryPage(1); }, [historyPageSize, historyFilters.search, historyFilters.action, historyFilters.user, historyFilters.date_from, historyFilters.date_to]);
 
@@ -2870,8 +3122,8 @@ function ChartOfAccounts({ accounts, clientId, form, setForm, createAccount, upd
                 <th className="px-3 py-2">Category</th>
                 <th className="px-3 py-2">Account Type</th>
                 <th className="px-3 py-2">Purpose</th>
+                <th className="px-3 py-2">Type</th>
                 <th className="px-3 py-2">Banking</th>
-                <th className="px-3 py-2">Control</th>
                 <th className="px-3 py-2">Active</th>
                 <th className="px-3 py-2 text-right">Current Balance</th>
               </tr>
@@ -2882,7 +3134,7 @@ function ChartOfAccounts({ accounts, clientId, form, setForm, createAccount, upd
                 return (
                   <React.Fragment key={account.id || account.code}>
                     <tr
-                      onClick={() => openEditAccount(account)}
+                      onClick={() => selected ? closeDrawer() : openEditAccount(account)}
                       className={`cursor-pointer border-t border-stone-100 hover:bg-emerald-50/40 ${selected ? "border-l-4 border-l-emerald-700 bg-emerald-50/80 shadow-[inset_0_0_0_1px_rgba(4,120,87,0.16)] hover:bg-emerald-50" : "border-l-4 border-l-transparent"}`}
                     >
                       <td className={`px-3 py-2 font-semibold text-stone-900 ${selected ? "font-bold" : ""}`}>{account.code}</td>
@@ -2890,8 +3142,8 @@ function ChartOfAccounts({ accounts, clientId, form, setForm, createAccount, upd
                       <td className="px-3 py-2 text-stone-600">{account.category}</td>
                       <td className="px-3 py-2 text-stone-600">{account.account_type || account.type}</td>
                       <td className="px-3 py-2 text-stone-600">{account.purpose || "Standard Nominal"}</td>
-                      <td className="px-3 py-2">{account.show_in_banking || account.banking_enabled ? <Badge className="bg-emerald-100 text-emerald-800">Shown</Badge> : isBankCompatibleAccount(account) ? <Badge variant="outline">Not shown</Badge> : "-"}</td>
-                      <td className="px-3 py-2">{isProtectedAccount(account) ? <Badge variant="outline">Control</Badge> : "-"}</td>
+                      <td className="px-3 py-2"><Badge variant="outline">{accountStatementLabel(account)}</Badge></td>
+                      <td className="px-3 py-2">{account.show_in_banking || account.banking_enabled ? <Badge className="bg-emerald-100 text-emerald-800">Shown in Banking</Badge> : <span className="text-stone-400">Not applicable</span>}</td>
                       <td className="px-3 py-2">{account.active === false ? <Badge className="bg-stone-100 text-stone-700">Inactive</Badge> : <Badge className="bg-emerald-100 text-emerald-800">Active</Badge>}</td>
                       <td className="px-3 py-2 text-right font-semibold">{formatMoney(account.current_balance)}</td>
                     </tr>
@@ -2899,10 +3151,11 @@ function ChartOfAccounts({ accounts, clientId, form, setForm, createAccount, upd
                       <tr className="border-t border-emerald-200 bg-emerald-50/30">
                         <td colSpan="9" className="p-3">
                           <AccountEditorContent
-                            account={selectedAccount}
+                            account={selectedEditorAccount}
                             form={form}
                             setForm={setForm}
                             updateAccount={updateAccount}
+                            deleteAccount={deleteAccount}
                             busy={busy}
                             duplicateCode={duplicateCode}
                             protectedAccount={protectedAccount}
@@ -2923,6 +3176,7 @@ function ChartOfAccounts({ accounts, clientId, form, setForm, createAccount, upd
                             setHistoryPage={setHistoryPage}
                             setHistoryPageSize={setHistoryPageSize}
                             closeDrawer={closeDrawer}
+                            bankMetadata={selectedBankMetadata}
                           />
                         </td>
                       </tr>
@@ -2974,7 +3228,7 @@ function ChartOfAccounts({ accounts, clientId, form, setForm, createAccount, upd
                 <form onSubmit={isEditing ? updateAccount : createAccount} className="space-y-3">
                   {protectedAccount ? (
                     <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                      This is a system control account used by EPOS Native Accounting and cannot be structurally edited.
+                      This Balance Sheet account is used by accounting modules. Only its opening balance and applicable banking settings can be changed.
                     </div>
                   ) : null}
                   {backendMessage ? <InlineFormMessage message={backendMessage} /> : null}
@@ -2985,19 +3239,22 @@ function ChartOfAccounts({ accounts, clientId, form, setForm, createAccount, upd
                   <AccountDrawerSelect label="Account type" value={form.account_type} options={ACCOUNT_TYPES} disabled={protectedAccount} onChange={(value) => setForm((current) => ({ ...current, account_type: value }))} />
                   <AccountDrawerSelect label="Purpose" value={form.purpose} options={ACCOUNT_PURPOSES} disabled={protectedAccount} onChange={(value) => setForm((current) => ({ ...current, purpose: value }))} />
                   <AccountDrawerSelect label="Normal balance" value={form.normal_balance} options={[["debit", "Debit"], ["credit", "Credit"]]} disabled={protectedAccount} onChange={(value) => setForm((current) => ({ ...current, normal_balance: value }))} />
-                  <label className={`flex items-center gap-2 rounded-md border border-stone-200 p-3 text-sm font-semibold ${protectedAccount ? "bg-stone-50 text-stone-500" : "text-stone-700"}`}>
-                    <input type="checkbox" checked={!!form.is_control_account} disabled={protectedAccount} onChange={(e) => setForm((current) => ({ ...current, is_control_account: e.target.checked }))} />
-                    Control account
-                  </label>
-                  <label className={`block rounded-md border border-stone-200 p-3 text-sm ${!bankCompatible || protectedAccount ? "bg-stone-50 text-stone-500" : "text-stone-700"}`}>
+                  <AccountDrawerField label="Opening balance" type="number" value={form.opening_balance} onChange={(value) => setForm((current) => ({ ...current, opening_balance: value }))} />
+                  {String(form.account_type || "").toLowerCase() === "bank" ? (
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <AccountDrawerField label="Bank name" value={form.bank_name} onChange={(value) => setForm((current) => ({ ...current, bank_name: value }))} />
+                      <AccountDrawerField label="Bank account ref" value={form.account_number} onChange={(value) => setForm((current) => ({ ...current, account_number: value }))} />
+                    </div>
+                  ) : null}
+                  {bankCompatible ? <label className="block rounded-md border border-stone-200 p-3 text-sm text-stone-700">
                     <span className="flex items-center gap-2 font-semibold">
-                      <input type="checkbox" checked={!!(form.show_in_banking || form.banking_enabled)} disabled={!bankCompatible || protectedAccount} onChange={(e) => setShowInBanking(e.target.checked)} />
+                      <input type="checkbox" checked={!!(form.show_in_banking || form.banking_enabled)} onChange={(e) => setShowInBanking(e.target.checked)} />
                       Show in Banking
                     </span>
                     <span className="mt-1 block text-xs font-normal text-stone-500">
                       {bankCompatible ? "Use this for actual bank, cash, card, Stripe, PayPal, or clearing accounts that need statement import and reconciliation." : "Only bank, cash, card, payment, or clearing accounts can appear in Banking."}
                     </span>
-                  </label>
+                  </label> : null}
                   <label className="flex items-center gap-2 rounded-md border border-stone-200 p-3 text-sm font-semibold text-stone-700">
                     <input type="checkbox" checked={form.active !== false} disabled={protectedAccount && accountHasPostings(selectedAccount)} onChange={(e) => setForm((current) => ({ ...current, active: e.target.checked }))} />
                     Active
@@ -3028,7 +3285,18 @@ function ChartOfAccounts({ accounts, clientId, form, setForm, createAccount, upd
   );
 }
 
-function AccountEditorContent({ account, form, setForm, updateAccount, busy, duplicateCode, protectedAccount, bankCompatible, backendMessage, drawerTab, setDrawerTab, setShowInBanking, accountHistory, historyLoading, historyMessage, historyFilters, setHistoryFilters, closeDrawer, historyPage, historyPageSize, historyTotalRows, historyTotalPages, setHistoryPage, setHistoryPageSize }) {
+function AccountEditorContent({ account, form, setForm, updateAccount, deleteAccount, busy, duplicateCode, protectedAccount, bankCompatible, backendMessage, drawerTab, setDrawerTab, setShowInBanking, accountHistory, historyLoading, historyMessage, historyFilters, setHistoryFilters, closeDrawer, historyPage, historyPageSize, historyTotalRows, historyTotalPages, setHistoryPage, setHistoryPageSize, bankMetadata }) {
+  const [editMode, setEditMode] = useState(false);
+
+  useEffect(() => {
+    setEditMode(false);
+  }, [account?.id, account?.code]);
+
+  const structuralLocked = !editMode || protectedAccount;
+  const safeLocked = !editMode;
+  const bankingLocked = !editMode || !bankCompatible;
+  const activeLocked = !editMode || (protectedAccount && accountHasPostings(account));
+
   return (
     <div className="rounded-md border border-emerald-200 bg-white p-3 shadow-sm">
       <div className="grid gap-4 xl:grid-cols-[260px_1fr]">
@@ -3048,7 +3316,7 @@ function AccountEditorContent({ account, form, setForm, updateAccount, busy, dup
           </div>
           {protectedAccount ? (
             <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              This is a system control account used by EPOS Native Accounting and cannot be structurally edited.
+              This Balance Sheet account is used by accounting modules. Only its opening balance and applicable banking settings can be changed.
             </div>
           ) : null}
         </div>
@@ -3056,49 +3324,99 @@ function AccountEditorContent({ account, form, setForm, updateAccount, busy, dup
           <AccountHistoryPanel account={account} protectedAccount={protectedAccount} history={accountHistory} loading={historyLoading} message={historyMessage} filters={historyFilters} setFilters={setHistoryFilters} closeDrawer={closeDrawer} page={historyPage} pageSize={historyPageSize} totalRows={historyTotalRows} totalPages={historyTotalPages} setPage={setHistoryPage} setPageSize={setHistoryPageSize} />
         ) : (
           <form onSubmit={updateAccount} className="space-y-3">
+            {!editMode ? (
+              <div className="rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-600">
+                This account is open in read-only mode. Select Edit to change supported fields.
+              </div>
+            ) : null}
             {backendMessage ? <InlineFormMessage message={backendMessage} /> : null}
             {duplicateCode ? <InlineFormMessage message="An account with this code already exists." tone="error" /> : null}
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              <AccountDrawerField label="Account code" value={form.code} disabled={protectedAccount} onChange={(value) => setForm((current) => ({ ...current, code: value }))} />
-              <AccountDrawerField label="Account name" value={form.name} disabled={protectedAccount} onChange={(value) => setForm((current) => ({ ...current, name: value }))} />
-              <AccountDrawerSelect label="Category" value={form.category} options={ACCOUNT_CATEGORIES} disabled={protectedAccount} onChange={(value) => setForm((current) => ({ ...current, category: value }))} />
-              <AccountDrawerSelect label="Account type" value={form.account_type} options={ACCOUNT_TYPES} disabled={protectedAccount} onChange={(value) => setForm((current) => ({ ...current, account_type: value }))} />
-              <AccountDrawerSelect label="Purpose" value={form.purpose} options={ACCOUNT_PURPOSES} disabled={protectedAccount} onChange={(value) => setForm((current) => ({ ...current, purpose: value }))} />
-              <AccountDrawerSelect label="Normal balance" value={form.normal_balance} options={[["debit", "Debit"], ["credit", "Credit"]]} disabled={protectedAccount} onChange={(value) => setForm((current) => ({ ...current, normal_balance: value }))} />
+              <AccountDrawerField label="Account code" value={form.code} disabled={structuralLocked} onChange={(value) => setForm((current) => ({ ...current, code: value }))} />
+              <AccountDrawerField label="Account name" value={form.name} disabled={structuralLocked} onChange={(value) => setForm((current) => ({ ...current, name: value }))} />
+              <AccountDrawerSelect label="Category" value={form.category} options={ACCOUNT_CATEGORIES} disabled={structuralLocked} onChange={(value) => setForm((current) => ({ ...current, category: value }))} />
+              <AccountDrawerSelect label="Account type" value={form.account_type} options={ACCOUNT_TYPES} disabled={structuralLocked} onChange={(value) => setForm((current) => ({ ...current, account_type: value }))} />
+              <AccountDrawerSelect label="Purpose" value={form.purpose} options={ACCOUNT_PURPOSES} disabled={structuralLocked} onChange={(value) => setForm((current) => ({ ...current, purpose: value }))} />
+              <AccountDrawerSelect label="Normal balance" value={form.normal_balance} options={[["debit", "Debit"], ["credit", "Credit"]]} disabled={structuralLocked} onChange={(value) => setForm((current) => ({ ...current, normal_balance: value }))} />
             </div>
-            <div className="grid gap-3 md:grid-cols-3">
-              <label className={`flex items-center gap-2 rounded-md border border-stone-200 p-3 text-sm font-semibold ${protectedAccount ? "bg-stone-50 text-stone-500" : "text-stone-700"}`}>
-                <input type="checkbox" checked={!!form.is_control_account} disabled={protectedAccount} onChange={(e) => setForm((current) => ({ ...current, is_control_account: e.target.checked }))} />
-                Control account
-              </label>
-              <label className={`block rounded-md border border-stone-200 p-3 text-sm ${!bankCompatible || protectedAccount ? "bg-stone-50 text-stone-500" : "text-stone-700"}`}>
+            <OpeningBalanceSection
+              account={account}
+              form={form}
+              setForm={setForm}
+              bankCompatible={bankCompatible}
+              bankMetadata={bankMetadata}
+              disabled={!editMode}
+            />
+            <div className="grid gap-3 md:grid-cols-2">
+              {bankCompatible ? <label className="block rounded-md border border-stone-200 p-3 text-sm text-stone-700">
                 <span className="flex items-center gap-2 font-semibold">
-                  <input type="checkbox" checked={!!(form.show_in_banking || form.banking_enabled)} disabled={!bankCompatible || protectedAccount} onChange={(e) => setShowInBanking(e.target.checked)} />
+                  <input type="checkbox" checked={!!(form.show_in_banking || form.banking_enabled)} disabled={bankingLocked} onChange={(e) => setShowInBanking(e.target.checked)} />
                   Show in Banking
                 </span>
                 <span className="mt-1 block text-xs font-normal text-stone-500">
                   {bankCompatible ? "Use this for bank, cash, card, Stripe, PayPal, or clearing accounts." : "Only bank, cash, card, payment, or clearing accounts can appear in Banking."}
                 </span>
-              </label>
+              </label> : null}
               <label className="flex items-center gap-2 rounded-md border border-stone-200 p-3 text-sm font-semibold text-stone-700">
-                <input type="checkbox" checked={form.active !== false} disabled={protectedAccount && accountHasPostings(account)} onChange={(e) => setForm((current) => ({ ...current, active: e.target.checked }))} />
+                <input type="checkbox" checked={form.active !== false} disabled={activeLocked} onChange={(e) => setForm((current) => ({ ...current, active: e.target.checked }))} />
                 Active
               </label>
             </div>
             {protectedAccount && accountHasPostings(account) ? <p className="text-xs text-stone-500">This account has postings or is required by a core module, so it cannot be deactivated here.</p> : null}
-            <AccountDrawerField label="Description" value={form.description} onChange={(value) => setForm((current) => ({ ...current, description: value }))} />
+            <AccountDrawerField label="Description" value={form.description} disabled={protectedAccount ? true : safeLocked} onChange={(value) => setForm((current) => ({ ...current, description: value }))} />
             <div className="flex flex-wrap gap-2">
               <Button type="button" variant="outline" onClick={closeDrawer}>Cancel</Button>
-              <Button disabled={busy || duplicateCode} className="gap-2" style={{ background: "var(--brand)" }}>
+              {!editMode ? <Button type="button" variant="outline" onClick={() => setEditMode(true)}>Edit</Button> : null}
+              <Button disabled={!editMode || busy || duplicateCode} className="gap-2" style={{ background: "var(--brand)" }}>
                 <Plus className="h-4 w-4" /> Save account
               </Button>
               {!protectedAccount ? (
-                <Button type="button" variant="outline" disabled={busy || form.active === false} onClick={() => setForm((current) => ({ ...current, active: false }))}>Make inactive</Button>
+                <Button type="button" variant="outline" disabled={!editMode || busy || form.active === false} onClick={() => setForm((current) => ({ ...current, active: false }))}>Make inactive</Button>
               ) : null}
+              {account?.active === false && account?.can_delete ? <Button type="button" variant="destructive" disabled={busy} onClick={() => deleteAccount(account)}>Delete inactive nominal</Button> : null}
             </div>
+            {account?.active === false && !account?.can_delete && account?.delete_block_reason ? <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{account.delete_block_reason}</div> : null}
           </form>
         )}
       </div>
+    </div>
+  );
+}
+
+function OpeningBalanceSection({ account, form, setForm, bankCompatible, bankMetadata, disabled }) {
+  const hasBankMetadata = !!bankMetadata?.id;
+  const bankAccountType = String(form.account_type || "").trim().toLowerCase() === "bank";
+  return (
+    <div className="rounded-md border border-stone-200 bg-stone-50 p-3">
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-stone-900">Opening balance</div>
+          <div className="text-xs text-stone-500">
+            Opening balance is separate from the current posted balance shown in the Chart of Accounts list.
+          </div>
+        </div>
+        <div className="text-right text-xs text-stone-500">
+          <div>Current balance</div>
+          <div className="text-sm font-bold text-stone-900">{formatMoney(account?.current_balance)}</div>
+        </div>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <AccountDrawerField
+          label="Opening balance"
+          type="number"
+          value={form.opening_balance}
+          disabled={disabled}
+          onChange={(value) => setForm((current) => ({ ...current, opening_balance: value }))}
+        />
+        {bankAccountType ? <AccountDrawerField label="Currency" value={form.currency || "GBP"} disabled={disabled} onChange={(value) => setForm((current) => ({ ...current, currency: value }))} /> : null}
+        {bankAccountType ? <AccountDrawerField label="Bank name" value={form.bank_name} disabled={disabled} onChange={(value) => setForm((current) => ({ ...current, bank_name: value }))} /> : null}
+        {bankAccountType ? <AccountDrawerField label="Bank account ref" value={form.account_number} disabled={disabled} onChange={(value) => setForm((current) => ({ ...current, account_number: value }))} /> : null}
+      </div>
+      {bankAccountType && hasBankMetadata ? (
+        <div className="mt-2 text-xs text-stone-500">Banking metadata found for nominal {bankMetadata.nominal_account_code || bankMetadata.code || account?.code || "-"}.</div>
+      ) : bankAccountType ? (
+        <div className="mt-2 text-xs text-amber-700">No Banking metadata record is available for this nominal account yet.</div>
+      ) : null}
     </div>
   );
 }
@@ -3112,7 +3430,7 @@ function AccountDrawerContextHeader({ account, sticky = false }) {
           <div className="truncate text-sm font-bold text-stone-900">{account?.code || "-"} - {account?.name || "Account"}</div>
           <div className="mt-1 flex flex-wrap gap-1.5">
             {account?.active === false ? <Badge className="bg-stone-100 text-stone-700">Inactive</Badge> : <Badge className="bg-emerald-100 text-emerald-800">Active</Badge>}
-            {isProtectedAccount(account) ? <Badge variant="outline">Control</Badge> : null}
+            <Badge variant="outline">{accountStatementLabel(account)}</Badge>
             {account?.show_in_banking || account?.banking_enabled ? <Badge className="bg-emerald-100 text-emerald-800">Banking</Badge> : null}
           </div>
         </div>
@@ -3126,7 +3444,7 @@ function AccountHistoryPanel({ account, protectedAccount, history, loading, mess
     <div className="space-y-3">
       {protectedAccount ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-          This is a system control account. Structural changes are restricted, but history is retained.
+          Structural fields for this Balance Sheet account are protected because accounting modules depend on it. Its history remains available.
         </div>
       ) : null}
       <div className="rounded-md border border-stone-200 bg-stone-50 px-3 py-2">
@@ -3244,8 +3562,18 @@ function isSameAccount(account, selectedAccount) {
 }
 
 function isBankCompatibleAccount(account) {
+  if (accountStatementType(account) !== "balance_sheet") return false;
   const text = `${account?.purpose || ""} ${account?.account_type || account?.type || ""} ${account?.detail_type || ""} ${account?.name || ""}`.toLowerCase();
-  return account?.purpose === "Bank Account" || text.includes("bank") || text.includes("cash") || text.includes("card") || text.includes("stripe") || text.includes("paypal") || text.includes("clearing") || text.includes("current asset") || text.includes("payment");
+  return account?.purpose === "Bank Account" || text.includes("bank") || text.includes("cash") || text.includes("card") || text.includes("stripe") || text.includes("paypal") || text.includes("clearing") || text.includes("payment");
+}
+
+function accountStatementType(account = {}) {
+  if (account.statement_type || account.statement_section) return account.statement_type || account.statement_section;
+  return ["Income", "Other Income", "Expense", "Other Expense"].includes(account.category) ? "profit_and_loss" : "balance_sheet";
+}
+
+function accountStatementLabel(account = {}) {
+  return accountStatementType(account) === "profit_and_loss" ? "P&L" : "Balance Sheet";
 }
 
 function isProtectedAccount(account) {
@@ -3260,6 +3588,8 @@ function accountHasPostings(account) {
 }
 
 function accountToForm(account = {}) {
+  const bank = account.bank_metadata || account.bank_account || {};
+  const openingBalance = account.opening_balance ?? account.bank_opening_balance ?? bank.opening_balance ?? "";
   return {
     ...EMPTY_ACCOUNT_FORM,
     ...account,
@@ -3270,19 +3600,79 @@ function accountToForm(account = {}) {
     account_type: account.account_type || account.type || "Overheads",
     purpose: account.purpose || account.detail_type || "Standard Nominal",
     normal_balance: account.normal_balance || "debit",
-    is_control_account: !!(account.is_control_account || account.control_account || account.control || account.protected || account.system_account),
+    is_control_account: !!(account.is_control_account || account.control_account || account.control),
     show_in_banking: !!(account.show_in_banking || account.banking_enabled),
     banking_enabled: !!(account.show_in_banking || account.banking_enabled),
     active: account.active !== false,
     description: account.description || "",
+    opening_balance: openingBalance,
+    original_opening_balance: openingBalance,
+    bank_account_id: account.bank_account_id || bank.id || "",
+    bank_name: account.bank_name || bank.bank_name || "",
+    account_number: account.account_number || bank.account_number || "",
+    sort_code: account.sort_code || bank.sort_code || "",
+    currency: account.currency || bank.currency || "GBP",
+    allow_payments: account.allow_payments ?? bank.allow_payments ?? true,
+    allow_receipts: account.allow_receipts ?? bank.allow_receipts ?? true,
   };
 }
 
-function AccountDrawerField({ label, value, onChange, disabled = false }) {
+function mergeBankMetadataIntoForm(form, bankMetadata) {
+  if (!bankMetadata) return form;
+  const openingBalance = bankMetadata.opening_balance ?? form.opening_balance ?? "";
+  return {
+    ...form,
+    opening_balance: form.opening_balance === "" || form.opening_balance === undefined ? openingBalance : form.opening_balance,
+    original_opening_balance: openingBalance,
+    bank_account_id: bankMetadata.id || form.bank_account_id || "",
+    bank_name: bankMetadata.bank_name || form.bank_name || "",
+    account_number: bankMetadata.account_number || form.account_number || "",
+    sort_code: bankMetadata.sort_code || form.sort_code || "",
+    currency: bankMetadata.currency || form.currency || "GBP",
+    allow_payments: bankMetadata.allow_payments ?? form.allow_payments,
+    allow_receipts: bankMetadata.allow_receipts ?? form.allow_receipts,
+  };
+}
+
+function normaliseAmountForCompare(value) {
+  if (value === null || value === undefined || value === "") return "";
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue.toFixed(2) : String(value).trim();
+}
+
+function accountOpeningBalanceChanged(form = {}) {
+  return normaliseAmountForCompare(form.opening_balance) !== normaliseAmountForCompare(form.original_opening_balance);
+}
+
+function accountUpdatePayload(form = {}) {
+  const payload = {
+    code: form.code,
+    name: form.name,
+    category: form.category,
+    account_type: form.account_type,
+    purpose: form.purpose,
+    normal_balance: form.normal_balance,
+    is_control_account: form.is_control_account,
+    show_in_banking: form.show_in_banking,
+    banking_enabled: form.banking_enabled,
+    active: form.active,
+    description: form.description,
+  };
+  if (accountOpeningBalanceChanged(form)) payload.opening_balance = form.opening_balance;
+  if (String(form.account_type || "").trim().toLowerCase() === "bank") {
+    payload.bank_name = form.bank_name;
+    payload.account_number = form.account_number;
+    payload.sort_code = form.sort_code;
+    payload.currency = form.currency;
+  }
+  return payload;
+}
+
+function AccountDrawerField({ label, value, onChange, disabled = false, type = "text" }) {
   return (
     <div>
       <Label className="text-xs font-semibold text-stone-600">{label}</Label>
-      <Input value={value || ""} disabled={disabled} onChange={(e) => onChange(e.target.value)} className="mt-1 h-9" />
+      <Input type={type} value={value || ""} disabled={disabled} onChange={(e) => onChange(e.target.value)} className="mt-1 h-9" />
     </div>
   );
 }

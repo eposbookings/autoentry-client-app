@@ -29,21 +29,28 @@ export const MODULES = [
 ];
 
 export const ACCOUNT_TYPES = [
+  "Current assets",
+  "Current Asset",
   "Bank",
+  "Fixed asset",
+  "Fixed asset contra",
+  "Current liability",
   "Receivable",
   "Payable",
   "VAT",
-  "Tax",
   "Payroll",
   "Equity",
   "Sales",
+  "Other income",
   "Purchases",
   "Cost of Sales",
   "Overheads",
+  "Depreciation",
+  "Tax",
   "Suspense",
 ];
 
-export const ACCOUNT_CATEGORIES = ["Asset", "Liability", "Equity", "Income", "Expense"];
+export const ACCOUNT_CATEGORIES = ["Asset", "Liability", "Equity", "Income", "Other Income", "Expense", "Other Expense"];
 
 export const ACCOUNT_PURPOSES = [
   "Sales Ledger",
@@ -70,14 +77,14 @@ export const MODULE_DETAILS = {
     manage: ["Supplier cards", "Supplier records", "Supplier ledger"],
     statLabel: "Supplier balances",
     stat: (workspace) => formatMoney(workspace?.accounts_payable?.dashboard?.outstanding_total || workspace?.summary?.ap_outstanding || 0),
-    tabs: ["Suppliers", "Create supplier"],
+    tabs: ["Suppliers", "Create supplier", "General Settings"],
   },
   receivables: {
     title: "Accounts Receivable",
     manage: ["Customer cards", "Customer records", "Customer ledger"],
     statLabel: "Outstanding invoices",
     stat: (workspace) => formatMoney(workspace?.accounts_receivable?.dashboard?.outstanding_total || workspace?.summary?.ar_outstanding || workspace?.summary?.receivables || 0),
-    tabs: ["Customers", "Create customer"],
+    tabs: ["Customers", "Create customer", "General Settings"],
   },
   banking: {
     title: "Banking",
