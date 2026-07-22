@@ -35,9 +35,11 @@ import AccountsReceivableWorkspace from "./AccountsReceivableWorkspace";
 import {
   AccountCodeSelect,
   ContactCount,
+  DEFAULT_PAGE_SIZE,
   Field,
   Info,
   Panel,
+  PaginationFooter,
   ReportRows,
   SelectField,
   SummaryCard,
@@ -46,6 +48,7 @@ import {
   formatDate,
   formatDateTime,
   formatMoney,
+  normalisePaginatedResponse,
 } from "./shared";
 
 const EMPTY_ACCOUNT_FORM = {
@@ -677,23 +680,19 @@ function ModuleWorkspace(props) {
     }
 
     if (module === "vat") {
-      return <VatEngineWorkspace workspace={workspace} tab={moduleTab} reloadWorkspace={reloadWorkspace} busy={busy} />;
+      return <LazyModuleWorkspace workspace={workspace} endpoint="vat/workspace" field="vat_engine">{(loaded) => <VatEngineWorkspace workspace={loaded} tab={moduleTab} filters={filters} reloadWorkspace={reloadWorkspace} busy={busy} />}</LazyModuleWorkspace>;
     }
 
     if (module === "fixed_assets") {
-      return <FixedAssetsWorkspace workspace={workspace} tab={moduleTab} reloadWorkspace={reloadWorkspace} busy={busy} />;
+      return <LazyModuleWorkspace workspace={workspace} endpoint="fixed-assets/workspace" field="fixed_assets">{(loaded) => <FixedAssetsWorkspace workspace={loaded} tab={moduleTab} reloadWorkspace={reloadWorkspace} busy={busy} />}</LazyModuleWorkspace>;
     }
 
     if (module === "year_end") {
-      return <YearEndWorkspace workspace={workspace} tab={moduleTab} reloadWorkspace={reloadWorkspace} busy={busy} />;
+      return <LazyModuleWorkspace workspace={workspace} endpoint="year-end/workspace" field="year_end">{(loaded) => <YearEndWorkspace workspace={loaded} tab={moduleTab} reloadWorkspace={reloadWorkspace} busy={busy} />}</LazyModuleWorkspace>;
     }
 
     if (module === "gl") {
-      if (moduleTab === "Transactions") return <TransactionsWorkspace workspace={workspace} filters={filters} />;
-      if (moduleTab === "Journals") return <JournalTable journals={workspace.journals} />;
-      if (moduleTab === "Account Activity") return <AccountActivityWorkspace workspace={workspace} filters={filters} />;
-      if (moduleTab === "Trial Balance") return <TrialBalanceReport workspace={workspace} />;
-      return <PlaceholderModulePanel title={moduleTab} moduleTitle={detail.title} />;
+      return <LazyGeneralLedger workspace={workspace} moduleTab={moduleTab} filters={filters} detail={detail} />;
     }
 
     if (module === "coa") {
@@ -724,9 +723,9 @@ function ModuleWorkspace(props) {
       return <PlaceholderModulePanel title={moduleTab} moduleTitle={detail.title} />;
     }
 
-    if (module === "audit") return <AuditTrailWorkspace auditLog={workspace.audit_log} />;
+    if (module === "audit") return <AuditTrailWorkspace clientId={workspace.client?.id} />;
 
-    if (module === "reports") return <ReportsWorkspace workspace={workspace} activeReport={moduleTab} filters={filters} />;
+    if (module === "reports") return <LazyReportsWorkspace workspace={workspace} activeReport={moduleTab} filters={filters} />;
 
     if (module === "settings") {
       if (moduleTab === "Accounting Settings") {
@@ -782,6 +781,159 @@ function ModuleWorkspace(props) {
       {!suppressGlobalFilterBar ? <AccountingFilterBar workspace={workspace} filters={filters} setFilters={setFilters} /> : null}
       {renderTab()}
     </div>
+  );
+}
+
+function LazyModuleWorkspace({ workspace, endpoint, field, children }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const clientId = workspace?.client?.id;
+  useEffect(() => {
+    if (!clientId) return;
+    let cancelled = false;
+    setData(null);
+    setError("");
+    api.get(`/admin/accounting/clients/${clientId}/${endpoint}`)
+      .then(({ data: response }) => { if (!cancelled) setData(response || {}); })
+      .catch((requestError) => { if (!cancelled) setError(formatApiError(requestError)); });
+    return () => { cancelled = true; };
+  }, [clientId, endpoint]);
+  if (error) return <Panel title="Module unavailable"><p className="py-8 text-center text-sm text-red-700">{error}</p></Panel>;
+  if (!data) return <Panel title="Loading"><p className="py-8 text-center text-sm text-stone-500">Loading module data…</p></Panel>;
+  return children({ ...workspace, [field]: data, ...(field === "vat_engine" ? { vat: data } : {}) });
+}
+
+function LazyGeneralLedger({ workspace, moduleTab, filters, detail }) {
+  if (moduleTab === "Transactions") return <PaginatedGlTransactions workspace={workspace} filters={filters} />;
+  if (moduleTab === "Journals") return <PaginatedGlJournals workspace={workspace} filters={filters} />;
+  if (moduleTab === "Account Activity") return <PaginatedGlAccountActivity workspace={workspace} filters={filters} />;
+  if (moduleTab === "Trial Balance") {
+    return <LazyModuleWorkspace workspace={workspace} endpoint="gl/trial-balance" field="reports">{(loaded) => <TrialBalanceReport workspace={loaded} />}</LazyModuleWorkspace>;
+  }
+  return <PlaceholderModulePanel title={moduleTab} moduleTitle={detail.title} />;
+}
+
+function LegacyLazyGeneralLedger({ workspace, moduleTab, filters, detail }) {
+  const [journals, setJournals] = useState([]);
+  const [reports, setReports] = useState(null);
+  const [error, setError] = useState("");
+  const clientId = workspace?.client?.id;
+  useEffect(() => {
+    if (!clientId) return;
+    let cancelled = false;
+    setError("");
+    Promise.all([
+      Promise.resolve({ data: { rows: [] } }),
+      Promise.resolve({ data: {} }),
+    ]).then(([journalResponse, reportResponse]) => {
+      if (cancelled) return;
+      setJournals(Array.isArray(journalResponse.data?.rows) ? journalResponse.data.rows : []);
+      setReports(reportResponse.data || {});
+    }).catch((requestError) => { if (!cancelled) setError(formatApiError(requestError)); });
+    return () => { cancelled = true; };
+  }, [clientId]);
+  if (error) return <Panel title="General Ledger unavailable"><p className="py-8 text-center text-sm text-red-700">{error}</p></Panel>;
+  if (!reports) return <Panel title="Loading"><p className="py-8 text-center text-sm text-stone-500">Loading General Ledger…</p></Panel>;
+  const loaded = { ...workspace, journals, reports };
+  if (moduleTab === "Transactions") return <TransactionsWorkspace workspace={loaded} filters={filters} />;
+  if (moduleTab === "Journals") return <JournalTable journals={journals} />;
+  if (moduleTab === "Account Activity") return <AccountActivityWorkspace workspace={loaded} filters={filters} />;
+  if (moduleTab === "Trial Balance") return <TrialBalanceReport workspace={loaded} />;
+  return <PlaceholderModulePanel title={moduleTab} moduleTitle={detail.title} />;
+}
+
+function glQueryParams(filters, page, pageSize, extra = {}) {
+  const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+  const values = { date_from: filters?.date_from, date_to: filters?.date_to, financial_year: filters?.financial_year_id, period: filters?.period_id, search: filters?.search, ...extra };
+  Object.entries(values).forEach(([key, value]) => { if (value) params.set(key, value); });
+  return params;
+}
+
+function useGlPage(workspace, endpoint, filters, page, pageSize, extra = {}) {
+  const [data, setData] = useState(() => normalisePaginatedResponse({ page_size: DEFAULT_PAGE_SIZE }));
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const clientId = workspace?.client?.id;
+  const requestParams = useMemo(() => glQueryParams(filters, page, pageSize, extra).toString(), [extra, filters, page, pageSize]);
+  const accountCode = extra.account_code;
+  useEffect(() => {
+    if (!clientId || (endpoint === "account-activity" && !accountCode)) return;
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    api.get(`/admin/accounting/clients/${clientId}/gl/${endpoint}?${requestParams}`)
+      .then(({ data: response }) => { if (!cancelled) setData(normalisePaginatedResponse(response, pageSize)); })
+      .catch((requestError) => {
+        if (!cancelled) {
+          setData(normalisePaginatedResponse({ page, page_size: pageSize }));
+          setError(formatApiError(requestError));
+        }
+      })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [accountCode, clientId, endpoint, page, pageSize, requestParams]);
+  return { data, loading, error };
+}
+
+function GlActivityTable({ rows }) {
+  if (!rows.length) return <p className="py-10 text-center text-sm text-stone-500">No ledger rows match the selected filters.</p>;
+  return (
+    <div className="overflow-auto">
+      <table className="min-w-full text-left text-sm">
+        <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
+          <tr><th className="px-3 py-2">Date</th><th className="px-3 py-2">Reference</th><th className="px-3 py-2">Account</th><th className="px-3 py-2">Description</th><th className="px-3 py-2">Source</th><th className="px-3 py-2 text-right">Debit</th><th className="px-3 py-2 text-right">Credit</th></tr>
+        </thead>
+        <tbody>{rows.map((row) => (
+          <tr key={row.id || `${row.journal_id}-${row.account_code}-${row.date}`} className="border-t border-stone-100">
+            <td className="px-3 py-2">{formatDate(row.date)}</td><td className="px-3 py-2 font-medium text-stone-900">{row.reference || "-"}</td><td className="px-3 py-2">{row.account_code} - {row.account_name}</td><td className="px-3 py-2 text-stone-600">{row.description || "-"}</td><td className="px-3 py-2 text-stone-500">{row.source_module || "General Ledger"}</td><td className="px-3 py-2 text-right">{formatMoney(row.debit)}</td><td className="px-3 py-2 text-right">{formatMoney(row.credit)}</td>
+          </tr>
+        ))}</tbody>
+      </table>
+    </div>
+  );
+}
+
+function GlPagination({ data, loading, setPage, setPageSize, disabled = false }) {
+  return <PaginationFooter page={data.page} pageSize={data.page_size} totalRows={data.total_rows} totalPages={data.total_pages} onPageChange={setPage} onPageSizeChange={setPageSize} disabled={loading || disabled} />;
+}
+
+function PaginatedGlTransactions({ workspace, filters }) {
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  useEffect(() => { setPage(1); }, [filters?.date_from, filters?.date_to, filters?.financial_year_id, filters?.period_id, filters?.search, pageSize]);
+  const { data, loading, error } = useGlPage(workspace, "transactions", filters, page, pageSize);
+  return <Panel title="Transactions">{error ? <p className="py-8 text-center text-sm text-red-700">{error}</p> : loading && !data.rows.length ? <p className="py-8 text-center text-sm text-stone-500">Loading transactions...</p> : <GlActivityTable rows={data.rows} />}<GlPagination data={data} loading={loading} setPage={setPage} setPageSize={setPageSize} /></Panel>;
+}
+
+function PaginatedGlJournals({ workspace, filters }) {
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  useEffect(() => { setPage(1); }, [filters?.date_from, filters?.date_to, filters?.financial_year_id, filters?.period_id, filters?.search, pageSize]);
+  const { data, loading, error } = useGlPage(workspace, "journals", filters, page, pageSize);
+  return (
+    <Panel title="Journals">
+      {error ? <p className="py-8 text-center text-sm text-red-700">{error}</p> : loading && !data.rows.length ? <p className="py-8 text-center text-sm text-stone-500">Loading journals...</p> : data.rows.length ? (
+        <div className="overflow-auto"><table className="min-w-full text-left text-sm"><thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500"><tr><th className="px-3 py-2">Date</th><th className="px-3 py-2">Reference</th><th className="px-3 py-2">Description</th><th className="px-3 py-2">Source</th><th className="px-3 py-2 text-right">Lines</th><th className="px-3 py-2 text-right">Debit</th><th className="px-3 py-2 text-right">Credit</th><th className="px-3 py-2">Status</th></tr></thead><tbody>{data.rows.map((row) => <tr key={row.journal_id} className="border-t border-stone-100"><td className="px-3 py-2">{formatDate(row.date)}</td><td className="px-3 py-2 font-medium text-stone-900">{row.reference || "-"}</td><td className="px-3 py-2 text-stone-600">{row.description || "-"}</td><td className="px-3 py-2">{row.source_module}</td><td className="px-3 py-2 text-right">{row.line_count}</td><td className="px-3 py-2 text-right">{formatMoney(row.debit_total)}</td><td className="px-3 py-2 text-right">{formatMoney(row.credit_total)}</td><td className="px-3 py-2"><Badge variant="outline">{row.status || "posted"}</Badge></td></tr>)}</tbody></table></div>
+      ) : <p className="py-10 text-center text-sm text-stone-500">No journals match the selected filters.</p>}
+      <GlPagination data={data} loading={loading} setPage={setPage} setPageSize={setPageSize} />
+    </Panel>
+  );
+}
+
+function PaginatedGlAccountActivity({ workspace, filters }) {
+  const accounts = useMemo(() => (workspace?.accounts || []).filter((account) => account.active !== false), [workspace?.accounts]);
+  const [accountCode, setAccountCode] = useState(() => accounts[0]?.code || "");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  useEffect(() => { if (!accountCode && accounts[0]?.code) setAccountCode(accounts[0].code); }, [accountCode, accounts]);
+  useEffect(() => { setPage(1); }, [accountCode, filters?.date_from, filters?.date_to, filters?.financial_year_id, filters?.period_id, filters?.search, pageSize]);
+  const { data, loading, error } = useGlPage(workspace, "account-activity", filters, page, pageSize, { account_code: accountCode });
+  return (
+    <Panel title="Account activity">
+      <div className="mb-3 max-w-md"><AccountCodeSelect label="Nominal account" accounts={accounts} value={accountCode} onChange={setAccountCode} /></div>
+      {!accountCode ? <p className="py-10 text-center text-sm text-stone-500">Select an account to load activity.</p> : error ? <p className="py-8 text-center text-sm text-red-700">{error}</p> : loading && !data.rows.length ? <p className="py-8 text-center text-sm text-stone-500">Loading account activity...</p> : <GlActivityTable rows={data.rows} />}
+      <GlPagination data={data} loading={loading} setPage={setPage} setPageSize={setPageSize} disabled={!accountCode} />
+    </Panel>
   );
 }
 
@@ -1754,7 +1906,7 @@ function BankTransactionRow({ transaction, accounts, onReconcile, busy }) {
   );
 }
 
-function VatEngineWorkspace({ workspace, tab, reloadWorkspace, busy }) {
+function VatEngineWorkspace({ workspace, tab, filters, reloadWorkspace, busy }) {
   const vat = useMemo(() => workspace?.vat_engine || {}, [workspace?.vat_engine]);
   const clientId = workspace?.client?.id;
   const settings = useMemo(() => vat.settings || {}, [vat.settings]);
@@ -1763,7 +1915,6 @@ function VatEngineWorkspace({ workspace, tab, reloadWorkspace, busy }) {
   const periods = vat.periods || [];
   const transactions = vat.transactions || [];
   const returns = vat.returns || [];
-  const adjustments = vat.adjustments || [];
   const dashboard = vat.dashboard || {};
   const currentBoxes = vat.current_boxes || {};
   const currentPeriod = periods.find((period) => period.id === dashboard.current_period_id) || periods.find((period) => period.status === "open") || periods[0];
@@ -1773,6 +1924,12 @@ function VatEngineWorkspace({ workspace, tab, reloadWorkspace, busy }) {
   const [codeForm, setCodeForm] = useState({ code: "", description: "", percentage: "20", purchase_behavior: "input", sales_behavior: "output", return_box_net: "7", return_box_vat: "4", active: true });
   const [adjustmentForm, setAdjustmentForm] = useState({ adjustment_date: "", vat_period_id: "", vat_code: "", reason: "", notes: "", net_amount: "", vat_amount: "", gross_amount: "" });
   const [openBox, setOpenBox] = useState(null);
+  const [vatPage, setVatPage] = useState(() => normalisePaginatedResponse({ page_size: DEFAULT_PAGE_SIZE }));
+  const [vatPageNumber, setVatPageNumber] = useState(1);
+  const [vatPageSize, setVatPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [vatPageLoading, setVatPageLoading] = useState(false);
+  const [vatPageError, setVatPageError] = useState("");
+  const [vatRefreshKey, setVatRefreshKey] = useState(0);
 
   useEffect(() => {
     setSettingsForm(settings || {});
@@ -1784,25 +1941,29 @@ function VatEngineWorkspace({ workspace, tab, reloadWorkspace, busy }) {
     }
   }, [currentPeriod?.id, adjustmentForm.vat_period_id]);
 
-  const filteredTransactions = transactions.filter((transaction) => {
-    const query = search.trim().toLowerCase();
-    const matchesQuery = !query || [
-      transaction.document_number,
-      transaction.account_name,
-      transaction.source_module,
-      transaction.document_type,
-      transaction.vat_code,
-      transaction.status,
-    ].some((value) => String(value || "").toLowerCase().includes(query));
-    const matchesCode = !vatCodeFilter || transaction.vat_code === vatCodeFilter;
-    return matchesQuery && matchesCode;
-  });
+  const paginatedVatTabs = useMemo(() => ({ "VAT Transactions": "transactions", Adjustments: "adjustments", Reports: "reports" }), []);
+  useEffect(() => { setVatPageNumber(1); }, [tab, search, vatCodeFilter, filters?.date_from, filters?.date_to, filters?.financial_year_id, filters?.period_id, filters?.search, vatPageSize]);
+  useEffect(() => {
+    const endpoint = paginatedVatTabs[tab];
+    if (!endpoint || !clientId) return;
+    let cancelled = false;
+    const params = new URLSearchParams({ page: String(vatPageNumber), page_size: String(vatPageSize) });
+    const values = { date_from: filters?.date_from, date_to: filters?.date_to, financial_year: filters?.financial_year_id, period: filters?.period_id, vat_code: vatCodeFilter, search: search || filters?.search };
+    Object.entries(values).forEach(([key, value]) => { if (value) params.set(key, value); });
+    setVatPageLoading(true); setVatPageError("");
+    api.get(`/admin/accounting/clients/${clientId}/vat/${endpoint}?${params.toString()}`)
+      .then(({ data }) => { if (!cancelled) setVatPage(normalisePaginatedResponse(data, vatPageSize)); })
+      .catch((requestError) => { if (!cancelled) { setVatPageError(formatApiError(requestError)); setVatPage(normalisePaginatedResponse({ page: vatPageNumber, page_size: vatPageSize })); } })
+      .finally(() => { if (!cancelled) setVatPageLoading(false); });
+    return () => { cancelled = true; };
+  }, [clientId, tab, vatPageNumber, vatPageSize, search, vatCodeFilter, filters?.date_from, filters?.date_to, filters?.financial_year_id, filters?.period_id, filters?.search, vatRefreshKey, paginatedVatTabs]);
 
   async function runVatAction(action, successMessage) {
     try {
       await action();
       toast.success(successMessage);
       await reloadWorkspace();
+      setVatRefreshKey((key) => key + 1);
     } catch (e) {
       toast.error(formatApiError(e));
     }
@@ -1934,7 +2095,8 @@ function VatEngineWorkspace({ workspace, tab, reloadWorkspace, busy }) {
             {activeCodes.map((code) => <option key={code.id} value={code.code}>{code.code} - {code.description}</option>)}
           </select>
         )} />
-        <VatTransactionsTable transactions={filteredTransactions} />
+        {vatPageError ? <p className="py-8 text-center text-sm text-red-700">{vatPageError}</p> : vatPageLoading && !vatPage.rows.length ? <p className="py-8 text-center text-sm text-stone-500">Loading VAT transactions...</p> : <VatTransactionsTable transactions={vatPage.rows} />}
+        <PaginationFooter page={vatPage.page} pageSize={vatPage.page_size} totalRows={vatPage.total_rows} totalPages={vatPage.total_pages} onPageChange={setVatPageNumber} onPageSizeChange={setVatPageSize} disabled={vatPageLoading} />
       </Panel>
     );
   }
@@ -1980,7 +2142,7 @@ function VatEngineWorkspace({ workspace, tab, reloadWorkspace, busy }) {
       <div className="grid gap-4 xl:grid-cols-[1fr_380px]">
         <Panel title="VAT adjustments">
           <div className="space-y-2">
-            {adjustments.map((adjustment) => (
+            {vatPage.rows.map((adjustment) => (
               <div key={adjustment.id} className="grid gap-3 rounded-md border border-stone-200 p-3 md:grid-cols-[120px_1fr_120px_120px] md:items-center">
                 <Info label="Date" value={formatDate(adjustment.adjustment_date)} />
                 <Info label="Reason" value={adjustment.reason || adjustment.notes || "VAT adjustment"} />
@@ -1988,8 +2150,10 @@ function VatEngineWorkspace({ workspace, tab, reloadWorkspace, busy }) {
                 <Info label="VAT" value={formatMoney(adjustment.vat_amount)} />
               </div>
             ))}
-            {adjustments.length === 0 && <p className="py-10 text-center text-sm text-stone-500">No VAT adjustments posted yet.</p>}
+            {!vatPageLoading && vatPage.rows.length === 0 && <p className="py-10 text-center text-sm text-stone-500">No VAT adjustments posted yet.</p>}
+            {vatPageError && <p className="py-4 text-center text-sm text-red-700">{vatPageError}</p>}
           </div>
+          <PaginationFooter page={vatPage.page} pageSize={vatPage.page_size} totalRows={vatPage.total_rows} totalPages={vatPage.total_pages} onPageChange={setVatPageNumber} onPageSizeChange={setVatPageSize} disabled={vatPageLoading} />
         </Panel>
         <Panel title="Post adjustment">
           <form onSubmit={createAdjustment} className="space-y-3">
@@ -2009,7 +2173,7 @@ function VatEngineWorkspace({ workspace, tab, reloadWorkspace, busy }) {
   }
 
   if (tab === "Reports") {
-    return <VatReportsWorkspace vat={vat} transactions={transactions} />;
+    return <div className="space-y-4"><div className="grid gap-3 sm:grid-cols-3"><SummaryCard label="Page net" value={formatMoney(vatPage.summary?.net)} tone="blue" /><SummaryCard label="Page VAT" value={formatMoney(vatPage.summary?.vat)} tone="amber" /><SummaryCard label="Page gross" value={formatMoney(vatPage.summary?.gross)} tone="emerald" /></div><Panel title="VAT report detail">{vatPageError ? <p className="py-8 text-center text-sm text-red-700">{vatPageError}</p> : vatPageLoading && !vatPage.rows.length ? <p className="py-8 text-center text-sm text-stone-500">Loading VAT report...</p> : <VatTransactionsTable transactions={vatPage.rows} />}<PaginationFooter page={vatPage.page} pageSize={vatPage.page_size} totalRows={vatPage.total_rows} totalPages={vatPage.total_pages} onPageChange={setVatPageNumber} onPageSizeChange={setVatPageSize} disabled={vatPageLoading} /></Panel></div>;
   }
 
   if (tab === "Settings") {
@@ -2329,10 +2493,33 @@ function JournalTable({ journals, compact = false }) {
   );
 }
 
-function AuditTrailWorkspace({ auditLog = [] }) {
+function AuditTrailWorkspace({ clientId }) {
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [search, setSearch] = useState("");
+  const [action, setAction] = useState("");
+  const [data, setData] = useState(() => normalisePaginatedResponse({ page_size: DEFAULT_PAGE_SIZE }));
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => { setPage(1); }, [search, action, pageSize]);
+  useEffect(() => {
+    if (!clientId) return;
+    let cancelled = false;
+    const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+    if (search) params.set("search", search);
+    if (action) params.set("action", action);
+    setLoading(true); setError("");
+    api.get(`/admin/accounting/clients/${clientId}/audit-trail?${params.toString()}`)
+      .then(({ data: response }) => { if (!cancelled) setData(normalisePaginatedResponse(response, pageSize)); })
+      .catch((requestError) => { if (!cancelled) setError(formatApiError(requestError)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [clientId, page, pageSize, search, action]);
+  const auditLog = data.rows;
   return (
     <Panel title="Audit trail">
-      {auditLog.length === 0 ? (
+      <div className="mb-3 flex flex-wrap gap-2"><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search audit trail" className="h-9 max-w-lg" /><Input value={action} onChange={(event) => setAction(event.target.value)} placeholder="Filter action" className="h-9 max-w-xs" /></div>
+      {error ? <p className="py-8 text-center text-sm text-red-700">{error}</p> : loading && !auditLog.length ? <p className="py-8 text-center text-sm text-stone-500">Loading audit trail...</p> : auditLog.length === 0 ? (
         <p className="py-10 text-center text-sm text-stone-500">No audit events yet.</p>
       ) : (
         <div className="overflow-auto">
@@ -2366,6 +2553,7 @@ function AuditTrailWorkspace({ auditLog = [] }) {
           </table>
         </div>
       )}
+      <PaginationFooter page={data.page} pageSize={data.page_size} totalRows={data.total_rows} totalPages={data.total_pages} onPageChange={setPage} onPageSizeChange={setPageSize} disabled={loading} />
     </Panel>
   );
 }
@@ -2548,6 +2736,10 @@ function ChartOfAccounts({ accounts, clientId, form, setForm, createAccount, upd
   const [drawerTab, setDrawerTab] = useState("General");
   const [accountHistory, setAccountHistory] = useState([]);
   const [allHistory, setAllHistory] = useState([]);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyPageSize, setHistoryPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [historyTotalRows, setHistoryTotalRows] = useState(0);
+  const [historyTotalPages, setHistoryTotalPages] = useState(1);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyMessage, setHistoryMessage] = useState("");
   const [historyFilters, setHistoryFilters] = useState({ search: "", action: "", user: "", date_from: "", date_to: "", status: "" });
@@ -2559,12 +2751,21 @@ function ChartOfAccounts({ accounts, clientId, form, setForm, createAccount, upd
   const duplicateCode = drawerMode === "add" && !!form.code && accountRows.some((account) => String(account.code || "").trim().toLowerCase() === form.code.trim().toLowerCase());
 
   const loadAccountHistory = useCallback(async () => {
-    if (!clientId || !selectedAccount?.id) return;
+    if (!clientId || !selectedAccount?.code) return;
     setHistoryLoading(true);
     setHistoryMessage("");
     try {
-      const { data } = await api.get(`/admin/accounting/clients/${clientId}/accounts/${selectedAccount.id}/history`);
-      setAccountHistory(Array.isArray(data?.history) ? data.history : []);
+      const params = new URLSearchParams({ page: String(historyPage), page_size: String(historyPageSize) });
+      if (historyFilters.search) params.set("search", historyFilters.search);
+      if (historyFilters.action) params.set("action", historyFilters.action);
+      if (historyFilters.user) params.set("user", historyFilters.user);
+      if (historyFilters.date_from) params.set("date_from", historyFilters.date_from);
+      if (historyFilters.date_to) params.set("date_to", historyFilters.date_to);
+      const { data } = await api.get(`/admin/accounting/clients/${clientId}/chart-of-accounts/${encodeURIComponent(selectedAccount.code)}/history?${params.toString()}`);
+      const paged = normalisePaginatedResponse(data, historyPageSize);
+      setAccountHistory(paged.rows);
+      setHistoryTotalRows(paged.total_rows);
+      setHistoryTotalPages(paged.total_pages);
     } catch (e) {
       const status = e?.response?.status || e?.status;
       if ([404, 405, 501].includes(status)) {
@@ -2573,36 +2774,26 @@ function ChartOfAccounts({ accounts, clientId, form, setForm, createAccount, upd
         setHistoryMessage(formatApiError(e));
       }
       setAccountHistory([]);
+      setHistoryTotalRows(0);
+      setHistoryTotalPages(1);
     } finally {
       setHistoryLoading(false);
     }
-  }, [clientId, selectedAccount?.id]);
+  }, [clientId, selectedAccount?.code, historyPage, historyPageSize, historyFilters.search, historyFilters.action, historyFilters.user, historyFilters.date_from, historyFilters.date_to]);
 
   const loadAllHistory = useCallback(async () => {
-    if (!clientId) return;
-    setHistoryLoading(true);
-    setHistoryMessage("");
-    try {
-      const { data } = await api.get(`/admin/accounting/clients/${clientId}/accounts/history`);
-      setAllHistory(Array.isArray(data?.history) ? data.history : []);
-    } catch (e) {
-      const status = e?.response?.status || e?.status;
-      if ([404, 405, 501].includes(status)) {
-        setHistoryMessage("Backend endpoint required: Chart of Accounts audit history.");
-      } else {
-        setHistoryMessage(formatApiError(e));
-      }
-      setAllHistory([]);
-    } finally {
-      setHistoryLoading(false);
-    }
-  }, [clientId]);
+    setAllHistory([]);
+    setHistoryMessage("Select a nominal account and open its History tab to load paginated history.");
+  }, []);
 
   useEffect(() => {
     setDrawerTab("General");
     setHistoryMessage("");
     setAccountHistory([]);
-  }, [drawerMode, selectedAccount?.id]);
+    setHistoryPage(1);
+  }, [drawerMode, selectedAccount?.id, selectedAccount?.code]);
+
+  useEffect(() => { setHistoryPage(1); }, [historyPageSize, historyFilters.search, historyFilters.action, historyFilters.user, historyFilters.date_from, historyFilters.date_to]);
 
   useEffect(() => {
     if (drawerMode === "edit" && drawerTab === "History") {
@@ -2723,6 +2914,14 @@ function ChartOfAccounts({ accounts, clientId, form, setForm, createAccount, upd
                             accountHistory={accountHistory}
                             historyLoading={historyLoading}
                             historyMessage={historyMessage}
+                            historyFilters={historyFilters}
+                            setHistoryFilters={setHistoryFilters}
+                            historyPage={historyPage}
+                            historyPageSize={historyPageSize}
+                            historyTotalRows={historyTotalRows}
+                            historyTotalPages={historyTotalPages}
+                            setHistoryPage={setHistoryPage}
+                            setHistoryPageSize={setHistoryPageSize}
                             closeDrawer={closeDrawer}
                           />
                         </td>
@@ -2770,7 +2969,7 @@ function ChartOfAccounts({ accounts, clientId, form, setForm, createAccount, upd
                 </div>
               ) : null}
               {drawerTab === "History" && isEditing ? (
-                <AccountHistoryPanel account={selectedAccount} protectedAccount={protectedAccount} history={accountHistory} loading={historyLoading} message={historyMessage} closeDrawer={closeDrawer} />
+                <AccountHistoryPanel account={selectedAccount} protectedAccount={protectedAccount} history={accountHistory} loading={historyLoading} message={historyMessage} filters={historyFilters} setFilters={setHistoryFilters} closeDrawer={closeDrawer} page={historyPage} pageSize={historyPageSize} totalRows={historyTotalRows} totalPages={historyTotalPages} setPage={setHistoryPage} setPageSize={setHistoryPageSize} />
               ) : (
                 <form onSubmit={isEditing ? updateAccount : createAccount} className="space-y-3">
                   {protectedAccount ? (
@@ -2829,7 +3028,7 @@ function ChartOfAccounts({ accounts, clientId, form, setForm, createAccount, upd
   );
 }
 
-function AccountEditorContent({ account, form, setForm, updateAccount, busy, duplicateCode, protectedAccount, bankCompatible, backendMessage, drawerTab, setDrawerTab, setShowInBanking, accountHistory, historyLoading, historyMessage, closeDrawer }) {
+function AccountEditorContent({ account, form, setForm, updateAccount, busy, duplicateCode, protectedAccount, bankCompatible, backendMessage, drawerTab, setDrawerTab, setShowInBanking, accountHistory, historyLoading, historyMessage, historyFilters, setHistoryFilters, closeDrawer, historyPage, historyPageSize, historyTotalRows, historyTotalPages, setHistoryPage, setHistoryPageSize }) {
   return (
     <div className="rounded-md border border-emerald-200 bg-white p-3 shadow-sm">
       <div className="grid gap-4 xl:grid-cols-[260px_1fr]">
@@ -2854,7 +3053,7 @@ function AccountEditorContent({ account, form, setForm, updateAccount, busy, dup
           ) : null}
         </div>
         {drawerTab === "History" ? (
-          <AccountHistoryPanel account={account} protectedAccount={protectedAccount} history={accountHistory} loading={historyLoading} message={historyMessage} closeDrawer={closeDrawer} />
+          <AccountHistoryPanel account={account} protectedAccount={protectedAccount} history={accountHistory} loading={historyLoading} message={historyMessage} filters={historyFilters} setFilters={setHistoryFilters} closeDrawer={closeDrawer} page={historyPage} pageSize={historyPageSize} totalRows={historyTotalRows} totalPages={historyTotalPages} setPage={setHistoryPage} setPageSize={setHistoryPageSize} />
         ) : (
           <form onSubmit={updateAccount} className="space-y-3">
             {backendMessage ? <InlineFormMessage message={backendMessage} /> : null}
@@ -2922,7 +3121,7 @@ function AccountDrawerContextHeader({ account, sticky = false }) {
   );
 }
 
-function AccountHistoryPanel({ account, protectedAccount, history, loading, message, closeDrawer }) {
+function AccountHistoryPanel({ account, protectedAccount, history, loading, message, filters, setFilters, closeDrawer, page, pageSize, totalRows, totalPages, setPage, setPageSize }) {
   return (
     <div className="space-y-3">
       {protectedAccount ? (
@@ -2934,7 +3133,15 @@ function AccountHistoryPanel({ account, protectedAccount, history, loading, mess
         <div className="text-sm font-semibold text-stone-900">{account?.code || "-"} - {account?.name || "Account"}</div>
         <div className="text-xs text-stone-500">Nominal account audit timeline</div>
       </div>
+      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
+        <input value={filters.search} onChange={(e) => setFilters((current) => ({ ...current, search: e.target.value }))} placeholder="Search history" className="h-9 rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm" />
+        <input value={filters.action} onChange={(e) => setFilters((current) => ({ ...current, action: e.target.value }))} placeholder="Action" className="h-9 rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm" />
+        <input value={filters.user} onChange={(e) => setFilters((current) => ({ ...current, user: e.target.value }))} placeholder="User" className="h-9 rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm" />
+        <input type="date" value={filters.date_from} onChange={(e) => setFilters((current) => ({ ...current, date_from: e.target.value }))} aria-label="History from date" className="h-9 rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm" />
+        <input type="date" value={filters.date_to} onChange={(e) => setFilters((current) => ({ ...current, date_to: e.target.value }))} aria-label="History to date" className="h-9 rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm" />
+      </div>
       <HistoryTimeline history={history} loading={loading} message={message} />
+      <PaginationFooter page={page} pageSize={pageSize} totalRows={totalRows} totalPages={totalPages} onPageChange={setPage} onPageSizeChange={setPageSize} disabled={loading} />
       <Button type="button" variant="outline" className="w-full" onClick={closeDrawer}>Close</Button>
     </div>
   );
@@ -3424,19 +3631,138 @@ function formatMaybeMoney(value) {
   return text || "-";
 }
 
-function ReportsWorkspace({ workspace, activeReport }) {
-  const reports = workspace.reports || {};
-  if (activeReport === "Financial Statements") return <FinancialStatementsWorkspace workspace={workspace} />;
-  if (activeReport === "Management Reports") return <ManagementReportsWorkspace reports={reports} />;
-  if (activeReport === "VAT Reports") return <VatReportSuite reports={reports} />;
-  if (activeReport === "Sales Reports") return <SalesReportSuite reports={reports} />;
-  if (activeReport === "Purchase Reports") return <PurchaseReportSuite reports={reports} />;
-  if (activeReport === "Bank Reports") return <BankReportSuite reports={reports} />;
-  if (activeReport === "Custom Reports") return <CustomReportsWorkspace reports={reports} />;
-  if (activeReport === "Report Scheduler") return <ReportSchedulerWorkspace reports={reports} />;
-  if (activeReport === "Exports") return <ReportExportsWorkspace reports={reports} />;
-  if (activeReport === "Settings") return <ReportSettingsWorkspace reports={reports} />;
-  return <ReportsDashboard reports={reports} />;
+function reportQueryParams(filters, page, pageSize, extra = {}) {
+  return glQueryParams(filters, page, pageSize, extra);
+}
+
+function useReportPage(workspace, endpoint, filters, page, pageSize, extra = {}) {
+  const [data, setData] = useState(() => normalisePaginatedResponse({ page_size: DEFAULT_PAGE_SIZE }));
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const clientId = workspace?.client?.id;
+  const requestParams = useMemo(() => reportQueryParams(filters, page, pageSize, extra).toString(), [extra, filters, page, pageSize]);
+  useEffect(() => {
+    if (!clientId) return;
+    let cancelled = false;
+    setLoading(true); setError("");
+    api.get(`/admin/accounting/clients/${clientId}/reports/${endpoint}?${requestParams}`)
+      .then(({ data: response }) => { if (!cancelled) setData(normalisePaginatedResponse(response, pageSize)); })
+      .catch((requestError) => { if (!cancelled) { setError(formatApiError(requestError)); setData(normalisePaginatedResponse({ page, page_size: pageSize })); } })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [clientId, endpoint, page, pageSize, requestParams]);
+  return { data, loading, error };
+}
+
+function PaginatedReportPanel({ workspace, endpoint, title, filters, columns, empty, extra = {} }) {
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const extraKey = JSON.stringify(extra);
+  useEffect(() => { setPage(1); }, [endpoint, extraKey, filters?.date_from, filters?.date_to, filters?.financial_year_id, filters?.period_id, filters?.search, pageSize]);
+  const { data, loading, error } = useReportPage(workspace, endpoint, filters, page, pageSize, extra);
+  return (
+    <Panel title={title}>
+      {error ? <p className="py-8 text-center text-sm text-red-700">{error}</p> : loading && !data.rows.length ? <p className="py-8 text-center text-sm text-stone-500">Loading report...</p> : <ReportTable rows={data.rows} columns={columns} empty={empty} />}
+      <PaginationFooter page={data.page} pageSize={data.page_size} totalRows={data.total_rows} totalPages={data.total_pages} onPageChange={setPage} onPageSizeChange={setPageSize} disabled={loading} />
+    </Panel>
+  );
+}
+
+function VatLazyReport({ workspace, filters }) {
+  const [summary, setSummary] = useState(null);
+  const [error, setError] = useState("");
+  const clientId = workspace?.client?.id;
+  const summaryParams = useMemo(() => reportQueryParams(filters, 1, DEFAULT_PAGE_SIZE).toString(), [filters]);
+  useEffect(() => {
+    if (!clientId) return;
+    let cancelled = false;
+    api.get(`/admin/accounting/clients/${clientId}/reports/vat/summary?${summaryParams}`)
+      .then(({ data }) => { if (!cancelled) setSummary(data || {}); })
+      .catch((requestError) => { if (!cancelled) setError(formatApiError(requestError)); });
+    return () => { cancelled = true; };
+  }, [clientId, summaryParams]);
+  return <div className="space-y-4">{error ? <p className="text-sm text-red-700">{error}</p> : <div className="grid gap-3 sm:grid-cols-3"><SummaryCard label="Sales VAT" value={formatMoney(summary?.sales?.vat)} tone="blue" /><SummaryCard label="Purchase VAT" value={formatMoney(summary?.purchases?.vat)} tone="amber" /><SummaryCard label="Net VAT" value={formatMoney(summary?.net_vat)} tone="emerald" /></div>}<PaginatedReportPanel workspace={workspace} endpoint="vat/detail" title="VAT detail" filters={filters} columns={[["date", "Date", "date"], ["source_module", "Module"], ["document_number", "Document"], ["vat_code", "VAT code"], ["net", "Net", "money"], ["vat", "VAT", "money"], ["gross", "Gross", "money"]]} empty="No VAT transactions match the selected filters." /></div>;
+}
+
+function LazyReportMetadata({ workspace, title }) {
+  const [metadata, setMetadata] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!workspace?.client?.id) return;
+    let cancelled = false;
+    api.get(`/admin/accounting/clients/${workspace.client.id}/reports/workspace`).then(({ data }) => { if (!cancelled) setMetadata(data); }).catch((requestError) => { if (!cancelled) setError(formatApiError(requestError)); });
+    return () => { cancelled = true; };
+  }, [workspace?.client?.id]);
+  const summary = metadata?.summary || {};
+  return <Panel title={title}>{error ? <p className="py-8 text-center text-sm text-red-700">{error}</p> : !metadata ? <p className="py-8 text-center text-sm text-stone-500">Loading report metadata...</p> : <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><SummaryCard label="Journals" value={summary.journals ?? 0} tone="stone" /><SummaryCard label="Bank transactions" value={summary.bank_transactions ?? 0} tone="emerald" /><SummaryCard label="Receivables" value={formatMoney(summary.ar_outstanding)} tone="blue" /><SummaryCard label="Payables" value={formatMoney(summary.ap_outstanding)} tone="amber" /></div>}</Panel>;
+}
+
+function LazyReportsWorkspace({ workspace, activeReport, filters }) {
+  const reportName = activeReport || "Dashboard";
+  if (reportName === "Dashboard") return <LazyReportMetadata workspace={workspace} title="Reporting dashboard" />;
+  if (reportName === "Financial Statements") return <LazyFinancialStatements workspace={workspace} filters={filters} />;
+  if (reportName === "Management Reports") return <LazyManagementReports workspace={workspace} filters={filters} />;
+  if (reportName === "VAT Reports") return <VatLazyReport workspace={workspace} filters={filters} />;
+  if (reportName === "Sales Reports") return <SalesLazyReports workspace={workspace} filters={filters} />;
+  if (reportName === "Purchase Reports") return <PurchaseLazyReports workspace={workspace} filters={filters} />;
+  if (reportName === "Bank Reports") return <PaginatedReportPanel workspace={workspace} endpoint="banking" title="Bank report" filters={filters} columns={[["transaction_date", "Date", "date"], ["description", "Description"], ["reference", "Reference"], ["money_in", "Money in", "money"], ["money_out", "Money out", "money"], ["status", "Status"]]} empty="No bank report rows found for the selected filters." />;
+  if (reportName === "Custom Reports") return <LazyListReport workspace={workspace} endpoint="custom" title="Custom reports" filters={filters} columns={[["name", "Name"], ["type", "Type"], ["updated_at", "Updated", "date"]]} empty="No custom reports have been saved." />;
+  if (reportName === "Report Scheduler") return <LazyListReport workspace={workspace} endpoint="scheduler" title="Scheduled reports" filters={filters} columns={[["name", "Report"], ["frequency", "Frequency"], ["next_run", "Next run", "date"], ["status", "Status"]]} empty="No scheduled reports have been configured." />;
+  if (reportName === "Exports") return <LazyListReport workspace={workspace} endpoint="exports" title="Report exports" filters={filters} columns={[["created_at", "Created", "date"], ["report", "Report"], ["format", "Format"], ["status", "Status"]]} empty="No report exports have been generated." />;
+  if (reportName === "Settings") return <LazyReportSettings workspace={workspace} filters={filters} />;
+  return <LazyReportMetadata workspace={workspace} title="Reporting dashboard" />;
+}
+
+function useReportResource(workspace, endpoint, filters) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const clientId = workspace?.client?.id;
+  const requestParams = useMemo(() => reportQueryParams(filters, 1, DEFAULT_PAGE_SIZE).toString(), [filters]);
+  useEffect(() => {
+    if (!clientId) return;
+    let cancelled = false;
+    setLoading(true); setError("");
+    api.get(`/admin/accounting/clients/${clientId}/reports/${endpoint}?${requestParams}`)
+      .then(({ data: response }) => { if (!cancelled) setData(response || {}); })
+      .catch((requestError) => { if (!cancelled) { setError(formatApiError(requestError)); setData(null); } })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [clientId, endpoint, requestParams]);
+  return { data, loading, error };
+}
+
+function LazyFinancialStatements({ workspace, filters }) {
+  const { data, loading, error } = useReportResource(workspace, "financial-statements", filters);
+  if (error) return <ReportUnavailable message={error} />;
+  if (loading && !data) return <ReportUnavailable message="Loading financial statements..." />;
+  return <FinancialStatementsWorkspace reports={data || {}} />;
+}
+
+function LazyManagementReports({ workspace, filters }) {
+  const { data, loading, error } = useReportResource(workspace, "management", filters);
+  if (error) return <ReportUnavailable message={error} />;
+  if (loading && !data) return <ReportUnavailable message="Loading management reports..." />;
+  return <ManagementReportsWorkspace reports={{ management: data || {} }} />;
+}
+
+function SalesLazyReports({ workspace, filters }) {
+  return <div className="space-y-4"><PaginatedReportPanel workspace={workspace} endpoint="sales" title="Sales report" filters={filters} columns={[["invoice_number", "Invoice"], ["party_name", "Customer"], ["invoice_date", "Date", "date"], ["gross_amount", "Gross", "money"], ["outstanding_amount", "Outstanding", "money"], ["status", "Status"]]} empty="No sales report rows found for the selected filters." /><PaginatedReportPanel workspace={workspace} endpoint="aged-debtors" title="Aged debtors" filters={filters} columns={[["party_code", "Code"], ["party_name", "Customer"], ["invoice_count", "Invoices"], ["total", "Outstanding", "money"]]} empty="No aged debtor rows found for the selected filters." /></div>;
+}
+
+function PurchaseLazyReports({ workspace, filters }) {
+  return <div className="space-y-4"><PaginatedReportPanel workspace={workspace} endpoint="purchases" title="Purchase report" filters={filters} columns={[["invoice_number", "Bill"], ["party_name", "Supplier"], ["invoice_date", "Date", "date"], ["gross_amount", "Gross", "money"], ["outstanding_amount", "Outstanding", "money"], ["status", "Status"]]} empty="No purchase report rows found for the selected filters." /><PaginatedReportPanel workspace={workspace} endpoint="aged-creditors" title="Aged creditors" filters={filters} columns={[["party_code", "Code"], ["party_name", "Supplier"], ["invoice_count", "Invoices"], ["total", "Outstanding", "money"]]} empty="No aged creditor rows found for the selected filters." /></div>;
+}
+
+function LazyListReport({ workspace, endpoint, title, filters, columns, empty }) {
+  return <PaginatedReportPanel workspace={workspace} endpoint={endpoint} title={title} filters={filters} columns={columns} empty={empty} />;
+}
+
+function LazyReportSettings({ workspace, filters }) {
+  const { data, loading, error } = useReportResource(workspace, "settings", filters);
+  if (error) return <ReportUnavailable message={error} />;
+  if (loading && !data) return <ReportUnavailable message="Loading report settings..." />;
+  return <ReportSettingsWorkspace reports={{ settings: data || {} }} />;
 }
 
 function ReportsDashboard({ reports }) {
@@ -3489,39 +3815,66 @@ function ReportsDashboard({ reports }) {
   );
 }
 
-function FinancialStatementsWorkspace({ workspace }) {
-  const reports = workspace.reports || {};
+function FinancialStatementsWorkspace({ reports }) {
   const pnl = reports.profit_and_loss || {};
   const balanceSheet = reports.balance_sheet || {};
   const cashFlow = reports.cash_flow || {};
   const equity = reports.statement_of_changes_in_equity || {};
+  const hasPnl = reportSectionHasData(pnl);
+  const hasBalanceSheet = reportSectionHasData(balanceSheet);
+  const hasCashFlow = reportSectionHasData(cashFlow);
+  const hasEquity = reportSectionHasData(equity);
+  const hasTrialBalance = Array.isArray(reports.trial_balance) && reports.trial_balance.length > 0;
   return (
     <div className="space-y-4">
       <ReportActionBar title="Financial statements" rows={reports.trial_balance || []} />
       <div className="grid gap-4 xl:grid-cols-2">
         <Panel title="Profit and Loss">
-          <ReportRows rows={[["Income", pnl.income], ["Expenses", pnl.expenses], ["Gross profit", pnl.gross_profit], ["Net profit / loss", pnl.profit]]} />
-          <ExpandableReportRows title="Income detail" rows={pnl.sections?.income || []} />
-          <ExpandableReportRows title="Expense detail" rows={pnl.sections?.expenses || []} />
+          {hasPnl ? (
+            <>
+            <ReportRows rows={[["Income", pnl.income], ["Expenses", pnl.expenses], ["Gross profit", pnl.gross_profit], ["Net profit / loss", pnl.profit]]} />
+            <ExpandableReportRows title="Income detail" rows={pnl.sections?.income || []} />
+            <ExpandableReportRows title="Expense detail" rows={pnl.sections?.expenses || []} />
+            </>
+          ) : <ReportUnavailable message="Profit and loss data is not available in the current workspace." />}
         </Panel>
         <Panel title="Balance Sheet">
-          <ReportRows rows={[["Assets", balanceSheet.assets], ["Liabilities", balanceSheet.liabilities], ["Equity", balanceSheet.equity], ["Current year profit", balanceSheet.current_year_profit], ["Net assets", balanceSheet.net_assets]]} />
-          <ExpandableReportRows title="Asset detail" rows={balanceSheet.sections?.assets || []} />
-          <ExpandableReportRows title="Liability detail" rows={balanceSheet.sections?.liabilities || []} />
-          <ExpandableReportRows title="Equity detail" rows={balanceSheet.sections?.equity || []} />
+          {hasBalanceSheet ? (
+            <>
+            <ReportRows rows={[["Assets", balanceSheet.assets], ["Liabilities", balanceSheet.liabilities], ["Equity", balanceSheet.equity], ["Current year profit", balanceSheet.current_year_profit], ["Net assets", balanceSheet.net_assets]]} />
+            <ExpandableReportRows title="Asset detail" rows={balanceSheet.sections?.assets || []} />
+            <ExpandableReportRows title="Liability detail" rows={balanceSheet.sections?.liabilities || []} />
+            <ExpandableReportRows title="Equity detail" rows={balanceSheet.sections?.equity || []} />
+            </>
+          ) : <ReportUnavailable message="Balance sheet data is not available in the current workspace." />}
         </Panel>
-      </div>
-      <div className="grid gap-4 xl:grid-cols-2">
         <Panel title="Cash Flow Statement">
-          <ReportRows rows={[["Operating activities", cashFlow.operating_activities], ["Investing activities", cashFlow.investing_activities], ["Financing activities", cashFlow.financing_activities], ["Net cash movement", cashFlow.net_cash_movement]]} />
+          {hasCashFlow ? (
+            <ReportRows rows={[["Operating activities", cashFlow.operating_activities], ["Investing activities", cashFlow.investing_activities], ["Financing activities", cashFlow.financing_activities], ["Net cash movement", cashFlow.net_cash_movement]]} />
+          ) : <ReportUnavailable message="Cash flow data is not available in the current workspace." />}
         </Panel>
         <Panel title="Statement of Changes in Equity">
-          <ReportRows rows={[["Opening equity", equity.opening_equity], ["Current year profit", equity.current_year_profit], ["Closing equity", equity.closing_equity]]} />
+          {hasEquity ? (
+            <ReportRows rows={[["Opening equity", equity.opening_equity], ["Current year profit", equity.current_year_profit], ["Closing equity", equity.closing_equity]]} />
+          ) : <ReportUnavailable message="Equity statement data is not available in the current workspace." />}
         </Panel>
       </div>
-      <TrialBalanceReport workspace={workspace} />
+      {hasTrialBalance ? <Panel title="Trial balance"><ReportTable rows={reports.trial_balance} columns={[["code", "Code"], ["name", "Account"], ["type", "Type"], ["debit", "Debit", "money"], ["credit", "Credit", "money"]]} empty="No posted balances found for the selected filters." /></Panel> : <Panel title="Trial balance"><ReportUnavailable message="No posted balances found for the selected filters." /></Panel>}
     </div>
   );
+}
+
+function reportSectionHasData(value) {
+  if (!value || typeof value !== "object") return false;
+  return Object.values(value).some((item) => {
+    if (Array.isArray(item)) return item.length > 0;
+    if (item && typeof item === "object") return reportSectionHasData(item);
+    return item !== undefined && item !== null && item !== "";
+  });
+}
+
+function ReportUnavailable({ message }) {
+  return <p className="py-8 text-center text-sm text-stone-500">{message}</p>;
 }
 
 function ManagementReportsWorkspace({ reports }) {
@@ -3541,7 +3894,7 @@ function ManagementReportsWorkspace({ reports }) {
         <ReportTable rows={management.trend_analysis || []} columns={[["period", "Period"], ["income", "Revenue", "money"], ["expenses", "Expenses", "money"], ["profit", "Net profit", "money"]]} empty="No trend data yet." />
       </Panel>
       <Panel title="Department summary">
-        <p className="py-6 text-center text-sm text-stone-500">Department and cost-centre reporting is ready for future dimensions once departments are enabled.</p>
+        <ReportTable rows={management.department_summary || []} columns={[["department", "Department"], ["income", "Income", "money"], ["expenses", "Expenses", "money"], ["profit", "Profit", "money"]]} empty="No department summary rows yet." />
       </Panel>
     </div>
   );

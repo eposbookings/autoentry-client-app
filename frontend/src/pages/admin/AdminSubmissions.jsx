@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AlertTriangle, Archive, ArrowLeft, CheckCircle2, Download, FileText, Inbox, RotateCcw, Search, Sparkles, Trash2, Wand2 } from "lucide-react";
 import { toast } from "sonner";
+import { DEFAULT_PAGE_SIZE, PaginationFooter, normalisePageSize, pageSlice } from "./accountancy-software/shared";
 
 const listTabs = [
   { key: "active", label: "All active items", icon: Inbox },
@@ -572,6 +573,13 @@ function ItemsLayer({
   downloadArchive,
   busy,
 }) {
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  useEffect(() => {
+    setPage(1);
+  }, [client?._id, tab, rows.length]);
+  // Temporary fallback until the Submitted Items list endpoint returns { rows, page, page_size, total_rows, total_pages, summary }.
+  const pagedRows = useMemo(() => pageSlice(rows, page, pageSize), [page, pageSize, rows]);
   return (
     <div className="flex h-[calc(100vh-2rem)] min-h-[660px] flex-col overflow-hidden">
       <header className="mb-3 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
@@ -628,7 +636,7 @@ function ItemsLayer({
               <tr>
                 <td className="px-4 py-12 text-center text-stone-500" colSpan={tab === "archived" ? 7 : 6}>No documents here.</td>
               </tr>
-            ) : rows.map((row) => (
+            ) : pagedRows.map((row) => (
               <tr key={row.id} className="border-t border-stone-100 hover:bg-stone-50">
                 {tab === "archived" && (
                   <td className="px-4 py-3">
@@ -682,6 +690,18 @@ function ItemsLayer({
             ))}
           </tbody>
         </table>
+        {rows.length ? (
+          <PaginationFooter
+            page={page}
+            pageSize={pageSize}
+            totalRows={rows.length}
+            onPageChange={setPage}
+            onPageSizeChange={(size) => {
+              setPageSize(normalisePageSize(size));
+              setPage(1);
+            }}
+          />
+        ) : null}
       </div>
     </div>
   );

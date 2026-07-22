@@ -172,3 +172,32 @@ def test_serialize_ap_invoice_returns_missing_source_state_without_dropping_refe
     assert item["source_document_missing"] is True
     assert item["lines"][0]["nominal_account_code"] == "5000"
     assert item["lines"][0]["vat_code"] == "NO VAT"
+
+
+def test_native_supplier_and_customer_serializers_include_settings_list_aliases():
+    supplier = server.serialize_ap_supplier(
+        {"id": "sup-1", "supplier_code": "SUP001", "trading_name": "Supplier Trading", "status": "active"},
+        {"name": "Supplier Ltd", "email": "supplier@example.test", "account_code": "SUP001", "active": True},
+    )
+    customer = server.serialize_ar_customer(
+        {"id": "cus-1", "customer_code": "CUS001", "trading_name": "Customer Trading", "status": "active"},
+        {"name": "Customer Ltd", "email": "customer@example.test", "account_code": "CUS001", "active": True},
+    )
+
+    assert supplier["supplier_id"] == "sup-1"
+    assert supplier["supplier_name"] == "Supplier Ltd"
+    assert supplier["code"] == "SUP001"
+    assert supplier["active"] is True
+    assert customer["customer_id"] == "cus-1"
+    assert customer["customer_name"] == "Customer Ltd"
+    assert customer["code"] == "CUS001"
+    assert customer["active"] is True
+
+
+def test_workspace_snapshot_pagination_shape_supports_first_page_native_records():
+    payload = server.paginated_payload([{"id": "sup-1"}], 1, 50, 125, {"supplier_count": 125})
+
+    assert payload["rows"] == [{"id": "sup-1"}]
+    assert payload["page_size"] == 50
+    assert payload["total_rows"] == 125
+    assert payload["total_pages"] == 3

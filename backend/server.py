@@ -20,6 +20,7 @@ import re
 import smtplib
 import socket
 import textwrap
+import time
 import uuid
 import zipfile
 from contextlib import asynccontextmanager
@@ -46,13 +47,16 @@ from sqlalchemy import (
     Table,
     Text,
     and_,
+    case,
     delete,
     func,
     insert,
     inspect,
+    literal,
     or_,
     select,
     text,
+    union_all,
     update,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -2604,6 +2608,76 @@ async def count_rows(session: AsyncSession, table: Table, *conditions) -> int:
     return int(result.scalar_one())
 
 
+def pagination_params(page: int = 1, page_size: int = 50) -> tuple[int, int]:
+    try:
+        page_value = int(page or 1)
+    except (TypeError, ValueError):
+        page_value = 1
+    try:
+        size_value = int(page_size or 50)
+    except (TypeError, ValueError):
+        size_value = 50
+    return max(page_value, 1), min(max(size_value, 1), 250)
+
+
+def paginated_payload(rows: list[dict], page: int, page_size: int, total_rows: int, summary: Optional[dict] = None) -> dict:
+    total_pages = (total_rows + page_size - 1) // page_size if total_rows else 0
+    return {
+        "rows": rows,
+        "page": page,
+        "page_size": page_size,
+        "total_rows": total_rows,
+        "total_pages": total_pages,
+        "summary": summary or {},
+    }
+
+
+def approximate_payload_size(payload: Any) -> int:
+    try:
+        return len(json.dumps(payload, default=str))
+    except Exception:
+        return 0
+
+
+async def paginated_select(
+    session: AsyncSession,
+    table: Table,
+    conditions: list[Any],
+    order_by: list[Any],
+    page: int,
+    page_size: int,
+) -> tuple[list[dict], int]:
+    stmt = select(table)
+    count_stmt = select(func.count()).select_from(table)
+    if conditions:
+        where_clause = and_(*conditions)
+        stmt = stmt.where(where_clause)
+        count_stmt = count_stmt.where(where_clause)
+    total = int((await session.execute(count_stmt)).scalar_one() or 0)
+    rows = await many(session, stmt.order_by(*order_by).offset((page - 1) * page_size).limit(page_size))
+    return rows, total
+
+
+def lower_like(column: Any, search: str):
+    return func.lower(column).like(f"%{str(search or '').strip().lower()}%")
+
+
+def text_search_condition(search: Optional[str], *columns: Any) -> Optional[Any]:
+    needle = str(search or "").strip()
+    if not needle:
+        return None
+    return or_(*[lower_like(column, needle) for column in columns])
+
+
+def date_range_conditions(column: Any, date_from: Optional[str], date_to: Optional[str]) -> list[Any]:
+    conditions: list[Any] = []
+    if date_from:
+        conditions.append(column >= str(date_from))
+    if date_to:
+        conditions.append(column <= str(date_to))
+    return conditions
+
+
 async def get_user_by_email(session: AsyncSession, email: str) -> Optional[dict]:
     return await one(session, select(users).where(users.c.email == email.lower().strip()))
 
@@ -3705,6 +3779,10 @@ def serialize_ap_supplier(profile: dict, contact: Optional[dict] = None, balance
     row["email"] = contact.get("email") or ""
     row["external_id"] = contact.get("external_id") or ""
     row["account_code"] = contact.get("account_code") or ""
+    row["supplier_id"] = row.get("id")
+    row["supplier_name"] = row["name"]
+    row["code"] = row.get("supplier_code") or row["account_code"] or ""
+    row["active"] = bool(contact.get("active", True)) and str(row.get("status") or "active").lower() == "active"
     row["balance"] = money_str(balance)
     return row
 
@@ -3829,7 +3907,7 @@ async def ap_audit_events(session: AsyncSession, client_id: str, record_id: str)
         select(accounting_audit_log)
         .where(accounting_audit_log.c.client_id == client_id, accounting_audit_log.c.entity_id == record_id)
         .order_by(accounting_audit_log.c.created_at.desc())
-        .limit(50),
+        .limit(5),
     )
     return [serialize_audit_event(event) for event in events]
 
@@ -4157,6 +4235,10 @@ def serialize_ar_customer(
     row["email"] = contact.get("email") or ""
     row["external_id"] = contact.get("external_id") or ""
     row["account_code"] = contact.get("account_code") or ""
+    row["customer_id"] = row.get("id")
+    row["customer_name"] = row["name"]
+    row["code"] = row.get("customer_code") or row["account_code"] or ""
+    row["active"] = bool(contact.get("active", True)) and str(row.get("status") or "active").lower() == "active"
     row["outstanding_balance"] = money_str(balance)
     row["on_account_credit"] = money_str(on_account_credit)
     row["net_balance"] = money_str(balance - on_account_credit)
@@ -5589,6 +5671,67 @@ def is_bank_reconciliation_line(row: dict) -> bool:
     return bank_transaction_status(row) in BANK_RECONCILIATION_STATUSES and not bool(row.get("ignored"))
 
 
+def bank_account_transaction_conditions(card: dict) -> list[Any]:
+    account_ids = [value for value in {card.get("id"), card.get("bank_account_id"), card.get("account_id")} if value]
+    account_code = str(card.get("nominal_account_code") or card.get("code") or "").strip()
+    filters: list[Any] = []
+    if account_ids:
+        filters.append(accounting_bank_transactions.c.bank_account_id.in_([str(value) for value in account_ids]))
+    if account_code:
+        filters.append(accounting_bank_transactions.c.bank_account_code == account_code)
+    return [or_(*filters)] if filters else []
+
+
+def bank_unreconciled_condition() -> Any:
+    statuses = [value for value in BANK_RECONCILIATION_STATUSES if value is not None]
+    return and_(
+        or_(accounting_bank_transactions.c.status.in_(statuses), accounting_bank_transactions.c.status.is_(None)),
+        accounting_bank_transactions.c.ignored == False,  # noqa: E712
+    )
+
+
+async def native_bank_account_cards_summary(session: AsyncSession, client_id: str, accounts: Optional[list[dict]] = None) -> list[dict]:
+    accounts = accounts or await many(
+        session,
+        select(accounting_accounts).where(accounting_accounts.c.client_id == client_id).order_by(accounting_accounts.c.code.asc()),
+    )
+    bank_metadata = await many(
+        session,
+        select(accounting_bank_accounts)
+        .where(accounting_bank_accounts.c.client_id == client_id)
+        .order_by(accounting_bank_accounts.c.default_account.desc(), accounting_bank_accounts.c.account_name.asc()),
+    )
+    cards = build_bank_account_cards(accounts, bank_metadata)
+    balances = await native_account_balances(session, client_id)
+    serialized: list[dict] = []
+    for card in cards:
+        code = str(card.get("nominal_account_code") or card.get("code") or "")
+        conditions = [accounting_bank_transactions.c.client_id == client_id, *bank_account_transaction_conditions(card)]
+        unreconciled_count = await count_rows(session, accounting_bank_transactions, *conditions, bank_unreconciled_condition())
+        reconciled_row = await one(
+            session,
+            select(func.sum(accounting_bank_transactions.c.money_in).label("money_in"), func.sum(accounting_bank_transactions.c.money_out).label("money_out"))
+            .where(and_(*conditions, accounting_bank_transactions.c.status.in_(list(BANK_RECONCILED_STATUSES))))
+        ) or {}
+        import_ids = [value for value in {card.get("id"), card.get("bank_account_id")} if value]
+        import_conditions: list[Any] = [accounting_bank_imports.c.client_id == client_id]
+        if import_ids:
+            import_conditions.append(accounting_bank_imports.c.bank_account_id.in_([str(value) for value in import_ids]))
+        last_import = await one(
+            session,
+            select(accounting_bank_imports).where(and_(*import_conditions)).order_by(accounting_bank_imports.c.created_at.desc()).limit(1),
+        )
+        reconciled = money(reconciled_row.get("money_in")) - money(reconciled_row.get("money_out"))
+        serialized.append(
+            serialize_bank_account(
+                {**card, "unreconciled_count": unreconciled_count, "last_import_at": (last_import or {}).get("created_at") or ""},
+                balances.get(code, Decimal("0.00")),
+                reconciled,
+            )
+        )
+    return serialized
+
+
 async def ensure_bank_settings(session: AsyncSession, client_id: str) -> dict:
     existing = await one(session, select(accounting_bank_settings).where(accounting_bank_settings.c.client_id == client_id))
     if existing:
@@ -6826,37 +6969,12 @@ async def vat_engine_workspace(session: AsyncSession, client_id: str) -> dict:
     settings_row = await ensure_vat_settings(session, client_id)
     codes = await ensure_vat_codes(session, client_id)
     periods = await ensure_vat_periods(session, client_id, settings_row)
-    transactions = await vat_transactions_for_client(session, client_id)
-    period_totals: dict[str, dict] = {}
-    for period in periods:
-        period_totals[str(period.get("id"))] = {"output": Decimal("0.00"), "input": Decimal("0.00"), "net": Decimal("0.00"), "count": 0}
-    for item in transactions:
-        pid = str(item.get("vat_period_id") or "")
-        if pid not in period_totals:
-            continue
-        total = period_totals[pid]
-        vat = money(item.get("vat"))
-        if item.get("direction") == "purchase":
-            total["input"] += vat
-        else:
-            total["output"] += vat
-        total["net"] = total["output"] - total["input"]
-        total["count"] += 1
-    serialized_periods = []
-    for period in periods:
-        item = serialize_vat_period(period)
-        totals = period_totals.get(str(period.get("id")), {})
-        item["output_vat"] = money_str(totals.get("output", Decimal("0.00")))
-        item["input_vat"] = money_str(totals.get("input", Decimal("0.00")))
-        item["net_vat"] = money_str(totals.get("net", Decimal("0.00")))
-        item["transaction_count"] = totals.get("count", 0)
-        serialized_periods.append(item)
+    serialized_periods = [serialize_vat_period(period) for period in periods]
     today = datetime.now(timezone.utc).date().isoformat()
     current_period = next((p for p in serialized_periods if str(p.get("period_start")) <= today <= str(p.get("period_end"))), serialized_periods[0] if serialized_periods else None)
-    current_transactions = [t for t in transactions if current_period and t.get("vat_period_id") == current_period.get("id")]
-    boxes = calculate_vat_boxes(current_transactions)
-    returns = [serialize_vat_return(r) for r in await many(session, select(accounting_vat_returns).where(accounting_vat_returns.c.client_id == client_id).order_by(accounting_vat_returns.c.period_end.desc(), accounting_vat_returns.c.created_at.desc()))]
-    adjustments = [serialize_vat_adjustment(a) for a in await many(session, select(accounting_vat_adjustments).where(accounting_vat_adjustments.c.client_id == client_id).order_by(accounting_vat_adjustments.c.adjustment_date.desc(), accounting_vat_adjustments.c.created_at.desc()))]
+    latest_return = await one(session, select(accounting_vat_returns).where(accounting_vat_returns.c.client_id == client_id).order_by(accounting_vat_returns.c.period_end.desc(), accounting_vat_returns.c.created_at.desc()).limit(1))
+    boxes = {f"box{i}": money((latest_return or {}).get(f"box{i}")) for i in range(1, 10)}
+    returns = [serialize_vat_return(r) for r in await many(session, select(accounting_vat_returns).where(accounting_vat_returns.c.client_id == client_id).order_by(accounting_vat_returns.c.period_end.desc(), accounting_vat_returns.c.created_at.desc()).limit(50))]
     dashboard = {
         "current_vat_liability": money_str(boxes["box5"]),
         "vat_due_to_hmrc": money_str(max(boxes["box5"], Decimal("0.00"))),
@@ -6864,7 +6982,7 @@ async def vat_engine_workspace(session: AsyncSession, client_id: str) -> dict:
         "current_period": f"{current_period.get('period_start')} to {current_period.get('period_end')}" if current_period else "-",
         "next_return_due": current_period.get("due_date") if current_period else None,
         "outstanding_returns": len([p for p in serialized_periods if p.get("status") == "open" and str(p.get("due_date") or "") <= today]),
-        "progress": int(min(100, max(0, (len(current_transactions) / 25) * 100))) if current_transactions else 0,
+        "progress": 0,
         "output_vat": money_str(boxes["box1"] + boxes["box2"]),
         "input_vat": money_str(boxes["box4"]),
         "net_vat_due": money_str(boxes["box5"]),
@@ -6873,17 +6991,12 @@ async def vat_engine_workspace(session: AsyncSession, client_id: str) -> dict:
         "settings": dict(settings_row),
         "codes": [serialize_vat_code(c) for c in codes],
         "periods": serialized_periods,
-        "transactions": transactions,
+        "transactions": [],
         "returns": returns,
-        "adjustments": adjustments,
+        "adjustments": [],
         "current_boxes": {key: money_str(value) for key, value in boxes.items()},
         "dashboard": dashboard,
-        "reports": {
-            "vat_by_nominal": [],
-            "vat_by_supplier": [],
-            "vat_by_customer": [],
-            "exceptions": [t for t in transactions if not t.get("vat_period_id") or not t.get("vat_code")],
-        },
+        "reports": {"lazy_loaded": True},
     }
 
 
@@ -8889,6 +9002,7 @@ async def get_native_accounting_workspace(
     user: dict = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ):
+    started = time.perf_counter()
     client = await get_client_or_404(session, client_id)
     if not is_native_accounting_client(client):
         raise HTTPException(status_code=400, detail="EPOS native accounting is not enabled for this client.")
@@ -8900,25 +9014,24 @@ async def get_native_accounting_workspace(
     )
     balances = await native_account_balances(session, client_id)
     protection_context = await account_protection_context(session, client_id, accounts)
+    account_history_meta = await many(
+        session,
+        select(accounting_audit_log.c.record_id, func.count(accounting_audit_log.c.id).label("history_count"), func.max(accounting_audit_log.c.created_at).label("latest_history_date"))
+        .where(accounting_audit_log.c.client_id == client_id, accounting_audit_log.c.record_type == "account")
+        .group_by(accounting_audit_log.c.record_id),
+    )
+    history_meta_by_id = {str(row.get("record_id") or ""): row for row in account_history_meta}
     for account in accounts:
         account["current_balance"] = money_str(balances.get(str(account.get("code") or ""), Decimal("0.00")))
         account.update(enrich_account_with_protection(account, protection_context))
+        history_meta = history_meta_by_id.get(str(account.get("id") or ""), {})
+        account["history_count"] = int(history_meta.get("history_count") or 0)
+        account["has_history"] = account["history_count"] > 0
+        account["latest_history_date"] = history_meta.get("latest_history_date")
     settings_row = await ensure_accounting_settings(session, client_id)
     financial_years = await many(
         session,
         select(accounting_financial_years).where(accounting_financial_years.c.client_id == client_id).order_by(accounting_financial_years.c.start_date.desc()),
-    )
-    contacts = await many(
-        session,
-        select(accounting_contacts).where(accounting_contacts.c.client_id == client_id).order_by(accounting_contacts.c.name.asc()),
-    )
-    journals = await many(
-        session,
-        select(accounting_journal_entries).where(accounting_journal_entries.c.client_id == client_id).order_by(accounting_journal_entries.c.entry_date.desc(), accounting_journal_entries.c.created_at.desc()),
-    )
-    vat_returns = await many(
-        session,
-        select(accounting_vat_returns).where(accounting_vat_returns.c.client_id == client_id).order_by(accounting_vat_returns.c.period_end.desc(), accounting_vat_returns.c.created_at.desc()),
     )
     periods = await many(
         session,
@@ -8929,80 +9042,771 @@ async def get_native_accounting_workspace(
         period["transactions_posted"] = period_counts.get(str(period.get("id")), 0)
     audit_events = await many(
         session,
-        select(accounting_audit_log).where(accounting_audit_log.c.client_id == client_id).order_by(accounting_audit_log.c.created_at.desc()).limit(50),
+        select(accounting_audit_log).where(accounting_audit_log.c.client_id == client_id).order_by(accounting_audit_log.c.created_at.desc()).limit(5),
     )
-    journal_ids = [str(j["id"]) for j in journals]
-    lines = []
-    if journal_ids:
-        lines = await many(
-            session,
-            select(accounting_journal_lines).where(accounting_journal_lines.c.entry_id.in_(journal_ids)).order_by(accounting_journal_lines.c.created_at.asc()),
-        )
-    lines_by_entry: dict[str, list[dict]] = {}
-    for line in lines:
-        lines_by_entry.setdefault(str(line["entry_id"]), []).append(line)
-    for journal in journals:
-        journal["lines"] = lines_by_entry.get(str(journal["id"]), [])
     summary = await native_accounting_summary(session, client_id)
-    banking_data = await banking_workspace(session, client_id, accounts)
-    bank_transactions = await many(
-        session,
-        select(accounting_bank_transactions).where(accounting_bank_transactions.c.client_id == client_id).order_by(accounting_bank_transactions.c.transaction_date.desc(), accounting_bank_transactions.c.created_at.desc()),
-    )
-    vat_engine_data = await vat_engine_workspace(session, client_id)
+    bank_accounts = await native_bank_account_cards_summary(session, client_id, accounts)
     vat_code_options = native_vat_choices(await ensure_vat_codes(session, client_id))
-    accounts_payable_data = await accounts_payable_workspace(session, client_id)
-    accounts_receivable_data = await accounts_receivable_workspace(session, client_id)
-    reports_data = await native_accounting_reports(
+    ap_settings = await ensure_ap_settings(session, client_id)
+    ar_settings = await ensure_ar_settings(session, client_id)
+    bank_settings = await ensure_bank_settings(session, client_id)
+    vat_settings = await ensure_vat_settings(session, client_id)
+    ap_summary_row = await one(
         session,
-        client_id,
-        accounts,
-        accounts_payable_data,
-        accounts_receivable_data,
-        banking_data,
-        vat_engine_data,
-    )
-    fixed_assets_data = await fixed_assets_workspace(session, client_id, accounts, accounts_payable_data)
-    year_end_data = await year_end_workspace(session, client_id, accounts, periods, financial_years)
-    ai_workspace_data = build_ai_accounting_workspace(
-        client_id,
-        summary,
-        [serialize_native_account(a) for a in accounts],
-        [serialize_native_contact(c) for c in contacts],
-        journals,
-        [serialize_period(p) for p in periods],
-        [serialize_audit_event(e) for e in audit_events],
-        accounts_payable_data,
-        accounts_receivable_data,
-        banking_data,
-        vat_engine_data,
-        reports_data,
-    )
-    ai_workspace_data["year_end"] = year_end_data.get("ai_alerts", [])
-    return {
+        select(
+            func.count(accounting_ap_invoices.c.id).label("invoice_count"),
+            func.sum(accounting_ap_invoices.c.gross_amount).label("invoice_value"),
+            func.sum(accounting_ap_invoices.c.outstanding_amount).label("invoice_balance"),
+        ).where(accounting_ap_invoices.c.client_id == client_id),
+    ) or {}
+    ar_summary_row = await one(
+        session,
+        select(
+            func.count(accounting_ar_invoices.c.id).label("invoice_count"),
+            func.sum(accounting_ar_invoices.c.gross_amount).label("invoice_value"),
+            func.sum(accounting_ar_invoices.c.outstanding_amount).label("invoice_balance"),
+        ).where(accounting_ar_invoices.c.client_id == client_id),
+    ) or {}
+    ap_supplier_snapshot = await native_ap_supplier_page(session, client_id, 1, 50)
+    ar_customer_snapshot = await native_ar_customer_page(session, client_id, 1, 50)
+    banking_summary = {
+        "bank_account_count": len(bank_accounts),
+        "unreconciled_transactions": sum(int(account.get("unreconciled_count") or 0) for account in bank_accounts),
+        "current_bank_balance": money_str(sum((money(account.get("current_balance")) for account in bank_accounts), Decimal("0.00"))),
+        "reconciled_balance": money_str(sum((money(account.get("reconciled_balance")) for account in bank_accounts), Decimal("0.00"))),
+        "last_bank_import": max([str(account.get("last_import_at") or "") for account in bank_accounts] or [""]),
+    }
+    accounts_payable_summary = {
+        "settings": serialize_ap_settings(ap_settings),
+        "summary": {
+            "supplier_count": ap_supplier_snapshot["total_rows"],
+            "invoice_count": int(ap_summary_row.get("invoice_count") or 0),
+            "invoice_value": money_str(money(ap_summary_row.get("invoice_value"))),
+            "invoice_balance": money_str(money(ap_summary_row.get("invoice_balance"))),
+            "payments_count": await count_rows(session, accounting_ap_payments, accounting_ap_payments.c.client_id == client_id),
+            "credit_note_count": await count_rows(session, accounting_ap_credit_notes, accounting_ap_credit_notes.c.client_id == client_id),
+        },
+        "suppliers": ap_supplier_snapshot["rows"],
+        "suppliers_page": {
+            "page": ap_supplier_snapshot["page"],
+            "page_size": ap_supplier_snapshot["page_size"],
+            "total_rows": ap_supplier_snapshot["total_rows"],
+            "total_pages": ap_supplier_snapshot["total_pages"],
+        },
+        "invoices": [],
+        "credit_notes": [],
+        "payments": [],
+    }
+    accounts_receivable_summary = {
+        "settings": serialize_ar_settings(ar_settings),
+        "summary": {
+            "customer_count": ar_customer_snapshot["total_rows"],
+            "invoice_count": int(ar_summary_row.get("invoice_count") or 0),
+            "invoice_value": money_str(money(ar_summary_row.get("invoice_value"))),
+            "invoice_balance": money_str(money(ar_summary_row.get("invoice_balance"))),
+            "receipts_count": await count_rows(session, accounting_ar_receipts, accounting_ar_receipts.c.client_id == client_id),
+            "credit_note_count": await count_rows(session, accounting_ar_credit_notes, accounting_ar_credit_notes.c.client_id == client_id),
+        },
+        "customers": ar_customer_snapshot["rows"],
+        "customers_page": {
+            "page": ar_customer_snapshot["page"],
+            "page_size": ar_customer_snapshot["page_size"],
+            "total_rows": ar_customer_snapshot["total_rows"],
+            "total_pages": ar_customer_snapshot["total_pages"],
+        },
+        "invoices": [],
+        "credit_notes": [],
+        "receipts": [],
+    }
+    banking_data = {
+        "settings": dict(bank_settings),
+        "dashboard": banking_summary,
+        "bank_accounts": bank_accounts,
+        "transactions": [],
+        "imports": [],
+        "statements": [],
+        "cashbook": [],
+        "cashbook_transactions": [],
+        "reconciliation_lines": [],
+        "account_transactions": [],
+        "reports": {},
+    }
+    vat_engine_data = {
+        "settings": dict(vat_settings),
+        "codes": vat_code_options,
+        "vat_codes": vat_code_options,
+        "returns_count": await count_rows(session, accounting_vat_returns, accounting_vat_returns.c.client_id == client_id),
+        "periods_count": await count_rows(session, accounting_vat_periods, accounting_vat_periods.c.client_id == client_id),
+    }
+    payload = {
         "client": serialize_user(client),
         "modules": NATIVE_ACCOUNTING_MODULES,
         "summary": summary,
         "accounts": [serialize_native_account(a) for a in accounts],
         "accounting_settings": serialize_accounting_settings(settings_row),
         "financial_years": [serialize_financial_year(y) for y in financial_years],
-        "contacts": [serialize_native_contact(c) for c in contacts],
-        "journals": journals,
+        "contacts": [],
+        "contacts_summary": {"count": await count_rows(session, accounting_contacts, accounting_contacts.c.client_id == client_id)},
+        "journals": [],
+        "journals_summary": {"count": await count_rows(session, accounting_journal_entries, accounting_journal_entries.c.client_id == client_id)},
         "banking": banking_data,
-        "bank_transactions": [serialize_bank_transaction(t) for t in bank_transactions],
-        "vat_returns": [serialize_vat_return(r) for r in vat_returns],
+        "bank_transactions": [],
+        "vat_returns": [],
         "vat_codes": vat_code_options,
         "vat": {"codes": vat_code_options, "vat_codes": vat_code_options},
         "vat_engine": vat_engine_data,
         "periods": [serialize_period(p) for p in periods],
         "audit_log": [serialize_audit_event(e) for e in audit_events],
-        "reports": reports_data,
-        "accounts_payable": accounts_payable_data,
-        "accounts_receivable": accounts_receivable_data,
-        "fixed_assets": fixed_assets_data,
-        "year_end": year_end_data,
-        "ai_workspace": ai_workspace_data,
+        "audit_summary": {"count": await count_rows(session, accounting_audit_log, accounting_audit_log.c.client_id == client_id)},
+        "reports": {"lazy_loaded": True},
+        "accounts_payable": accounts_payable_summary,
+        "accounts_receivable": accounts_receivable_summary,
+        "fixed_assets": {"lazy_loaded": True},
+        "year_end": {"lazy_loaded": True},
+        "ai_workspace": {"lazy_loaded": True, "alerts": []},
     }
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    logger.info(
+        "Native accounting workspace lightweight client_id=%s elapsed_ms=%s accounts=%s bank_accounts=%s payload_bytes=%s",
+        client_id,
+        elapsed_ms,
+        len(payload.get("accounts", [])),
+        len(bank_accounts),
+        approximate_payload_size(payload),
+    )
+    return payload
+
+
+async def paged_audit_trail(
+    session: AsyncSession, client_id: str, page: int, page_size: int, date_from: str = "", date_to: str = "",
+    module: str = "", action: str = "", user_filter: str = "", entity_type: str = "", entity_id: str = "", search: str = "",
+    scope_entity_id: str = "", scope_module: str = "",
+) -> dict:
+    safe_page, safe_size, offset = gl_page_values(page, page_size)
+    conditions = [accounting_audit_log.c.client_id == client_id]
+    if date_from: conditions.append(accounting_audit_log.c.created_at >= date_from)
+    if date_to: conditions.append(accounting_audit_log.c.created_at <= f"{date_to}T23:59:59")
+    if module: conditions.append(accounting_audit_log.c.module == module)
+    if action: conditions.append(accounting_audit_log.c.action == action)
+    if user_filter: conditions.append(accounting_audit_log.c.actor_id == user_filter)
+    if entity_type: conditions.append(accounting_audit_log.c.entity_type == entity_type)
+    if entity_id: conditions.append(or_(accounting_audit_log.c.entity_id == entity_id, accounting_audit_log.c.record_id == entity_id))
+    if scope_module: conditions.append(or_(accounting_audit_log.c.module == scope_module, accounting_audit_log.c.entity_type == scope_module, accounting_audit_log.c.record_type == scope_module))
+    if scope_entity_id:
+        scope_conditions = [accounting_audit_log.c.entity_id == scope_entity_id, accounting_audit_log.c.record_id == scope_entity_id, accounting_audit_log.c.details_json.like(f"%{scope_entity_id}%")]
+        if scope_module == "banking":
+            bank_transaction_ids = select(accounting_bank_transactions.c.id).where(accounting_bank_transactions.c.client_id == client_id, accounting_bank_transactions.c.bank_account_id == scope_entity_id)
+            scope_conditions.extend([accounting_audit_log.c.entity_id.in_(bank_transaction_ids), accounting_audit_log.c.record_id.in_(bank_transaction_ids)])
+        conditions.append(or_(*scope_conditions))
+    if search:
+        pattern = f"%{search.strip().lower()}%"
+        conditions.append(or_(func.lower(func.coalesce(accounting_audit_log.c.action, "")).like(pattern), func.lower(func.coalesce(accounting_audit_log.c.module, "")).like(pattern), func.lower(func.coalesce(accounting_audit_log.c.details_json, "")).like(pattern), func.lower(func.coalesce(accounting_audit_log.c.new_value, "")).like(pattern)))
+    total_rows = int((await session.execute(select(func.count()).select_from(accounting_audit_log).where(*conditions))).scalar() or 0)
+    records = await many(session, select(accounting_audit_log).where(*conditions).order_by(accounting_audit_log.c.created_at.desc()).offset(offset).limit(safe_size))
+    rows = [serialize_audit_event(row) for row in records]
+    return gl_response(rows, safe_page, safe_size, total_rows, {"audit_count": total_rows})
+
+
+def log_audit_response(endpoint: str, client_id: str, started: float, payload: dict) -> None:
+    logger.info("Native accounting audit %s client_id=%s elapsed_ms=%s rows=%s total_rows=%s payload_bytes=%s", endpoint, client_id, int((time.perf_counter() - started) * 1000), len(payload.get("rows") or []), payload.get("total_rows", 0), approximate_payload_size(payload))
+
+
+@api.get("/admin/accounting/clients/{client_id}/audit-trail")
+async def get_accounting_audit_trail(client_id: str, page: int = 1, page_size: int = 50, date_from: str = "", date_to: str = "", module: str = "", action: str = "", user: str = "", entity_type: str = "", entity_id: str = "", search: str = "", admin: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    started = time.perf_counter(); await get_client_or_404(session, client_id); payload = await paged_audit_trail(session, client_id, page, page_size, date_from, date_to, module, action, user, entity_type, entity_id, search); log_audit_response("global", client_id, started, payload); return payload
+
+
+@api.get("/admin/accounting/clients/{client_id}/ap/suppliers/{supplier_id}/audit-trail")
+async def get_supplier_audit_trail(client_id: str, supplier_id: str, page: int = 1, page_size: int = 50, date_from: str = "", date_to: str = "", module: str = "", action: str = "", user: str = "", entity_type: str = "", entity_id: str = "", search: str = "", admin: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    started = time.perf_counter(); await get_ap_supplier_or_404(session, client_id, supplier_id); payload = await paged_audit_trail(session, client_id, page, page_size, date_from, date_to, module, action, user, entity_type, entity_id, search, supplier_id, "accounts_payable"); log_audit_response("supplier", client_id, started, payload); return payload
+
+
+@api.get("/admin/accounting/clients/{client_id}/ar/customers/{customer_id}/audit-trail")
+async def get_customer_audit_trail(client_id: str, customer_id: str, page: int = 1, page_size: int = 50, date_from: str = "", date_to: str = "", module: str = "", action: str = "", user: str = "", entity_type: str = "", entity_id: str = "", search: str = "", admin: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    started = time.perf_counter(); await get_ar_customer_or_404(session, client_id, customer_id); payload = await paged_audit_trail(session, client_id, page, page_size, date_from, date_to, module, action, user, entity_type, entity_id, search, customer_id, "accounts_receivable"); log_audit_response("customer", client_id, started, payload); return payload
+
+
+@api.get("/admin/accounting/clients/{client_id}/banking/accounts/{bank_account_id}/audit-trail")
+async def get_bank_account_audit_trail(client_id: str, bank_account_id: str, page: int = 1, page_size: int = 50, date_from: str = "", date_to: str = "", module: str = "", action: str = "", user: str = "", entity_type: str = "", entity_id: str = "", search: str = "", admin: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    started = time.perf_counter()
+    bank_account = await one(session, select(accounting_bank_accounts).where(accounting_bank_accounts.c.client_id == client_id, accounting_bank_accounts.c.id == bank_account_id))
+    chart_account = await one(session, select(accounting_accounts).where(accounting_accounts.c.client_id == client_id, accounting_accounts.c.id == bank_account_id)) if not bank_account else None
+    if not bank_account and not chart_account: raise HTTPException(status_code=404, detail="Bank account not found.")
+    payload = await paged_audit_trail(session, client_id, page, page_size, date_from, date_to, module, action, user, entity_type, entity_id, search, bank_account_id, "banking"); log_audit_response("bank-account", client_id, started, payload); return payload
+
+
+@api.get("/admin/submissions/{submission_id}/audit-trail")
+async def get_submission_audit_trail(submission_id: str, page: int = 1, page_size: int = 50, date_from: str = "", date_to: str = "", module: str = "", action: str = "", user: str = "", entity_type: str = "", entity_id: str = "", search: str = "", admin: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    submission = await one(session, select(submissions).where(submissions.c.id == submission_id))
+    if not submission: raise HTTPException(status_code=404, detail="Submission not found.")
+    client_id = str(submission.get("client_id") or "")
+    started = time.perf_counter(); payload = await paged_audit_trail(session, client_id, page, page_size, date_from, date_to, module, action, user, entity_type, entity_id, search, submission_id, "submitted_items"); log_audit_response("submission", client_id, started, payload); return payload
+
+
+def paginated_contract(rows: list[dict], page: int, page_size: int, summary: Optional[dict] = None, **extra) -> dict:
+    """Return the common accounting row contract without leaking module collections."""
+    safe_page = max(1, int(page or 1))
+    safe_size = min(250, max(1, int(page_size or 50)))
+    total_rows = len(rows)
+    start = (safe_page - 1) * safe_size
+    return {
+        "rows": rows[start:start + safe_size],
+        "page": safe_page,
+        "page_size": safe_size,
+        "total_rows": total_rows,
+        "total_pages": max(1, (total_rows + safe_size - 1) // safe_size),
+        "summary": summary or {},
+        **extra,
+    }
+
+
+@api.get("/admin/accounting/clients/{client_id}/ap/suppliers")
+async def get_ap_supplier_summaries(client_id: str, page: int = 1, page_size: int = 200, user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    await get_client_or_404(session, client_id)
+    data = await accounts_payable_workspace(session, client_id)
+    return paginated_contract(data.get("suppliers", []), page, page_size, data.get("dashboard", {}), settings=data.get("settings", {}))
+
+
+@api.get("/admin/accounting/clients/{client_id}/ar/customers")
+async def get_ar_customer_summaries(client_id: str, page: int = 1, page_size: int = 200, user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    await get_client_or_404(session, client_id)
+    data = await accounts_receivable_workspace(session, client_id)
+    return paginated_contract(data.get("customers", []), page, page_size, data.get("dashboard", {}), settings=data.get("settings", {}))
+
+
+async def resolve_gl_date_range(
+    session: AsyncSession,
+    client_id: str,
+    date_from: str = "",
+    date_to: str = "",
+    financial_year: str = "",
+    period: str = "",
+) -> tuple[str, str]:
+    start, end = str(date_from or "").strip(), str(date_to or "").strip()
+    if period:
+        row = await one(session, select(accounting_periods).where(accounting_periods.c.client_id == client_id, accounting_periods.c.id == period))
+        if row:
+            start = start or str(row.get("period_start") or "")
+            end = end or str(row.get("period_end") or "")
+    elif financial_year:
+        row = await one(session, select(accounting_financial_years).where(accounting_financial_years.c.client_id == client_id, accounting_financial_years.c.id == financial_year))
+        if row:
+            start = start or str(row.get("start_date") or "")
+            end = end or str(row.get("end_date") or "")
+    return start, end
+
+
+def gl_page_values(page: int, page_size: int) -> tuple[int, int, int]:
+    safe_page = max(1, int(page or 1))
+    safe_size = min(250, max(1, int(page_size or 50)))
+    return safe_page, safe_size, (safe_page - 1) * safe_size
+
+
+def gl_response(rows: list[dict], page: int, page_size: int, total_rows: int, summary: Optional[dict] = None) -> dict:
+    return {
+        "rows": rows,
+        "page": page,
+        "page_size": page_size,
+        "total_rows": total_rows,
+        "total_pages": (total_rows + page_size - 1) // page_size if total_rows else 0,
+        "summary": summary or {},
+    }
+
+
+def log_gl_response(endpoint: str, client_id: str, started: float, payload: dict) -> None:
+    logger.info(
+        "Native accounting GL %s client_id=%s elapsed_ms=%s rows=%s total_rows=%s payload_bytes=%s",
+        endpoint,
+        client_id,
+        int((time.perf_counter() - started) * 1000),
+        len(payload.get("rows") or []),
+        payload.get("total_rows", 0),
+        approximate_payload_size(payload),
+    )
+
+
+@api.get("/admin/accounting/clients/{client_id}/gl/transactions")
+async def get_gl_transactions(
+    client_id: str, page: int = 1, page_size: int = 50, date_from: str = "", date_to: str = "",
+    financial_year: str = "", financial_year_id: str = "", period: str = "", period_id: str = "", search: str = "",
+    user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db),
+):
+    started = time.perf_counter()
+    await get_client_or_404(session, client_id)
+    safe_page, safe_size, offset = gl_page_values(page, page_size)
+    start, end = await resolve_gl_date_range(session, client_id, date_from, date_to, financial_year or financial_year_id, period or period_id)
+    conditions = [accounting_journal_lines.c.client_id == client_id, accounting_journal_entries.c.client_id == client_id]
+    if start:
+        conditions.append(accounting_journal_entries.c.entry_date >= start)
+    if end:
+        conditions.append(accounting_journal_entries.c.entry_date <= end)
+    needle = str(search or "").strip().lower()
+    if needle:
+        pattern = f"%{needle}%"
+        conditions.append(or_(
+            func.lower(func.coalesce(accounting_journal_entries.c.reference, "")).like(pattern),
+            func.lower(func.coalesce(accounting_journal_entries.c.description, "")).like(pattern),
+            func.lower(func.coalesce(accounting_journal_lines.c.account_code, "")).like(pattern),
+            func.lower(func.coalesce(accounting_journal_lines.c.account_name, "")).like(pattern),
+            func.lower(func.coalesce(accounting_journal_lines.c.description, "")).like(pattern),
+        ))
+    joined = accounting_journal_lines.join(accounting_journal_entries, accounting_journal_lines.c.entry_id == accounting_journal_entries.c.id)
+    total_rows = int((await session.execute(select(func.count()).select_from(joined).where(*conditions))).scalar() or 0)
+    records = await many(session, select(
+        accounting_journal_lines.c.id.label("id"), accounting_journal_lines.c.entry_id.label("journal_id"),
+        accounting_journal_entries.c.entry_date.label("date"), accounting_journal_entries.c.reference,
+        accounting_journal_lines.c.account_code, accounting_journal_lines.c.account_name,
+        func.coalesce(accounting_journal_lines.c.description, accounting_journal_entries.c.description).label("description"),
+        accounting_journal_lines.c.debit, accounting_journal_lines.c.credit,
+        accounting_journal_entries.c.source_type, accounting_journal_entries.c.source_id.label("source_record_id"),
+    ).select_from(joined).where(*conditions).order_by(accounting_journal_entries.c.entry_date.desc(), accounting_journal_entries.c.created_at.desc(), accounting_journal_lines.c.created_at.asc()).offset(offset).limit(safe_size))
+    rows = [{**dict(row), "source_module": vat_source_module(str(row.get("source_type") or ""))} for row in records]
+    for row in rows:
+        row.pop("source_type", None)
+    payload = gl_response(rows, safe_page, safe_size, total_rows, {"debit_total": money_str(sum((money(row.get("debit")) for row in rows), Decimal("0.00"))), "credit_total": money_str(sum((money(row.get("credit")) for row in rows), Decimal("0.00")))})
+    log_gl_response("transactions", client_id, started, payload)
+    return payload
+
+
+@api.get("/admin/accounting/clients/{client_id}/gl/journals")
+async def get_gl_journals(
+    client_id: str, page: int = 1, page_size: int = 50, date_from: str = "", date_to: str = "",
+    financial_year: str = "", financial_year_id: str = "", period: str = "", period_id: str = "", search: str = "",
+    user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db),
+):
+    started = time.perf_counter()
+    await get_client_or_404(session, client_id)
+    safe_page, safe_size, offset = gl_page_values(page, page_size)
+    start, end = await resolve_gl_date_range(session, client_id, date_from, date_to, financial_year or financial_year_id, period or period_id)
+    conditions = [accounting_journal_entries.c.client_id == client_id]
+    if start:
+        conditions.append(accounting_journal_entries.c.entry_date >= start)
+    if end:
+        conditions.append(accounting_journal_entries.c.entry_date <= end)
+    needle = str(search or "").strip().lower()
+    if needle:
+        pattern = f"%{needle}%"
+        conditions.append(or_(func.lower(func.coalesce(accounting_journal_entries.c.reference, "")).like(pattern), func.lower(func.coalesce(accounting_journal_entries.c.description, "")).like(pattern), func.lower(func.coalesce(accounting_journal_entries.c.source_type, "")).like(pattern)))
+    total_rows = int((await session.execute(select(func.count()).select_from(accounting_journal_entries).where(*conditions))).scalar() or 0)
+    records = await many(session, select(accounting_journal_entries).where(*conditions).order_by(accounting_journal_entries.c.entry_date.desc(), accounting_journal_entries.c.created_at.desc()).offset(offset).limit(safe_size))
+    ids = [str(row.get("id")) for row in records]
+    counts = await many(session, select(accounting_journal_lines.c.entry_id, func.count(accounting_journal_lines.c.id).label("line_count")).where(accounting_journal_lines.c.entry_id.in_(ids)).group_by(accounting_journal_lines.c.entry_id)) if ids else []
+    count_by_id = {str(row.get("entry_id")): int(row.get("line_count") or 0) for row in counts}
+    rows = [{
+        "journal_id": row.get("id"), "date": row.get("entry_date"), "reference": row.get("reference"),
+        "description": row.get("description"), "source_module": vat_source_module(str(row.get("source_type") or "")),
+        "line_count": count_by_id.get(str(row.get("id")), 0), "debit_total": row.get("total_debit") or "0.00",
+        "credit_total": row.get("total_credit") or "0.00", "status": row.get("status"),
+    } for row in records]
+    payload = gl_response(rows, safe_page, safe_size, total_rows, {"journal_count": total_rows})
+    log_gl_response("journals", client_id, started, payload)
+    return payload
+
+
+@api.get("/admin/accounting/clients/{client_id}/gl/journals/{journal_id}")
+async def get_gl_journal_detail(client_id: str, journal_id: str, user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    started = time.perf_counter()
+    await get_client_or_404(session, client_id)
+    journal = await accounting_journal_with_lines(session, client_id, journal_id)
+    if not journal:
+        raise HTTPException(status_code=404, detail="Journal not found.")
+    logger.info("Native accounting GL journal-detail client_id=%s journal_id=%s elapsed_ms=%s payload_bytes=%s", client_id, journal_id, int((time.perf_counter() - started) * 1000), approximate_payload_size(journal))
+    return journal
+
+
+@api.get("/admin/accounting/clients/{client_id}/gl/account-activity")
+async def get_gl_account_activity(
+    client_id: str, account_code: str, page: int = 1, page_size: int = 50, date_from: str = "", date_to: str = "",
+    financial_year: str = "", financial_year_id: str = "", period: str = "", period_id: str = "", search: str = "",
+    user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db),
+):
+    started = time.perf_counter()
+    await get_client_or_404(session, client_id)
+    safe_page, safe_size, offset = gl_page_values(page, page_size)
+    start, end = await resolve_gl_date_range(session, client_id, date_from, date_to, financial_year or financial_year_id, period or period_id)
+    conditions = [accounting_journal_lines.c.client_id == client_id, accounting_journal_entries.c.client_id == client_id, accounting_journal_lines.c.account_code == str(account_code or "").strip()]
+    if start:
+        conditions.append(accounting_journal_entries.c.entry_date >= start)
+    if end:
+        conditions.append(accounting_journal_entries.c.entry_date <= end)
+    needle = str(search or "").strip().lower()
+    if needle:
+        pattern = f"%{needle}%"
+        conditions.append(or_(func.lower(func.coalesce(accounting_journal_entries.c.reference, "")).like(pattern), func.lower(func.coalesce(accounting_journal_entries.c.description, "")).like(pattern), func.lower(func.coalesce(accounting_journal_lines.c.description, "")).like(pattern)))
+    joined = accounting_journal_lines.join(accounting_journal_entries, accounting_journal_lines.c.entry_id == accounting_journal_entries.c.id)
+    total_rows = int((await session.execute(select(func.count()).select_from(joined).where(*conditions))).scalar() or 0)
+    records = await many(session, select(
+        accounting_journal_lines.c.id.label("id"), accounting_journal_lines.c.entry_id.label("journal_id"), accounting_journal_entries.c.entry_date.label("date"),
+        accounting_journal_entries.c.reference, accounting_journal_lines.c.account_code, accounting_journal_lines.c.account_name,
+        func.coalesce(accounting_journal_lines.c.description, accounting_journal_entries.c.description).label("description"), accounting_journal_lines.c.debit,
+        accounting_journal_lines.c.credit, accounting_journal_entries.c.source_type, accounting_journal_entries.c.source_id.label("source_record_id"),
+    ).select_from(joined).where(*conditions).order_by(accounting_journal_entries.c.entry_date.desc(), accounting_journal_entries.c.created_at.desc(), accounting_journal_lines.c.created_at.asc()).offset(offset).limit(safe_size))
+    rows = [{**dict(row), "source_module": vat_source_module(str(row.get("source_type") or ""))} for row in records]
+    for row in rows:
+        row.pop("source_type", None)
+    payload = gl_response(rows, safe_page, safe_size, total_rows, {"account_code": account_code, "debit_total": money_str(sum((money(row.get("debit")) for row in rows), Decimal("0.00"))), "credit_total": money_str(sum((money(row.get("credit")) for row in rows), Decimal("0.00")))})
+    log_gl_response("account-activity", client_id, started, payload)
+    return payload
+
+
+@api.get("/admin/accounting/clients/{client_id}/gl/trial-balance")
+async def get_gl_trial_balance(client_id: str, user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    started = time.perf_counter()
+    await get_client_or_404(session, client_id)
+    accounts = await many(session, select(accounting_accounts).where(accounting_accounts.c.client_id == client_id).order_by(accounting_accounts.c.code.asc()))
+    balances = await native_account_balances(session, client_id)
+    rows = []
+    for account in accounts:
+        balance = balances.get(str(account.get("code") or ""), Decimal("0.00"))
+        if not balance:
+            continue
+        rows.append({
+            "account_id": account.get("id"), "code": account.get("code"), "name": account.get("name"),
+            "type": account.get("account_type"), "category": account.get("category"),
+            "debit": money_str(balance if balance > 0 else Decimal("0.00")),
+            "credit": money_str(-balance if balance < 0 else Decimal("0.00")),
+        })
+    payload = {"trial_balance": rows}
+    logger.info("Native accounting GL trial-balance client_id=%s elapsed_ms=%s rows=%s payload_bytes=%s", client_id, int((time.perf_counter() - started) * 1000), len(rows), approximate_payload_size(payload))
+    return payload
+
+
+@api.get("/admin/accounting/clients/{client_id}/reports/workspace")
+async def get_reports_workspace(client_id: str, user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    started = time.perf_counter()
+    await get_client_or_404(session, client_id)
+    summary = await native_accounting_summary(session, client_id)
+    payload = {
+        "modules": ["dashboard", "financial_statements", "management", "vat", "sales", "purchases", "banking", "aged_debtors", "aged_creditors"],
+        "default_page_size": 50,
+        "page_size_options": [10, 25, 50, 100, 250],
+        "lazy_loaded": True,
+        "summary": summary,
+    }
+    logger.info("Native accounting reports workspace metadata client_id=%s elapsed_ms=%s payload_bytes=%s", client_id, int((time.perf_counter() - started) * 1000), approximate_payload_size(payload))
+    return payload
+
+
+def log_report_response(endpoint: str, client_id: str, started: float, payload: dict) -> None:
+    logger.info("Native accounting report %s client_id=%s elapsed_ms=%s rows=%s payload_bytes=%s", endpoint, client_id, int((time.perf_counter() - started) * 1000), len(payload.get("rows") or []), approximate_payload_size(payload))
+
+
+async def report_dates(session: AsyncSession, client_id: str, date_from: str, date_to: str, financial_year: str, period: str) -> tuple[str, str]:
+    return await resolve_gl_date_range(session, client_id, date_from, date_to, financial_year, period)
+
+
+async def paged_report_query(session: AsyncSession, query, count_query, page: int, page_size: int, summary: Optional[dict] = None) -> dict:
+    safe_page, safe_size, offset = gl_page_values(page, page_size)
+    total_rows = int((await session.execute(count_query)).scalar() or 0)
+    rows = await many(session, query.offset(offset).limit(safe_size))
+    return gl_response([dict(row) for row in rows], safe_page, safe_size, total_rows, summary)
+
+
+async def financial_report_snapshot(session: AsyncSession, client_id: str, date_from: str = "", date_to: str = "", financial_year: str = "", period: str = "") -> dict:
+    start, end = await report_dates(session, client_id, date_from, date_to, financial_year, period)
+    joined = accounting_journal_lines.join(accounting_journal_entries, accounting_journal_lines.c.entry_id == accounting_journal_entries.c.id)
+    conditions = [accounting_journal_lines.c.client_id == client_id, accounting_journal_entries.c.client_id == client_id, accounting_journal_entries.c.status == "posted"]
+    if start: conditions.append(accounting_journal_entries.c.entry_date >= start)
+    if end: conditions.append(accounting_journal_entries.c.entry_date <= end)
+    movement = func.sum(accounting_journal_lines.c.debit - accounting_journal_lines.c.credit)
+    balance_rows = await many(session, select(accounting_journal_lines.c.account_code, movement.label("balance")).select_from(joined).where(*conditions).group_by(accounting_journal_lines.c.account_code))
+    balances = {str(row.get("account_code") or ""): money(row.get("balance")) for row in balance_rows}
+    accounts = await many(session, select(accounting_accounts).where(accounting_accounts.c.client_id == client_id).order_by(accounting_accounts.c.code.asc()))
+    sections = {"income": [], "expenses": [], "assets": [], "liabilities": [], "equity": []}
+    totals = {key: Decimal("0.00") for key in sections}
+    trial_balance = []
+    for account in accounts:
+        code = str(account.get("code") or "")
+        balance = balances.get(code, Decimal("0.00"))
+        kind = str(account.get("account_type") or "").lower()
+        category = str(account.get("category") or "").lower()
+        section = "income" if kind in ("income", "sales") or category == "income" else "expenses" if kind in ("expense", "purchases", "cost of sales", "overheads") or category == "expense" else "assets" if kind in ("asset", "bank", "receivable") or category == "asset" else "liabilities" if kind in ("liability", "payable", "vat", "tax", "payroll") or category == "liability" else "equity" if kind == "equity" or category == "equity" else ""
+        signed = -balance if section in ("income", "liabilities", "equity") else balance
+        if section:
+            totals[section] += signed
+            sections[section].append({"account_id": account.get("id"), "code": code, "name": account.get("name"), "balance": money_str(signed)})
+        if balance:
+            trial_balance.append({"account_id": account.get("id"), "code": code, "name": account.get("name"), "type": account.get("account_type"), "debit": money_str(balance if balance > 0 else Decimal("0.00")), "credit": money_str(-balance if balance < 0 else Decimal("0.00"))})
+    net_profit = totals["income"] - totals["expenses"]
+    bank_conditions = [accounting_bank_transactions.c.client_id == client_id]
+    if start: bank_conditions.append(accounting_bank_transactions.c.transaction_date >= start)
+    if end: bank_conditions.append(accounting_bank_transactions.c.transaction_date <= end)
+    cash_row = await one(session, select(func.sum(accounting_bank_transactions.c.money_in - accounting_bank_transactions.c.money_out).label("movement")).where(*bank_conditions)) or {}
+    return {
+        "profit_and_loss": {"income": money_str(totals["income"]), "expenses": money_str(totals["expenses"]), "gross_profit": money_str(totals["income"]), "profit": money_str(net_profit), "sections": {"income": sections["income"], "expenses": sections["expenses"]}},
+        "balance_sheet": {"assets": money_str(totals["assets"]), "liabilities": money_str(totals["liabilities"]), "equity": money_str(totals["equity"]), "current_year_profit": money_str(net_profit), "net_assets": money_str(totals["assets"] - totals["liabilities"]), "sections": {"assets": sections["assets"], "liabilities": sections["liabilities"], "equity": sections["equity"]}},
+        "cash_flow": {"operating_activities": money_str(net_profit), "investing_activities": "0.00", "financing_activities": "0.00", "net_cash_movement": money_str(money(cash_row.get("movement")))},
+        "statement_of_changes_in_equity": {"opening_equity": money_str(totals["equity"] - net_profit), "current_year_profit": money_str(net_profit), "closing_equity": money_str(totals["equity"])},
+        "trial_balance": trial_balance,
+    }
+
+
+@api.get("/admin/accounting/clients/{client_id}/reports/financial-statements")
+async def get_report_financial_statements(client_id: str, date_from: str = "", date_to: str = "", financial_year: str = "", period: str = "", search: str = "", user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    started = time.perf_counter(); await get_client_or_404(session, client_id)
+    payload = await financial_report_snapshot(session, client_id, date_from, date_to, financial_year, period)
+    if search:
+        needle = search.strip().lower(); payload["trial_balance"] = [row for row in payload["trial_balance"] if needle in f"{row.get('code', '')} {row.get('name', '')}".lower()]
+    log_report_response("financial-statements", client_id, started, payload); return payload
+
+
+@api.get("/admin/accounting/clients/{client_id}/reports/management")
+async def get_report_management(client_id: str, date_from: str = "", date_to: str = "", financial_year: str = "", period: str = "", search: str = "", user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    started = time.perf_counter(); await get_client_or_404(session, client_id)
+    start, end = await report_dates(session, client_id, date_from, date_to, financial_year, period)
+    joined = accounting_journal_lines.join(accounting_journal_entries, accounting_journal_lines.c.entry_id == accounting_journal_entries.c.id).join(accounting_accounts, and_(accounting_accounts.c.client_id == client_id, accounting_accounts.c.code == accounting_journal_lines.c.account_code))
+    conditions = [accounting_journal_lines.c.client_id == client_id, accounting_journal_entries.c.status == "posted"]
+    if start: conditions.append(accounting_journal_entries.c.entry_date >= start)
+    if end: conditions.append(accounting_journal_entries.c.entry_date <= end)
+    period_key = func.substr(accounting_journal_entries.c.entry_date, 1, 7)
+    income_case = case((or_(func.lower(accounting_accounts.c.category) == "income", func.lower(accounting_accounts.c.account_type).in_(["income", "sales"])), accounting_journal_lines.c.credit - accounting_journal_lines.c.debit), else_=0)
+    expense_case = case((or_(func.lower(accounting_accounts.c.category) == "expense", func.lower(accounting_accounts.c.account_type).in_(["expense", "purchases", "cost of sales", "overheads"])), accounting_journal_lines.c.debit - accounting_journal_lines.c.credit), else_=0)
+    trends = await many(session, select(period_key.label("period"), func.sum(income_case).label("income"), func.sum(expense_case).label("expenses")).select_from(joined).where(*conditions).group_by(period_key).order_by(period_key.asc()))
+    rows = [{"period": row.get("period"), "income": money_str(money(row.get("income"))), "expenses": money_str(money(row.get("expenses"))), "profit": money_str(money(row.get("income")) - money(row.get("expenses")))} for row in trends]
+    income = sum((money(row["income"]) for row in rows), Decimal("0.00")); expenses = sum((money(row["expenses"]) for row in rows), Decimal("0.00")); profit = income - expenses
+    payload = {"kpi_summary": {"revenue": money_str(income), "expenses": money_str(expenses), "net_profit": money_str(profit), "gross_margin": f"{((profit / income * 100) if income else Decimal('0')).quantize(Decimal('0.01'))}%"}, "monthly_performance": rows, "income_vs_expenses": rows, "trend_analysis": rows, "customer_summary": [], "supplier_summary": [], "bank_summary": [], "department_summary": []}
+    log_report_response("management", client_id, started, payload); return payload
+
+
+def empty_report_list(page: int = 1, page_size: int = 50, summary: Optional[dict] = None) -> dict:
+    safe_page, safe_size, _ = gl_page_values(page, page_size)
+    return gl_response([], safe_page, safe_size, 0, summary or {})
+
+
+@api.get("/admin/accounting/clients/{client_id}/reports/custom")
+async def get_report_custom(client_id: str, page: int = 1, page_size: int = 50, user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    started = time.perf_counter(); await get_client_or_404(session, client_id); payload = empty_report_list(page, page_size, {"available_columns": [], "grouping_options": [], "sorting_options": []}); log_report_response("custom", client_id, started, payload); return payload
+
+
+@api.get("/admin/accounting/clients/{client_id}/reports/scheduler")
+async def get_report_scheduler(client_id: str, page: int = 1, page_size: int = 50, user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    started = time.perf_counter(); await get_client_or_404(session, client_id); payload = empty_report_list(page, page_size, {"frequencies": ["Daily", "Weekly", "Monthly"], "delivery_methods": ["Email", "Download"]}); log_report_response("scheduler", client_id, started, payload); return payload
+
+
+@api.get("/admin/accounting/clients/{client_id}/reports/exports")
+async def get_report_exports(client_id: str, page: int = 1, page_size: int = 50, user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    started = time.perf_counter(); await get_client_or_404(session, client_id); payload = empty_report_list(page, page_size, {"formats": ["PDF", "Excel", "CSV"], "print_layout": "A4 landscape"}); log_report_response("exports", client_id, started, payload); return payload
+
+
+@api.get("/admin/accounting/clients/{client_id}/reports/settings")
+async def get_report_settings(client_id: str, user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    started = time.perf_counter(); await get_client_or_404(session, client_id); payload = {"report_basis": "Accrual", "default_date_range": "Current financial year", "comparative_periods": True, "currency": "GBP", "pdf_branding": "EPOS Native Accounting"}; log_report_response("settings", client_id, started, payload); return payload
+
+
+@api.get("/admin/accounting/clients/{client_id}/reports/vat/summary")
+async def get_report_vat_summary(client_id: str, date_from: str = "", date_to: str = "", financial_year: str = "", period: str = "", vat_code: str = "", user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    started = time.perf_counter()
+    await get_client_or_404(session, client_id)
+    start, end = await report_dates(session, client_id, date_from, date_to, financial_year, period)
+    async def totals(table, date_col, direction):
+        conditions = [table.c.client_id == client_id, table.c.posted_journal_id.isnot(None)]
+        if start: conditions.append(date_col >= start)
+        if end: conditions.append(date_col <= end)
+        if vat_code: conditions.append(table.c.vat_code == vat_code)
+        row = await one(session, select(func.count(table.c.id).label("count"), func.sum(table.c.net_amount).label("net"), func.sum(table.c.vat_amount).label("vat"), func.sum(table.c.gross_amount).label("gross")).where(*conditions)) or {}
+        return {"direction": direction, "count": int(row.get("count") or 0), "net": money_str(money(row.get("net"))), "vat": money_str(money(row.get("vat"))), "gross": money_str(money(row.get("gross")))}
+    sales = await totals(accounting_ar_invoices, accounting_ar_invoices.c.invoice_date, "sales")
+    purchases = await totals(accounting_ap_invoices, accounting_ap_invoices.c.invoice_date, "purchase")
+    payload = {"sales": sales, "purchases": purchases, "net_vat": money_str(money(sales["vat"]) - money(purchases["vat"])), "native_vat_codes": native_vat_choices(await ensure_vat_codes(session, client_id))}
+    log_report_response("vat-summary", client_id, started, payload)
+    return payload
+
+
+async def report_vat_rows(client_id: str, page: int, page_size: int, date_from: str, date_to: str, financial_year: str, period: str, vat_code: str, account_code: str, search: str, session: AsyncSession, transaction_type: str = "", status: str = "") -> dict:
+    start, end = await report_dates(session, client_id, date_from, date_to, financial_year, period)
+    selects = []
+    specs = [
+        (accounting_ar_invoice_lines, accounting_ar_invoices, accounting_ar_invoice_lines.c.invoice_id, accounting_ar_invoices.c.invoice_date, accounting_ar_invoices.c.invoice_number, "Sales", "sales"),
+        (accounting_ap_invoice_lines, accounting_ap_invoices, accounting_ap_invoice_lines.c.invoice_id, accounting_ap_invoices.c.invoice_date, accounting_ap_invoices.c.invoice_number, "Purchases", "purchase"),
+        (accounting_ar_credit_note_lines, accounting_ar_credit_notes, accounting_ar_credit_note_lines.c.credit_note_id, accounting_ar_credit_notes.c.credit_note_date, accounting_ar_credit_notes.c.credit_note_number, "Sales", "sales_credit"),
+        (accounting_ap_credit_note_lines, accounting_ap_credit_notes, accounting_ap_credit_note_lines.c.credit_note_id, accounting_ap_credit_notes.c.credit_note_date, accounting_ap_credit_notes.c.credit_note_number, "Purchases", "purchase_credit"),
+    ]
+    for lines, header, foreign_key, date_col, number_col, module, kind in specs:
+        conditions = [lines.c.client_id == client_id, header.c.client_id == client_id, header.c.posted_journal_id.isnot(None)]
+        if start: conditions.append(date_col >= start)
+        if end: conditions.append(date_col <= end)
+        if vat_code: conditions.append(lines.c.vat_code == vat_code)
+        if account_code: conditions.append(lines.c.nominal_account_code == account_code)
+        if search:
+            pattern = f"%{search.strip().lower()}%"
+            conditions.append(or_(func.lower(func.coalesce(number_col, "")).like(pattern), func.lower(func.coalesce(lines.c.description, "")).like(pattern)))
+        selects.append(select(lines.c.id.label("id"), date_col.label("date"), number_col.label("document_number"), lines.c.description, lines.c.nominal_account_code.label("account_code"), lines.c.vat_code, lines.c.net_amount.label("net"), lines.c.vat_amount.label("vat"), lines.c.gross_amount.label("gross"), literal(module).label("source_module"), literal(kind).label("source_type"), header.c.status.label("status")).select_from(lines.join(header, foreign_key == header.c.id)).where(*conditions))
+    journal_conditions = [accounting_journal_lines.c.client_id == client_id, accounting_journal_entries.c.client_id == client_id, accounting_journal_entries.c.status == "posted", accounting_journal_lines.c.vat_code.isnot(None), accounting_journal_lines.c.vat_code != "", accounting_journal_entries.c.source_type.notin_(["ap_invoice", "ap_credit_note", "ar_invoice", "ar_credit_note"])]
+    if start: journal_conditions.append(accounting_journal_entries.c.entry_date >= start)
+    if end: journal_conditions.append(accounting_journal_entries.c.entry_date <= end)
+    if vat_code: journal_conditions.append(accounting_journal_lines.c.vat_code == vat_code)
+    if account_code: journal_conditions.append(accounting_journal_lines.c.account_code == account_code)
+    if search:
+        pattern = f"%{search.strip().lower()}%"
+        journal_conditions.append(or_(func.lower(func.coalesce(accounting_journal_entries.c.reference, "")).like(pattern), func.lower(func.coalesce(accounting_journal_lines.c.description, "")).like(pattern)))
+    journal_amount = accounting_journal_lines.c.debit - accounting_journal_lines.c.credit
+    selects.append(select(accounting_journal_lines.c.id.label("id"), accounting_journal_entries.c.entry_date.label("date"), accounting_journal_entries.c.reference.label("document_number"), accounting_journal_lines.c.description, accounting_journal_lines.c.account_code, accounting_journal_lines.c.vat_code, literal("0.00").label("net"), journal_amount.label("vat"), journal_amount.label("gross"), literal("Banking / Journals").label("source_module"), literal("journal").label("source_type"), accounting_journal_entries.c.status.label("status")).select_from(accounting_journal_lines.join(accounting_journal_entries, accounting_journal_lines.c.entry_id == accounting_journal_entries.c.id)).where(*journal_conditions))
+    combined = union_all(*selects).subquery()
+    combined_conditions = []
+    if transaction_type: combined_conditions.append(combined.c.source_type == transaction_type)
+    if status: combined_conditions.append(combined.c.status == status)
+    safe_page, safe_size, offset = gl_page_values(page, page_size)
+    total_rows = int((await session.execute(select(func.count()).select_from(combined).where(*combined_conditions))).scalar() or 0)
+    rows = await many(session, select(combined).where(*combined_conditions).order_by(combined.c.date.desc(), combined.c.document_number.desc()).offset(offset).limit(safe_size))
+    return gl_response([dict(row) for row in rows], safe_page, safe_size, total_rows, {"vat_code": vat_code})
+
+
+@api.get("/admin/accounting/clients/{client_id}/reports/vat/transactions")
+@api.get("/admin/accounting/clients/{client_id}/reports/vat/detail")
+async def get_report_vat_transactions(client_id: str, page: int = 1, page_size: int = 50, date_from: str = "", date_to: str = "", financial_year: str = "", period: str = "", vat_code: str = "", account_code: str = "", search: str = "", user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    started = time.perf_counter()
+    await get_client_or_404(session, client_id)
+    payload = await report_vat_rows(client_id, page, page_size, date_from, date_to, financial_year, period, vat_code, account_code, search, session)
+    log_report_response("vat-transactions", client_id, started, payload)
+    return payload
+
+
+async def invoice_report(client_id: str, table, profile_table, party_key: str, code_key: str, page: int, page_size: int, date_from: str, date_to: str, financial_year: str, period: str, party_id: str, status: str, vat_code: str, search: str, session: AsyncSession) -> dict:
+    date_col = table.c.invoice_date
+    start, end = await report_dates(session, client_id, date_from, date_to, financial_year, period)
+    party_col = getattr(table.c, party_key)
+    conditions = [table.c.client_id == client_id]
+    if start: conditions.append(date_col >= start)
+    if end: conditions.append(date_col <= end)
+    if party_id: conditions.append(party_col == party_id)
+    if status: conditions.append(table.c.status == status)
+    if vat_code: conditions.append(table.c.vat_code == vat_code)
+    if search:
+        pattern = f"%{search.strip().lower()}%"
+        conditions.append(or_(func.lower(func.coalesce(table.c.invoice_number, "")).like(pattern), func.lower(func.coalesce(table.c.description, "")).like(pattern), func.lower(func.coalesce(profile_table.c.trading_name, "")).like(pattern)))
+    joined = table.outerjoin(profile_table, party_col == profile_table.c.id)
+    query = select(table.c.id, table.c.invoice_number, table.c.invoice_date, table.c.due_date, table.c.description, table.c.status, table.c.net_amount, table.c.vat_amount, table.c.gross_amount, table.c.outstanding_amount, table.c.vat_code, party_col.label(party_key), profile_table.c.trading_name.label("party_name"), getattr(profile_table.c, code_key).label("party_code")).select_from(joined).where(*conditions).order_by(date_col.desc(), table.c.created_at.desc())
+    return await paged_report_query(session, query, select(func.count()).select_from(joined).where(*conditions), page, page_size)
+
+
+@api.get("/admin/accounting/clients/{client_id}/reports/sales")
+async def get_report_sales(client_id: str, page: int = 1, page_size: int = 50, date_from: str = "", date_to: str = "", financial_year: str = "", period: str = "", customer_id: str = "", status: str = "", vat_code: str = "", search: str = "", user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    started = time.perf_counter(); await get_client_or_404(session, client_id)
+    payload = await invoice_report(client_id, accounting_ar_invoices, accounting_ar_customer_profiles, "customer_id", "customer_code", page, page_size, date_from, date_to, financial_year, period, customer_id, status, vat_code, search, session)
+    log_report_response("sales", client_id, started, payload); return payload
+
+
+@api.get("/admin/accounting/clients/{client_id}/reports/purchases")
+async def get_report_purchases(client_id: str, page: int = 1, page_size: int = 50, date_from: str = "", date_to: str = "", financial_year: str = "", period: str = "", supplier_id: str = "", status: str = "", vat_code: str = "", search: str = "", user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    started = time.perf_counter(); await get_client_or_404(session, client_id)
+    payload = await invoice_report(client_id, accounting_ap_invoices, accounting_ap_supplier_profiles, "supplier_id", "supplier_code", page, page_size, date_from, date_to, financial_year, period, supplier_id, status, vat_code, search, session)
+    log_report_response("purchases", client_id, started, payload); return payload
+
+
+@api.get("/admin/accounting/clients/{client_id}/reports/banking")
+async def get_report_banking(client_id: str, page: int = 1, page_size: int = 50, date_from: str = "", date_to: str = "", financial_year: str = "", period: str = "", bank_account_id: str = "", account_code: str = "", status: str = "", search: str = "", user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    started = time.perf_counter(); await get_client_or_404(session, client_id)
+    start, end = await report_dates(session, client_id, date_from, date_to, financial_year, period)
+    conditions = [accounting_bank_transactions.c.client_id == client_id]
+    if start: conditions.append(accounting_bank_transactions.c.transaction_date >= start)
+    if end: conditions.append(accounting_bank_transactions.c.transaction_date <= end)
+    if bank_account_id: conditions.append(accounting_bank_transactions.c.bank_account_id == bank_account_id)
+    if account_code: conditions.append(accounting_bank_transactions.c.bank_account_code == account_code)
+    if status: conditions.append(accounting_bank_transactions.c.status == status)
+    if search:
+        pattern = f"%{search.strip().lower()}%"; conditions.append(or_(func.lower(func.coalesce(accounting_bank_transactions.c.reference, "")).like(pattern), func.lower(func.coalesce(accounting_bank_transactions.c.description, "")).like(pattern)))
+    query = select(accounting_bank_transactions.c.id, accounting_bank_transactions.c.transaction_date, accounting_bank_transactions.c.description, accounting_bank_transactions.c.reference, accounting_bank_transactions.c.bank_account_id, accounting_bank_transactions.c.bank_account_code, accounting_bank_transactions.c.money_in, accounting_bank_transactions.c.money_out, accounting_bank_transactions.c.balance, accounting_bank_transactions.c.status, accounting_bank_transactions.c.suggested_match).where(*conditions).order_by(accounting_bank_transactions.c.transaction_date.desc(), accounting_bank_transactions.c.created_at.desc())
+    payload = await paged_report_query(session, query, select(func.count()).select_from(accounting_bank_transactions).where(*conditions), page, page_size)
+    log_report_response("banking", client_id, started, payload); return payload
+
+
+async def aged_report(client_id: str, invoice_table, profile_table, party_key: str, code_key: str, page: int, page_size: int, party_id: str, search: str, session: AsyncSession, date_from: str = "", date_to: str = "", financial_year: str = "", period: str = "") -> dict:
+    party_col = getattr(invoice_table.c, party_key)
+    conditions = [invoice_table.c.client_id == client_id, invoice_table.c.outstanding_amount != "0.00", invoice_table.c.status.notin_(["draft", "void", "archived"])]
+    start, end = await report_dates(session, client_id, date_from, date_to, financial_year, period)
+    if start: conditions.append(invoice_table.c.invoice_date >= start)
+    if end: conditions.append(invoice_table.c.invoice_date <= end)
+    if party_id: conditions.append(party_col == party_id)
+    if search: conditions.append(func.lower(func.coalesce(profile_table.c.trading_name, "")).like(f"%{search.strip().lower()}%"))
+    joined = invoice_table.outerjoin(profile_table, party_col == profile_table.c.id)
+    grouped = select(party_col.label("party_id"), profile_table.c.trading_name.label("party_name"), getattr(profile_table.c, code_key).label("party_code"), func.count(invoice_table.c.id).label("invoice_count"), func.sum(invoice_table.c.outstanding_amount).label("total")).select_from(joined).where(*conditions).group_by(party_col, profile_table.c.trading_name, getattr(profile_table.c, code_key)).subquery()
+    safe_page, safe_size, offset = gl_page_values(page, page_size)
+    total_rows = int((await session.execute(select(func.count()).select_from(grouped))).scalar() or 0)
+    rows = await many(session, select(grouped).order_by(grouped.c.party_name.asc()).offset(offset).limit(safe_size))
+    return gl_response([dict(row) for row in rows], safe_page, safe_size, total_rows)
+
+
+@api.get("/admin/accounting/clients/{client_id}/reports/aged-debtors")
+async def get_report_aged_debtors(client_id: str, page: int = 1, page_size: int = 50, customer_id: str = "", search: str = "", date_from: str = "", date_to: str = "", financial_year: str = "", period: str = "", user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    started = time.perf_counter(); await get_client_or_404(session, client_id); payload = await aged_report(client_id, accounting_ar_invoices, accounting_ar_customer_profiles, "customer_id", "customer_code", page, page_size, customer_id, search, session, date_from, date_to, financial_year, period); log_report_response("aged-debtors", client_id, started, payload); return payload
+
+
+@api.get("/admin/accounting/clients/{client_id}/reports/aged-creditors")
+async def get_report_aged_creditors(client_id: str, page: int = 1, page_size: int = 50, supplier_id: str = "", search: str = "", date_from: str = "", date_to: str = "", financial_year: str = "", period: str = "", user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    started = time.perf_counter(); await get_client_or_404(session, client_id); payload = await aged_report(client_id, accounting_ap_invoices, accounting_ap_supplier_profiles, "supplier_id", "supplier_code", page, page_size, supplier_id, search, session, date_from, date_to, financial_year, period); log_report_response("aged-creditors", client_id, started, payload); return payload
+
+
+@api.get("/admin/accounting/clients/{client_id}/vat/workspace")
+async def get_vat_workspace(client_id: str, user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    await get_client_or_404(session, client_id)
+    return await vat_engine_workspace(session, client_id)
+
+
+@api.get("/admin/accounting/clients/{client_id}/vat/transactions")
+async def get_vat_transactions_page(
+    client_id: str, page: int = 1, page_size: int = 50, date_from: str = "", date_to: str = "",
+    financial_year: str = "", period: str = "", vat_code: str = "", transaction_type: str = "", status: str = "", search: str = "",
+    user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db),
+):
+    started = time.perf_counter()
+    await get_client_or_404(session, client_id)
+    payload = await report_vat_rows(client_id, page, page_size, date_from, date_to, financial_year, period, vat_code, "", search, session, transaction_type, status)
+    log_report_response("vat-module-transactions", client_id, started, payload)
+    return payload
+
+
+@api.get("/admin/accounting/clients/{client_id}/vat/adjustments")
+async def get_vat_adjustments_page(
+    client_id: str, page: int = 1, page_size: int = 50, date_from: str = "", date_to: str = "",
+    financial_year: str = "", period: str = "", vat_code: str = "", transaction_type: str = "", status: str = "", search: str = "",
+    user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db),
+):
+    started = time.perf_counter()
+    await get_client_or_404(session, client_id)
+    start, end = await report_dates(session, client_id, date_from, date_to, financial_year, period)
+    conditions = [accounting_vat_adjustments.c.client_id == client_id]
+    if start: conditions.append(accounting_vat_adjustments.c.adjustment_date >= start)
+    if end: conditions.append(accounting_vat_adjustments.c.adjustment_date <= end)
+    if vat_code: conditions.append(accounting_vat_adjustments.c.vat_code == vat_code)
+    if transaction_type: conditions.append(accounting_vat_adjustments.c.adjustment_type == transaction_type)
+    if status: conditions.append(accounting_vat_adjustments.c.status == status)
+    if search:
+        pattern = f"%{search.strip().lower()}%"
+        conditions.append(or_(func.lower(func.coalesce(accounting_vat_adjustments.c.reason, "")).like(pattern), func.lower(func.coalesce(accounting_vat_adjustments.c.notes, "")).like(pattern)))
+    query = select(accounting_vat_adjustments).where(*conditions).order_by(accounting_vat_adjustments.c.adjustment_date.desc(), accounting_vat_adjustments.c.created_at.desc())
+    payload = await paged_report_query(session, query, select(func.count()).select_from(accounting_vat_adjustments).where(*conditions), page, page_size)
+    payload["summary"] = {"net": money_str(sum((money(row.get("net_amount")) for row in payload["rows"]), Decimal("0.00"))), "vat": money_str(sum((money(row.get("vat_amount")) for row in payload["rows"]), Decimal("0.00"))), "gross": money_str(sum((money(row.get("gross_amount")) for row in payload["rows"]), Decimal("0.00")))}
+    log_report_response("vat-module-adjustments", client_id, started, payload)
+    return payload
+
+
+@api.get("/admin/accounting/clients/{client_id}/vat/reports")
+async def get_vat_reports_page(
+    client_id: str, page: int = 1, page_size: int = 50, date_from: str = "", date_to: str = "",
+    financial_year: str = "", period: str = "", vat_code: str = "", transaction_type: str = "", status: str = "", search: str = "",
+    user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db),
+):
+    started = time.perf_counter()
+    await get_client_or_404(session, client_id)
+    payload = await report_vat_rows(client_id, page, page_size, date_from, date_to, financial_year, period, vat_code, "", search, session, transaction_type, status)
+    payload["summary"] = {"net": money_str(sum((money(row.get("net")) for row in payload["rows"]), Decimal("0.00"))), "vat": money_str(sum((money(row.get("vat")) for row in payload["rows"]), Decimal("0.00"))), "gross": money_str(sum((money(row.get("gross")) for row in payload["rows"]), Decimal("0.00")))}
+    log_report_response("vat-module-reports", client_id, started, payload)
+    return payload
+
+
+@api.get("/admin/accounting/clients/{client_id}/year-end/workspace")
+async def get_year_end_workspace(client_id: str, user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    await get_client_or_404(session, client_id)
+    accounts = await many(session, select(accounting_accounts).where(accounting_accounts.c.client_id == client_id).order_by(accounting_accounts.c.code.asc()))
+    periods = await many(session, select(accounting_periods).where(accounting_periods.c.client_id == client_id).order_by(accounting_periods.c.period_start.asc()))
+    years = await many(session, select(accounting_financial_years).where(accounting_financial_years.c.client_id == client_id).order_by(accounting_financial_years.c.start_date.desc()))
+    return await year_end_workspace(session, client_id, accounts, periods, years)
+
+
+@api.get("/admin/accounting/clients/{client_id}/fixed-assets/workspace")
+async def get_fixed_assets_workspace(client_id: str, user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    await get_client_or_404(session, client_id)
+    return await fixed_assets_workspace(session, client_id)
 
 
 @api.post("/admin/accounting/clients/{client_id}/accounts")
@@ -9174,6 +9978,50 @@ async def get_native_account_history(
     )
     user_cache: dict[str, dict] = {}
     return {"history": [await serialize_account_history_row(session, event, user_cache) for event in events]}
+
+
+@api.get("/admin/accounting/clients/{client_id}/chart-of-accounts/{account_code}/history")
+async def get_chart_account_history(
+    client_id: str, account_code: str, page: int = 1, page_size: int = 50, date_from: str = "", date_to: str = "",
+    action: str = "", user: str = "", search: str = "",
+    admin: dict = Depends(require_admin), session: AsyncSession = Depends(get_db),
+):
+    started = time.perf_counter()
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before viewing account history.")
+    account = await one(session, select(accounting_accounts).where(accounting_accounts.c.client_id == client_id, accounting_accounts.c.code == account_code))
+    if not account:
+        raise HTTPException(status_code=404, detail="Nominal account not found.")
+    safe_page, safe_size, offset = gl_page_values(page, page_size)
+    conditions = [accounting_audit_log.c.client_id == client_id, accounting_audit_log.c.record_type == "account", accounting_audit_log.c.record_id == account.get("id")]
+    if date_from: conditions.append(accounting_audit_log.c.created_at >= date_from)
+    if date_to: conditions.append(accounting_audit_log.c.created_at <= f"{date_to}T23:59:59")
+    if action: conditions.append(accounting_audit_log.c.action == action)
+    if user: conditions.append(accounting_audit_log.c.actor_id == user)
+    if search:
+        pattern = f"%{search.strip().lower()}%"
+        conditions.append(or_(func.lower(func.coalesce(accounting_audit_log.c.action, "")).like(pattern), func.lower(func.coalesce(accounting_audit_log.c.details_json, "")).like(pattern), func.lower(func.coalesce(accounting_audit_log.c.new_value, "")).like(pattern)))
+    total_rows = int((await session.execute(select(func.count()).select_from(accounting_audit_log).where(*conditions))).scalar() or 0)
+    events = await many(session, select(accounting_audit_log).where(*conditions).order_by(accounting_audit_log.c.created_at.desc()).offset(offset).limit(safe_size))
+    user_cache: dict[str, dict] = {}
+    rows = []
+    for event in events:
+        row = await serialize_account_history_row(session, event, user_cache)
+        details = parse_json_object(event.get("details_json")) or {}
+        rows.append({
+            **row,
+            "date_time": row.get("created_at"),
+            "field_changed": row.get("field"),
+            "changed_by": row.get("user_name"),
+            "source": event.get("module") or event.get("entity_type") or "Chart of Accounts",
+            "module": event.get("module") or event.get("entity_type") or "account",
+            "reference": details.get("reference") or account.get("code"),
+            "notes": row.get("note"),
+        })
+    payload = gl_response(rows, safe_page, safe_size, total_rows, {"account_code": account.get("code"), "account_name": account.get("name"), "history_count": total_rows})
+    logger.info("Native accounting chart history client_id=%s account_code=%s elapsed_ms=%s rows=%s total_rows=%s payload_bytes=%s", client_id, account_code, int((time.perf_counter() - started) * 1000), len(rows), total_rows, approximate_payload_size(payload))
+    return payload
 
 
 @api.get("/admin/accounting/clients/{client_id}/accounts/history")
@@ -9372,6 +10220,48 @@ async def create_native_ap_supplier_profile(
         await session.execute(insert(accounting_ap_supplier_profiles).values(**profile))
     await add_accounting_audit(session, client_id, actor_id, "supplier_saved", "accounts_payable", profile["id"], {"name": name, "source": "submitted_items_review"})
     return serialize_ap_supplier(profile, contact)
+
+
+async def native_ap_supplier_page(
+    session: AsyncSession,
+    client_id: str,
+    page: int = 1,
+    page_size: int = 50,
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+) -> dict:
+    page, page_size = pagination_params(page, page_size)
+    conditions: list[Any] = [accounting_ap_supplier_profiles.c.client_id == client_id]
+    if status and str(status).lower() not in {"all", ""}:
+        conditions.append(accounting_ap_supplier_profiles.c.status == str(status).lower())
+    if search:
+        like = f"%{search}%"
+        matching_contacts = await many(
+            session,
+            select(accounting_contacts.c.id)
+            .where(
+                accounting_contacts.c.client_id == client_id,
+                accounting_contacts.c.contact_type == "supplier",
+                or_(accounting_contacts.c.name.ilike(like), accounting_contacts.c.email.ilike(like), accounting_contacts.c.account_code.ilike(like)),
+            )
+            .limit(500),
+        )
+        contact_ids = [str(row.get("id")) for row in matching_contacts]
+        profile_search = or_(accounting_ap_supplier_profiles.c.supplier_code.ilike(like), accounting_ap_supplier_profiles.c.trading_name.ilike(like))
+        conditions.append(or_(profile_search, accounting_ap_supplier_profiles.c.contact_id.in_(contact_ids)) if contact_ids else profile_search)
+    rows, total = await paginated_select(
+        session,
+        accounting_ap_supplier_profiles,
+        conditions,
+        [accounting_ap_supplier_profiles.c.supplier_code.asc(), accounting_ap_supplier_profiles.c.created_at.asc()],
+        page,
+        page_size,
+    )
+    row_contact_ids = [str(row.get("contact_id")) for row in rows if row.get("contact_id")]
+    contacts = await many(session, select(accounting_contacts).where(accounting_contacts.c.id.in_(row_contact_ids))) if row_contact_ids else []
+    contact_by_id = {str(contact.get("id")): contact for contact in contacts}
+    serialized = [serialize_ap_supplier(row, contact_by_id.get(str(row.get("contact_id"))) or {}) for row in rows]
+    return paginated_payload(serialized, page, page_size, total, {"supplier_count": total})
 
 
 async def ap_supplier_match_suggestions(session: AsyncSession, client_id: str, fields: dict, limit: int = 5) -> dict:
@@ -9667,7 +10557,12 @@ async def create_ar_invoice_record(session: AsyncSession, client_id: str, payloa
     next_number = int(ar_settings.get("next_invoice_number") or 1)
     if not invoice_number:
         prefix = str(ar_settings.get("invoice_number_prefix") or "SINV")
-        invoice_number = f"{prefix}{next_number:05d}"
+        while True:
+            invoice_number = f"{prefix}{next_number:05d}"
+            existing_number = await one(session, select(accounting_ar_invoices.c.id).where(accounting_ar_invoices.c.client_id == client_id, func.lower(accounting_ar_invoices.c.invoice_number) == invoice_number.lower()))
+            if not existing_number:
+                break
+            next_number += 1
         await session.execute(update(accounting_ar_settings).where(accounting_ar_settings.c.client_id == client_id).values(next_invoice_number=next_number + 1, updated_at=utc_now_iso()))
     elif bool(ar_settings.get("duplicate_invoice_warning", True)) and not bool(payload.get("allow_duplicate")):
         duplicate = await one(session, select(accounting_ar_invoices).where(accounting_ar_invoices.c.client_id == client_id, accounting_ar_invoices.c.customer_id == customer["id"], func.lower(accounting_ar_invoices.c.invoice_number) == invoice_number.lower()))
@@ -9832,6 +10727,48 @@ def sales_submission_payload_for_ar(submission: dict, fields: dict, allow_duplic
         "extracted_json": fields,
         "allow_duplicate": allow_duplicate,
     }
+
+
+async def native_ar_customer_page(
+    session: AsyncSession,
+    client_id: str,
+    page: int = 1,
+    page_size: int = 50,
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+) -> dict:
+    page, page_size = pagination_params(page, page_size)
+    conditions: list[Any] = [accounting_ar_customer_profiles.c.client_id == client_id]
+    if status and str(status).lower() not in {"all", ""}:
+        conditions.append(accounting_ar_customer_profiles.c.status == str(status).lower())
+    if search:
+        like = f"%{search}%"
+        matching_contacts = await many(
+            session,
+            select(accounting_contacts.c.id)
+            .where(
+                accounting_contacts.c.client_id == client_id,
+                accounting_contacts.c.contact_type == "customer",
+                or_(accounting_contacts.c.name.ilike(like), accounting_contacts.c.email.ilike(like), accounting_contacts.c.account_code.ilike(like)),
+            )
+            .limit(500),
+        )
+        contact_ids = [str(row.get("id")) for row in matching_contacts]
+        profile_search = or_(accounting_ar_customer_profiles.c.customer_code.ilike(like), accounting_ar_customer_profiles.c.trading_name.ilike(like))
+        conditions.append(or_(profile_search, accounting_ar_customer_profiles.c.contact_id.in_(contact_ids)) if contact_ids else profile_search)
+    rows, total = await paginated_select(
+        session,
+        accounting_ar_customer_profiles,
+        conditions,
+        [accounting_ar_customer_profiles.c.customer_code.asc(), accounting_ar_customer_profiles.c.created_at.asc()],
+        page,
+        page_size,
+    )
+    row_contact_ids = [str(row.get("contact_id")) for row in rows if row.get("contact_id")]
+    contacts = await many(session, select(accounting_contacts).where(accounting_contacts.c.id.in_(row_contact_ids))) if row_contact_ids else []
+    contact_by_id = {str(contact.get("id")): contact for contact in contacts}
+    serialized = [serialize_ar_customer(row, contact_by_id.get(str(row.get("contact_id"))) or {}) for row in rows]
+    return paginated_payload(serialized, page, page_size, total, {"customer_count": total})
 
 
 async def sales_customer_match_suggestions(session: AsyncSession, client_id: str, fields: dict, limit: int = 5) -> dict:
@@ -10092,6 +11029,22 @@ async def create_ap_supplier(
     return serialize_ap_supplier(profile, contact)
 
 
+@api.get("/admin/accounting/clients/{client_id}/ap/suppliers")
+async def list_ap_suppliers(
+    client_id: str,
+    page: int = 1,
+    page_size: int = 50,
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before viewing suppliers.")
+    return await native_ap_supplier_page(session, client_id, page, page_size, search, status)
+
+
 @api.put("/admin/accounting/clients/{client_id}/ap/suppliers/{supplier_id}")
 async def update_ap_supplier(
     client_id: str,
@@ -10140,6 +11093,129 @@ async def update_ap_supplier(
     await add_accounting_audit(session, client_id, user.get("id"), "supplier_updated", "accounts_payable", supplier_id, {"previous": supplier, "new": values})
     await session.commit()
     return {"ok": True}
+
+
+def filter_ledger_rows(rows: list[dict], search: Optional[str], status: Optional[str], type: Optional[str], date_from: Optional[str], date_to: Optional[str]) -> list[dict]:
+    filtered = rows
+    if type:
+        wanted = str(type).strip().lower()
+        filtered = [row for row in filtered if str(row.get("type") or "").lower() == wanted]
+    if status and str(status).strip().lower() not in {"all", ""}:
+        wanted = str(status).strip().lower()
+        filtered = [row for row in filtered if str(row.get("status") or "").lower() == wanted]
+    if date_from:
+        filtered = [row for row in filtered if str(row.get("date") or "") >= str(date_from)]
+    if date_to:
+        filtered = [row for row in filtered if str(row.get("date") or "") <= str(date_to)]
+    if search:
+        needle = str(search).strip().lower()
+        filtered = [row for row in filtered if needle in " ".join(str(row.get(key) or "").lower() for key in ("reference", "description", "status", "type"))]
+    return filtered
+
+
+@api.get("/admin/accounting/clients/{client_id}/ap/suppliers/{supplier_id}/ledger")
+async def get_ap_supplier_ledger(
+    client_id: str,
+    supplier_id: str,
+    page: int = 1,
+    page_size: int = 50,
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    type: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    started = time.perf_counter()
+    await get_client_or_404(session, client_id)
+    supplier = await get_ap_supplier_or_404(session, client_id, supplier_id)
+    page, page_size = pagination_params(page, page_size)
+    invoices = await many(session, select(accounting_ap_invoices).where(accounting_ap_invoices.c.client_id == client_id, accounting_ap_invoices.c.supplier_id == supplier_id))
+    invoice_ids = [str(row.get("id")) for row in invoices]
+    allocations = await many(session, select(accounting_ap_payment_allocations).where(accounting_ap_payment_allocations.c.invoice_id.in_(invoice_ids))) if invoice_ids else []
+    allocated_by_invoice: dict[str, Decimal] = {}
+    for allocation in allocations:
+        invoice_id = str(allocation.get("invoice_id") or "")
+        allocated_by_invoice[invoice_id] = allocated_by_invoice.get(invoice_id, Decimal("0.00")) + money(allocation.get("amount"))
+    payments = await many(session, select(accounting_ap_payments).where(accounting_ap_payments.c.client_id == client_id, accounting_ap_payments.c.supplier_id == supplier_id))
+    payment_ids = [str(row.get("id")) for row in payments]
+    payment_allocations = await many(session, select(accounting_ap_payment_allocations).where(accounting_ap_payment_allocations.c.payment_id.in_(payment_ids))) if payment_ids else []
+    allocated_by_payment: dict[str, Decimal] = {}
+    for allocation in payment_allocations:
+        payment_id = str(allocation.get("payment_id") or "")
+        allocated_by_payment[payment_id] = allocated_by_payment.get(payment_id, Decimal("0.00")) + money(allocation.get("amount"))
+    credits = await many(session, select(accounting_ap_credit_notes).where(accounting_ap_credit_notes.c.client_id == client_id, accounting_ap_credit_notes.c.supplier_id == supplier_id))
+    rows: list[dict] = []
+    for invoice in invoices:
+        item = serialize_ap_invoice(invoice, [], supplier)
+        rows.append(
+            {
+                "id": invoice.get("id"),
+                "date": invoice.get("invoice_date") or invoice.get("due_date") or "",
+                "type": "invoice",
+                "reference": invoice.get("invoice_number") or invoice.get("reference") or "",
+                "description": invoice.get("description") or invoice.get("reference") or "",
+                "invoice_value": money_str(money(invoice.get("gross_amount"))),
+                "paid_allocated": money_str(allocated_by_invoice.get(str(invoice.get("id")), Decimal("0.00"))),
+                "invoice_balance": money_str(money(invoice.get("outstanding_amount"))),
+                "status": invoice.get("status") or "",
+                "source_submission_id": item.get("source_submission_id"),
+                "attachment_path": item.get("attachment_path"),
+                "attachment_url": item.get("attachment_url"),
+                "document_url": item.get("document_url"),
+                "source_document_status": item.get("source_document_status"),
+                "source_document_missing": item.get("source_document_missing"),
+            }
+        )
+    for payment in payments:
+        allocated = allocated_by_payment.get(str(payment.get("id")), Decimal("0.00"))
+        rows.append(
+            {
+                "id": payment.get("id"),
+                "date": payment.get("payment_date") or "",
+                "type": "payment",
+                "reference": payment.get("reference") or "",
+                "description": payment.get("description") or payment.get("payment_method") or "",
+                "invoice_value": "0.00",
+                "paid_allocated": money_str(allocated or money(payment.get("amount"))),
+                "invoice_balance": money_str(max(money(payment.get("amount")) - allocated, Decimal("0.00"))),
+                "status": payment.get("status") or "",
+                "source_document_status": "none",
+                "source_document_missing": False,
+            }
+        )
+    for credit in credits:
+        allocated = money(credit.get("gross_amount")) - money(credit.get("unallocated_amount"))
+        rows.append(
+            {
+                "id": credit.get("id"),
+                "date": credit.get("credit_note_date") or "",
+                "type": "credit_note",
+                "reference": credit.get("credit_note_number") or credit.get("reference") or "",
+                "description": credit.get("description") or credit.get("reference") or "",
+                "invoice_value": money_str(-money(credit.get("gross_amount"))),
+                "paid_allocated": money_str(allocated),
+                "invoice_balance": money_str(-money(credit.get("unallocated_amount"))),
+                "status": credit.get("status") or "",
+                "source_document_status": "none",
+                "source_document_missing": False,
+            }
+        )
+    rows = sorted(filter_ledger_rows(rows, search, status, type, date_from, date_to), key=lambda item: (str(item.get("date") or ""), str(item.get("reference") or "")), reverse=True)
+    total = len(rows)
+    page_rows = rows[(page - 1) * page_size : page * page_size]
+    summary = {
+        "visible_transaction_count": total,
+        "invoice_value": money_str(sum((money(row.get("invoice_value")) for row in rows if row.get("type") == "invoice"), Decimal("0.00"))),
+        "invoice_balance": money_str(sum((money(row.get("invoice_balance")) for row in rows if row.get("type") == "invoice"), Decimal("0.00"))),
+        "outstanding": money_str(sum((money(row.get("invoice_balance")) for row in rows if row.get("type") == "invoice"), Decimal("0.00"))),
+        "payments_credits_allocated": money_str(sum((money(row.get("paid_allocated")) for row in rows if row.get("type") in {"payment", "credit_note"}), Decimal("0.00"))),
+        "supplier": supplier,
+    }
+    payload = paginated_payload(page_rows, page, page_size, total, summary)
+    logger.info("AP supplier ledger payload client_id=%s supplier_id=%s rows=%s total=%s elapsed_ms=%s payload_bytes=%s", client_id, supplier_id, len(page_rows), total, int((time.perf_counter() - started) * 1000), approximate_payload_size(payload))
+    return payload
 
 
 @api.post("/admin/accounting/clients/{client_id}/ap/invoices")
@@ -10833,6 +11909,22 @@ async def create_ar_customer(
     return customer
 
 
+@api.get("/admin/accounting/clients/{client_id}/ar/customers")
+async def list_ar_customers(
+    client_id: str,
+    page: int = 1,
+    page_size: int = 50,
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before viewing customers.")
+    return await native_ar_customer_page(session, client_id, page, page_size, search, status)
+
+
 @api.put("/admin/accounting/clients/{client_id}/ar/customers/{customer_id}")
 async def update_ar_customer(
     client_id: str,
@@ -10876,6 +11968,113 @@ async def update_ar_customer(
     await add_accounting_audit(session, client_id, user.get("id"), "customer_updated", "accounts_receivable", customer_id, {"previous": customer, "new": values})
     await session.commit()
     return {"ok": True}
+
+
+@api.get("/admin/accounting/clients/{client_id}/ar/customers/{customer_id}/ledger")
+async def get_ar_customer_ledger(
+    client_id: str,
+    customer_id: str,
+    page: int = 1,
+    page_size: int = 50,
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    type: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    started = time.perf_counter()
+    await get_client_or_404(session, client_id)
+    customer = await get_ar_customer_or_404(session, client_id, customer_id)
+    contact = await one(session, select(accounting_contacts).where(accounting_contacts.c.id == customer.get("contact_id")))
+    serialized_customer = serialize_ar_customer(customer, contact or {})
+    page, page_size = pagination_params(page, page_size)
+    invoices = await many(session, select(accounting_ar_invoices).where(accounting_ar_invoices.c.client_id == client_id, accounting_ar_invoices.c.customer_id == customer_id))
+    invoice_ids = [str(row.get("id")) for row in invoices]
+    allocations = await many(session, select(accounting_ar_receipt_allocations).where(accounting_ar_receipt_allocations.c.invoice_id.in_(invoice_ids))) if invoice_ids else []
+    allocated_by_invoice: dict[str, Decimal] = {}
+    for allocation in allocations:
+        invoice_id = str(allocation.get("invoice_id") or "")
+        allocated_by_invoice[invoice_id] = allocated_by_invoice.get(invoice_id, Decimal("0.00")) + money(allocation.get("amount"))
+    receipts = await many(session, select(accounting_ar_receipts).where(accounting_ar_receipts.c.client_id == client_id, accounting_ar_receipts.c.customer_id == customer_id))
+    receipt_ids = [str(row.get("id")) for row in receipts]
+    receipt_allocations = await many(session, select(accounting_ar_receipt_allocations).where(accounting_ar_receipt_allocations.c.receipt_id.in_(receipt_ids))) if receipt_ids else []
+    allocated_by_receipt: dict[str, Decimal] = {}
+    for allocation in receipt_allocations:
+        receipt_id = str(allocation.get("receipt_id") or "")
+        allocated_by_receipt[receipt_id] = allocated_by_receipt.get(receipt_id, Decimal("0.00")) + money(allocation.get("amount"))
+    credits = await many(session, select(accounting_ar_credit_notes).where(accounting_ar_credit_notes.c.client_id == client_id, accounting_ar_credit_notes.c.customer_id == customer_id))
+    rows: list[dict] = []
+    for invoice in invoices:
+        item = serialize_ar_invoice(invoice, [], serialized_customer)
+        rows.append(
+            {
+                "id": invoice.get("id"),
+                "date": invoice.get("invoice_date") or invoice.get("due_date") or "",
+                "type": "invoice",
+                "reference": invoice.get("invoice_number") or invoice.get("reference") or "",
+                "description": invoice.get("description") or invoice.get("reference") or "",
+                "invoice_value": money_str(money(invoice.get("gross_amount"))),
+                "paid_allocated": money_str(allocated_by_invoice.get(str(invoice.get("id")), Decimal("0.00"))),
+                "invoice_balance": money_str(money(invoice.get("outstanding_amount"))),
+                "status": invoice.get("status") or "",
+                "source_submission_id": item.get("source_submission_id"),
+                "attachment_path": item.get("attachment_path"),
+                "attachment_url": item.get("attachment_url"),
+                "document_url": item.get("document_url"),
+                "source_document_status": item.get("source_document_status"),
+                "source_document_missing": item.get("source_document_missing"),
+            }
+        )
+    for receipt in receipts:
+        allocated = allocated_by_receipt.get(str(receipt.get("id")), Decimal("0.00"))
+        rows.append(
+            {
+                "id": receipt.get("id"),
+                "date": receipt.get("receipt_date") or "",
+                "type": "receipt",
+                "reference": receipt.get("reference") or "",
+                "description": receipt.get("description") or receipt.get("payment_method") or "",
+                "invoice_value": "0.00",
+                "paid_allocated": money_str(allocated or money(receipt.get("amount"))),
+                "invoice_balance": money_str(max(money(receipt.get("amount")) - allocated, Decimal("0.00"))),
+                "status": receipt.get("status") or "",
+                "source_document_status": "none",
+                "source_document_missing": False,
+            }
+        )
+    for credit in credits:
+        allocated = money(credit.get("gross_amount")) - money(credit.get("unallocated_amount"))
+        rows.append(
+            {
+                "id": credit.get("id"),
+                "date": credit.get("credit_note_date") or "",
+                "type": "credit_note",
+                "reference": credit.get("credit_note_number") or credit.get("reference") or "",
+                "description": credit.get("description") or credit.get("reference") or "",
+                "invoice_value": money_str(-money(credit.get("gross_amount"))),
+                "paid_allocated": money_str(allocated),
+                "invoice_balance": money_str(-money(credit.get("unallocated_amount"))),
+                "status": credit.get("status") or "",
+                "source_document_status": "none",
+                "source_document_missing": False,
+            }
+        )
+    rows = sorted(filter_ledger_rows(rows, search, status, type, date_from, date_to), key=lambda item: (str(item.get("date") or ""), str(item.get("reference") or "")), reverse=True)
+    total = len(rows)
+    page_rows = rows[(page - 1) * page_size : page * page_size]
+    summary = {
+        "visible_transaction_count": total,
+        "invoice_value": money_str(sum((money(row.get("invoice_value")) for row in rows if row.get("type") == "invoice"), Decimal("0.00"))),
+        "invoice_balance": money_str(sum((money(row.get("invoice_balance")) for row in rows if row.get("type") == "invoice"), Decimal("0.00"))),
+        "outstanding": money_str(sum((money(row.get("invoice_balance")) for row in rows if row.get("type") == "invoice"), Decimal("0.00"))),
+        "receipts_credits_allocated": money_str(sum((money(row.get("paid_allocated")) for row in rows if row.get("type") in {"receipt", "credit_note"}), Decimal("0.00"))),
+        "customer": serialized_customer,
+    }
+    payload = paginated_payload(page_rows, page, page_size, total, summary)
+    logger.info("AR customer ledger payload client_id=%s customer_id=%s rows=%s total=%s elapsed_ms=%s payload_bytes=%s", client_id, customer_id, len(page_rows), total, int((time.perf_counter() - started) * 1000), approximate_payload_size(payload))
+    return payload
 
 
 @api.post("/admin/accounting/clients/{client_id}/ar/invoices")
@@ -10954,6 +12153,7 @@ async def get_ar_invoice_attachment(
 
 
 @api.put("/admin/accounting/clients/{client_id}/ar/invoices/{invoice_id}")
+@api.patch("/admin/accounting/clients/{client_id}/ar/invoices/{invoice_id}")
 async def update_ar_invoice(
     client_id: str,
     invoice_id: str,
@@ -11022,8 +12222,51 @@ async def update_ar_invoice(
     for index, line in enumerate(lines, start=1):
         await session.execute(insert(accounting_ar_invoice_lines).values(id=new_id(), client_id=client_id, invoice_id=invoice_id, line_number=index, created_at=now, updated_at=now, **line))
     await add_accounting_audit(session, client_id, user.get("id"), "sales_invoice_updated", "accounts_receivable", invoice_id, {"status": status})
+    old_signatures = [json.dumps({key: line.get(key) for key in ("description", "nominal_account_code", "vat_code", "quantity", "unit_price", "net_amount", "vat_amount", "gross_amount")}, sort_keys=True, default=str) for line in existing_lines]
+    new_signatures = [json.dumps({key: line.get(key) for key in ("description", "nominal_account_code", "vat_code", "quantity", "unit_price", "net_amount", "vat_amount", "gross_amount")}, sort_keys=True, default=str) for line in lines]
+    if len(lines) > len(existing_lines):
+        await add_accounting_audit(session, client_id, user.get("id"), "sales_invoice_line_added", "accounts_receivable", invoice_id, {"count": len(lines) - len(existing_lines)})
+    if len(lines) < len(existing_lines):
+        await add_accounting_audit(session, client_id, user.get("id"), "sales_invoice_line_removed", "accounts_receivable", invoice_id, {"count": len(existing_lines) - len(lines)})
+    if old_signatures != new_signatures:
+        await add_accounting_audit(session, client_id, user.get("id"), "sales_invoice_lines_edited", "accounts_receivable", invoice_id, {"line_count": len(lines)})
     await session.commit()
     return await get_ar_invoice_detail(client_id, invoice_id, user, session)
+
+
+def ar_copy_invoice_payload(original: dict, customer: dict, lines: list[dict], today: date) -> dict:
+    payment_terms_days = int(original.get("payment_terms_days") or customer.get("payment_terms_days") or 30)
+    copied_lines = [{key: line.get(key) for key in ("description", "nominal_account_code", "vat_code", "quantity", "unit_price", "net_amount", "vat_amount", "gross_amount")} for line in lines]
+    return {
+        "customer_id": original.get("customer_id"),
+        "invoice_date": today.isoformat(),
+        "due_date": (today + timedelta(days=payment_terms_days)).isoformat(),
+        "payment_terms_days": payment_terms_days,
+        "currency": original.get("currency") or customer.get("default_currency") or "GBP",
+        "description": original.get("description") or "",
+        "vat_code": original.get("vat_code") or "",
+        "lines": copied_lines,
+    }
+
+
+@api.post("/admin/accounting/clients/{client_id}/ar/invoices/{invoice_id}/copy")
+async def copy_ar_invoice(
+    client_id: str,
+    invoice_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    original = await get_ar_invoice_or_404(session, client_id, invoice_id)
+    customer = await get_ar_customer_or_404(session, client_id, str(original.get("customer_id")))
+    lines = await many(session, select(accounting_ar_invoice_lines).where(accounting_ar_invoice_lines.c.invoice_id == invoice_id).order_by(accounting_ar_invoice_lines.c.line_number.asc()))
+    payload = ar_copy_invoice_payload(original, customer, lines, datetime.now(timezone.utc).date())
+    copied = await create_ar_invoice_record(session, client_id, payload, user.get("id"))
+    copied_id = str(copied.get("id") or "")
+    await session.execute(update(accounting_ar_invoices).where(accounting_ar_invoices.c.id == copied_id).values(status="draft", source_submission_id="", attachment_path="", original_filename="", extracted_json="{}", posted_journal_id=None, updated_at=utc_now_iso()))
+    await add_accounting_audit(session, client_id, user.get("id"), "sales_invoice_copied", "accounts_receivable", invoice_id, {"new_invoice_id": copied_id})
+    await add_accounting_audit(session, client_id, user.get("id"), "sales_invoice_created_from_copy", "accounts_receivable", copied_id, {"source_invoice_id": invoice_id})
+    await session.commit()
+    return await get_ar_invoice_detail(client_id, copied_id, user, session)
 
 
 @api.post("/admin/accounting/clients/{client_id}/ar/invoices/{invoice_id}/approve")
@@ -11201,6 +12444,7 @@ async def get_ar_credit_note_detail(
 
 
 @api.put("/admin/accounting/clients/{client_id}/ar/credit-notes/{credit_note_id}")
+@api.patch("/admin/accounting/clients/{client_id}/ar/credit-notes/{credit_note_id}")
 async def update_ar_credit_note(
     client_id: str,
     credit_note_id: str,
@@ -11576,18 +12820,169 @@ async def get_bank_account_workspace(
     user: dict = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ):
+    started = time.perf_counter()
     client = await get_client_or_404(session, client_id)
     if not is_native_accounting_client(client):
         raise HTTPException(status_code=400, detail="Enable EPOS native accounting before viewing Banking.")
     accounts = await ensure_native_accounting_client(session, client_id)
-    workspace = await banking_workspace(session, client_id, accounts, bank_account_id)
-    return {"ok": True, **workspace}
+    bank_accounts = await native_bank_account_cards_summary(session, client_id, accounts)
+    selected = next((account for account in bank_accounts if bank_card_matches_id(account, bank_account_id)), None)
+    if not selected:
+        raise HTTPException(status_code=404, detail="Bank account not found.")
+    settings = await ensure_bank_settings(session, client_id)
+    vat_codes = [serialize_vat_code(row) for row in await ensure_vat_codes(session, client_id) if bool(row.get("active", True))]
+    nominal_accounts = [
+        serialize_native_account(account)
+        for account in accounts
+        if bool(account.get("active", True)) and not account_banking_enabled(account)
+    ]
+    dashboard = {
+        "current_bank_balance": selected.get("current_balance") or "0.00",
+        "reconciled_balance": selected.get("reconciled_balance") or "0.00",
+        "unreconciled_transactions": int(selected.get("unreconciled_count") or 0),
+        "last_bank_import": selected.get("last_import_at") or "",
+    }
+    payload = {
+        "ok": True,
+        "settings": dict(settings),
+        "dashboard": dashboard,
+        "bank_account": selected,
+        "bank_accounts": bank_accounts,
+        "transactions": [],
+        "imports": [],
+        "statements": [],
+        "rules": [],
+        "transfers": [],
+        "vat_codes": vat_codes,
+        "nominal_accounts": nominal_accounts,
+        "suppliers": [],
+        "customers": [],
+        "cashbook": [],
+        "account_transactions": [],
+        "cashbook_transactions": [],
+        "reconciliation_lines": [],
+        "reports": {},
+    }
+    logger.info("Bank account workspace lightweight client_id=%s bank_account_id=%s elapsed_ms=%s payload_bytes=%s", client_id, bank_account_id, int((time.perf_counter() - started) * 1000), approximate_payload_size(payload))
+    return payload
 
 
+@api.get("/admin/accounting/clients/{client_id}/banking/accounts")
+@api.get("/admin/accounting/clients/{client_id}/bank/accounts")
+async def get_banking_accounts(
+    client_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    started = time.perf_counter()
+    client = await get_client_or_404(session, client_id)
+    if not is_native_accounting_client(client):
+        raise HTTPException(status_code=400, detail="Enable EPOS native accounting before viewing Banking.")
+    accounts = await ensure_native_accounting_client(session, client_id)
+    rows = await native_bank_account_cards_summary(session, client_id, accounts)
+    summary = {
+        "bank_account_count": len(rows),
+        "unreconciled_transactions": sum(int(row.get("unreconciled_count") or 0) for row in rows),
+        "current_bank_balance": money_str(sum((money(row.get("current_balance")) for row in rows), Decimal("0.00"))),
+        "reconciled_balance": money_str(sum((money(row.get("reconciled_balance")) for row in rows), Decimal("0.00"))),
+    }
+    payload = paginated_payload(rows, 1, len(rows) or 50, len(rows), summary)
+    logger.info("Banking accounts payload client_id=%s rows=%s elapsed_ms=%s payload_bytes=%s", client_id, len(rows), int((time.perf_counter() - started) * 1000), approximate_payload_size(payload))
+    return payload
+
+
+def bank_statement_conditions_for_card(client_id: str, card: dict, search: Optional[str], date_from: Optional[str], date_to: Optional[str]) -> list[Any]:
+    conditions = [accounting_bank_transactions.c.client_id == client_id, *bank_account_transaction_conditions(card)]
+    conditions.extend(date_range_conditions(accounting_bank_transactions.c.transaction_date, date_from, date_to))
+    search_condition = text_search_condition(search, accounting_bank_transactions.c.description, accounting_bank_transactions.c.reference, accounting_bank_transactions.c.matched_to)
+    if search_condition is not None:
+        conditions.append(search_condition)
+    return conditions
+
+
+def apply_bank_status_filter(conditions: list[Any], status: Optional[str], reconciliation_only: bool = False) -> list[Any]:
+    value = str(status or ("unreconciled" if reconciliation_only else "all")).strip().lower()
+    if reconciliation_only or value == "unreconciled":
+        conditions.append(bank_unreconciled_condition())
+    elif value == "reconciled":
+        conditions.append(accounting_bank_transactions.c.status.in_(list(BANK_RECONCILED_STATUSES)))
+    elif value == "excluded":
+        conditions.append(or_(accounting_bank_transactions.c.ignored == True, accounting_bank_transactions.c.status.in_(["ignored", "archived"])))  # noqa: E712
+    elif value and value != "all":
+        conditions.append(accounting_bank_transactions.c.status == value)
+    return conditions
+
+
+@api.get("/admin/accounting/clients/{client_id}/banking/accounts/{bank_account_id}/reconciliation")
+async def get_banking_account_reconciliation(
+    client_id: str,
+    bank_account_id: str,
+    page: int = 1,
+    page_size: int = 50,
+    search: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    started = time.perf_counter()
+    await get_client_or_404(session, client_id)
+    page, page_size = pagination_params(page, page_size)
+    card = await resolve_bank_card_or_404(session, client_id, bank_account_id)
+    conditions = apply_bank_status_filter(bank_statement_conditions_for_card(client_id, card, search, date_from, date_to), None, True)
+    rows, total = await paginated_select(
+        session,
+        accounting_bank_transactions,
+        conditions,
+        [accounting_bank_transactions.c.transaction_date.desc(), accounting_bank_transactions.c.created_at.desc()],
+        page,
+        page_size,
+    )
+    serialized = [serialize_bank_transaction(row) for row in rows]
+    payload = paginated_payload(serialized, page, page_size, total, {"bank_account": serialize_bank_account(card), "unreconciled_count": total})
+    logger.info("Banking reconciliation payload client_id=%s bank_account_id=%s rows=%s total=%s elapsed_ms=%s payload_bytes=%s", client_id, bank_account_id, len(serialized), total, int((time.perf_counter() - started) * 1000), approximate_payload_size(payload))
+    return payload
+
+
+@api.get("/admin/accounting/clients/{client_id}/banking/accounts/{bank_account_id}/statements")
+async def get_banking_account_statements(
+    client_id: str,
+    bank_account_id: str,
+    page: int = 1,
+    page_size: int = 50,
+    search: Optional[str] = None,
+    status: Optional[str] = "all",
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    started = time.perf_counter()
+    await get_client_or_404(session, client_id)
+    page, page_size = pagination_params(page, page_size)
+    card = await resolve_bank_card_or_404(session, client_id, bank_account_id)
+    conditions = apply_bank_status_filter(bank_statement_conditions_for_card(client_id, card, search, date_from, date_to), status, False)
+    rows, total = await paginated_select(
+        session,
+        accounting_bank_transactions,
+        conditions,
+        [accounting_bank_transactions.c.transaction_date.desc(), accounting_bank_transactions.c.created_at.desc()],
+        page,
+        page_size,
+    )
+    serialized = [serialize_bank_transaction(row) for row in rows]
+    payload = paginated_payload(serialized, page, page_size, total, {"bank_account": serialize_bank_account(card), "status": status or "all"})
+    logger.info("Banking statements payload client_id=%s bank_account_id=%s rows=%s total=%s elapsed_ms=%s payload_bytes=%s", client_id, bank_account_id, len(serialized), total, int((time.perf_counter() - started) * 1000), approximate_payload_size(payload))
+    return payload
+
+
+@api.get("/admin/accounting/clients/{client_id}/banking/account-transactions")
 @api.get("/admin/accounting/clients/{client_id}/bank/account-transactions")
 async def get_bank_account_transactions(
     client_id: str,
     bank_account_id: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 50,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     source_type: Optional[str] = None,
@@ -11601,10 +12996,12 @@ async def get_bank_account_transactions(
     user: dict = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ):
+    started = time.perf_counter()
     client = await get_client_or_404(session, client_id)
     if not is_native_accounting_client(client):
         raise HTTPException(status_code=400, detail="Enable EPOS native accounting before viewing Banking.")
     await ensure_native_accounting_client(session, client_id)
+    page, page_size = pagination_params(page, page_size)
     rows = await reconcilable_account_transactions(session, client_id, bank_account_id or None)
     if date_from:
         rows = [row for row in rows if str(row.get("date") or "") >= date_from]
@@ -11632,7 +13029,30 @@ async def get_bank_account_transactions(
             for row in rows
             if needle in " ".join(str(row.get(key) or "").lower() for key in ("contact_name", "account_name", "reference", "type", "module"))
         ]
-    return {"ok": True, "account_transactions": rows, "count": len(rows)}
+    total = len(rows)
+    page_rows = rows[(page - 1) * page_size : page * page_size]
+    normalized = []
+    for row in page_rows:
+        module = str(row.get("module") or "").upper()
+        amount = money(row.get("outstanding_amount")) or money(row.get("unallocated_amount")) or money(row.get("amount"))
+        direction = "money_out" if module == "AP" else "money_in" if module == "AR" else str(row.get("direction") or "")
+        normalized.append(
+            {
+                **row,
+                "source_module": module,
+                "transaction_type": row.get("type"),
+                "record_id": row.get("linked_record_id"),
+                "account_transaction_id": row.get("id"),
+                "supplier_customer": row.get("contact_name") or row.get("account_name") or "",
+                "original_value": row.get("amount"),
+                "outstanding_balance": money_str(amount),
+                "direction": direction,
+                "match_eligible": amount > 0,
+            }
+        )
+    payload = paginated_payload(normalized, page, page_size, total, {"outstanding_count": total})
+    logger.info("Bank account-transactions payload client_id=%s rows=%s total=%s elapsed_ms=%s payload_bytes=%s", client_id, len(normalized), total, int((time.perf_counter() - started) * 1000), approximate_payload_size(payload))
+    return {**payload, "ok": True, "account_transactions": normalized, "count": total}
 
 
 @api.post("/admin/accounting/clients/{client_id}/bank-transactions/bulk-delete")
@@ -18092,8 +19512,17 @@ async def submit_additional(
 async def list_submissions(
     client_id: Optional[str] = None,
     type: Optional[str] = None,
+    document_type: Optional[str] = None,
+    route: Optional[str] = None,
+    status: Optional[str] = None,
+    tab: Optional[str] = None,
     review_status: Optional[str] = None,
     q: Optional[str] = None,
+    search: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    page: Optional[int] = None,
+    page_size: Optional[int] = None,
     segmented: bool = False,
     user: dict = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
@@ -18104,25 +19533,50 @@ async def list_submissions(
     if client_id:
         conditions.append(submissions.c.client_id == client_id)
     type_map = {"purchase_invoice": "purchase", "sales_invoice": "sales"}
-    normalized_type = type_map.get(str(type or "").strip().lower(), type)
+    type_value = document_type or route or type
+    normalized_type = type_map.get(str(type_value or "").strip().lower(), type_value)
     if normalized_type in ("purchase", "sales"):
         conditions.append(submissions.c.type == normalized_type)
     elif normalized_type in ("unclassified", "needs_review"):
         conditions.append(or_(submissions.c.type.is_(None), ~submissions.c.type.in_(["purchase", "sales"])))
-    if review_status == "inbox":
+    review_value = review_status or status or tab
+    if review_value in ("all", "all_submitted_items"):
+        review_value = None
+    if review_value in ("purchase_invoices", "purchase"):
+        conditions.append(submissions.c.type == "purchase")
+    elif review_value in ("sales_invoices", "sales"):
+        conditions.append(submissions.c.type == "sales")
+    elif review_value in ("archive", "processed", "archived"):
+        review_value = "archived"
+    if review_value == "inbox":
         conditions.append(or_(submissions.c.review_status == "inbox", submissions.c.review_status.is_(None)))
-    elif review_status == "archived":
+    elif review_value == "archived":
         conditions.append(submissions.c.review_status.in_(["archived", "published", "published_to_ap", "published_to_ar"]))
-    elif review_status == "published":
+    elif review_value == "published":
         conditions.append(submissions.c.review_status.in_(["published", "published_to_ap", "published_to_ar"]))
-    elif review_status in ("rejected", "needs_review", "purchase_review", "purchase_ready_to_publish", "published_to_ap", "sales_review", "sales_ready_to_publish", "published_to_ar"):
-        conditions.append(submissions.c.review_status == review_status)
-    if q:
-        like = f"%{q}%"
-        conditions.append(or_(submissions.c.description.ilike(like), submissions.c.comment.ilike(like)))
+    elif review_value in ("rejected", "needs_review", "purchase_review", "purchase_ready_to_publish", "published_to_ap", "sales_review", "sales_ready_to_publish", "published_to_ar"):
+        conditions.append(submissions.c.review_status == review_value)
+    if date_from:
+        conditions.append(submissions.c.submitted_at >= str(date_from))
+    if date_to:
+        conditions.append(submissions.c.submitted_at <= str(date_to))
+    query = search or q
+    if query:
+        like = f"%{query}%"
+        conditions.append(or_(submissions.c.description.ilike(like), submissions.c.comment.ilike(like), submissions.c.client_business_name.ilike(like)))
     if conditions:
         stmt = stmt.where(and_(*conditions))
-    docs = await many(session, stmt.order_by(submissions.c.submitted_at.desc()).limit(2000))
+    use_pagination = page is not None or page_size is not None
+    if use_pagination:
+        page_value, page_size_value = pagination_params(page or 1, page_size or 50)
+        count_stmt = select(func.count()).select_from(submissions)
+        if conditions:
+            count_stmt = count_stmt.where(and_(*conditions))
+        total = int((await session.execute(count_stmt)).scalar_one() or 0)
+        docs = await many(session, stmt.order_by(submissions.c.submitted_at.desc()).offset((page_value - 1) * page_size_value).limit(page_size_value))
+    else:
+        page_value, page_size_value, total = 1, 2000, 0
+        docs = await many(session, stmt.order_by(submissions.c.submitted_at.desc()).limit(2000))
 
     client_map = {}
     result = []
@@ -18140,6 +19594,8 @@ async def list_submissions(
             "sales_invoices": [item for item in result if item.get("type") == "sales"],
             "unclassified": [item for item in result if item.get("type") not in {"purchase", "sales"}],
         }
+    if use_pagination:
+        return paginated_payload(result, page_value, page_size_value, total, {"returned": len(result)})
     return result
 
 

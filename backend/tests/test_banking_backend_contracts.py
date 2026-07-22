@@ -156,3 +156,38 @@ def test_find_account_transaction_row_supports_account_transaction_id_or_record_
     assert server.find_account_transaction_row(rows, "", "", "ap_invoice:inv-10") == rows[0]
     assert server.find_account_transaction_row(rows, "ap_invoice", "inv-10") == rows[0]
     assert server.find_account_transaction_row(rows, "ar_invoice", "inv-10") is None
+
+
+def test_pagination_contract_clamps_page_size_and_reports_total_pages():
+    page, page_size = server.pagination_params(0, 999)
+
+    payload = server.paginated_payload([{"id": "row-1"}], page, page_size, 501, {"count": 501})
+
+    assert page == 1
+    assert page_size == 250
+    assert payload["rows"] == [{"id": "row-1"}]
+    assert payload["page"] == 1
+    assert payload["page_size"] == 250
+    assert payload["total_rows"] == 501
+    assert payload["total_pages"] == 3
+    assert payload["summary"] == {"count": 501}
+
+
+def test_bank_account_transaction_conditions_support_metadata_id_account_id_and_code():
+    card = {"id": "bank-1", "bank_account_id": "meta-1", "account_id": "acct-1200", "nominal_account_code": "1200"}
+
+    conditions = server.bank_account_transaction_conditions(card)
+
+    assert len(conditions) == 1
+
+
+def test_filter_ledger_rows_uses_filters_before_pagination_summary():
+    rows = [
+        {"date": "2026-01-01", "type": "invoice", "status": "posted", "reference": "INV-1", "description": "Alpha"},
+        {"date": "2026-01-02", "type": "payment", "status": "posted", "reference": "PAY-1", "description": "Alpha"},
+        {"date": "2026-01-03", "type": "invoice", "status": "draft", "reference": "INV-2", "description": "Beta"},
+    ]
+
+    filtered = server.filter_ledger_rows(rows, "alpha", "posted", "invoice", "2026-01-01", "2026-01-31")
+
+    assert filtered == [rows[0]]

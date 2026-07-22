@@ -8,8 +8,10 @@ import { ArrowLeft, Download, FileText, Plus, Printer, RefreshCw, Search, Upload
 import { toast } from "sonner";
 import {
   AccountCodeSelect,
+  DEFAULT_PAGE_SIZE,
   Field,
   Panel,
+  PaginationFooter,
   SelectField,
   SummaryCard,
   VatCodeSelect,
@@ -17,11 +19,13 @@ import {
   formatDate,
   formatDateTime,
   formatMoney,
+  normalisePaginatedResponse,
+  normalisePageSize,
   statusBadgeClass,
   vatCodeOptionsFromWorkspace,
 } from "./shared";
 
-const bankTabs = ["Reconciliation", "Bank Statements", "Account Transactions"];
+const bankTabs = ["Reconciliation", "Bank Statements", "Account Transactions", "Audit Trail"];
 const reconciliationStatuses = new Set(["unreconciled", "pending", "awaiting_match", "unmatched", "imported", "documentation_requested"]);
 const creationActions = [
   "Create receipt",
@@ -34,30 +38,49 @@ const creationActions = [
 
 function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy }) {
   const banking = workspace.banking || {};
-  const transactions = useMemo(() => banking.transactions || workspace.bank_transactions || [], [banking.transactions, workspace.bank_transactions]);
-  const outstandingAccountTransactions = useMemo(
-    () => banking.outstanding_account_transactions || banking.account_transactions || banking.reconcilable_transactions || [],
-    [banking.outstanding_account_transactions, banking.account_transactions, banking.reconcilable_transactions]
-  );
-  const imports = useMemo(() => banking.imports || [], [banking.imports]);
   const accounts = useMemo(() => workspace.accounts || [], [workspace.accounts]);
   const supportsBankingAccountFlag = useMemo(() => accounts.some((account) => "show_in_banking" in account || "banking_enabled" in account), [accounts]);
   const bankEnabledChartAccounts = useMemo(() => accounts.filter(isBankingEnabledAccount), [accounts]);
-  const bankAccounts = useMemo(() => supportsBankingAccountFlag ? bankEnabledChartAccounts : banking.bank_accounts || [], [supportsBankingAccountFlag, bankEnabledChartAccounts, banking.bank_accounts]);
+  const workspaceBankAccounts = useMemo(() => supportsBankingAccountFlag ? bankEnabledChartAccounts : banking.bank_accounts || [], [supportsBankingAccountFlag, bankEnabledChartAccounts, banking.bank_accounts]);
   const vatCodes = useMemo(() => vatCodeOptionsFromWorkspace(workspace), [workspace]);
   const usingBankingFallback = !supportsBankingAccountFlag && (banking.bank_accounts || []).length > 0;
   const postingAccounts = accounts.filter((account) => account.active && account.purpose !== "Bank Account" && String(account.account_type || "").toLowerCase() !== "bank");
-  const activeBankAccounts = bankAccounts.filter((account) => account.active !== false);
-  const defaultBankId = banking.settings?.default_bank_account_id || activeBankAccounts[0]?.id || bankAccounts[0]?.id || "";
   const baseUrl = `/admin/accounting/clients/${workspace.client.id}`;
 
   const [saving, setSaving] = useState(false);
+  const [bankAccountsData, setBankAccountsData] = useState(workspaceBankAccounts);
+  const bankAccounts = bankAccountsData.length ? bankAccountsData : workspaceBankAccounts;
+  const activeBankAccounts = bankAccounts.filter((account) => account.active !== false);
+  const defaultBankId = banking.settings?.default_bank_account_id || activeBankAccounts[0]?.id || bankAccounts[0]?.id || "";
   const [selectedBankId, setSelectedBankId] = useState("");
   const [bankTab, setBankTab] = useState("Reconciliation");
   const [, setSelectedTransaction] = useState(null);
   const [selectedImportId, setSelectedImportId] = useState("");
   const [importFile, setImportFile] = useState(null);
   const [filters, setFilters] = useState({ bank_account_id: "", module: "", type: "", contact: "", date_from: "", date_to: "", status: "", search: "" });
+  const [reconciliationPage, setReconciliationPage] = useState(1);
+  const [reconciliationPageSize, setReconciliationPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [reconciliationData, setReconciliationData] = useState(() => normalisePaginatedResponse({ rows: [], page_size: DEFAULT_PAGE_SIZE }));
+  const [reconciliationLoading, setReconciliationLoading] = useState(false);
+  const [reconciliationError, setReconciliationError] = useState("");
+  const [statementPage, setStatementPage] = useState(1);
+  const [statementPageSize, setStatementPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [statementStatusFilter, setStatementStatusFilter] = useState("all");
+  const [statementData, setStatementData] = useState(() => normalisePaginatedResponse({ rows: [], page_size: DEFAULT_PAGE_SIZE }));
+  const [statementLoading, setStatementLoading] = useState(false);
+  const [statementError, setStatementError] = useState("");
+  const [accountTxPage, setAccountTxPage] = useState(1);
+  const [accountTxPageSize, setAccountTxPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [accountTxData, setAccountTxData] = useState(() => normalisePaginatedResponse({ rows: [], page_size: DEFAULT_PAGE_SIZE }));
+  const [accountTxLoading, setAccountTxLoading] = useState(false);
+  const [accountTxError, setAccountTxError] = useState("");
+  const [bankingRefreshKey, setBankingRefreshKey] = useState(0);
+  const [auditPage, setAuditPage] = useState(1);
+  const [auditPageSize, setAuditPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [auditSearch, setAuditSearch] = useState("");
+  const [auditData, setAuditData] = useState(() => normalisePaginatedResponse({ page_size: DEFAULT_PAGE_SIZE }));
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditError, setAuditError] = useState("");
   const [transactionForm, setTransactionForm] = useState({ bank_account_id: defaultBankId, transaction_date: "", description: "", reference: "", transaction_type: "manual_entry", money_in: "", money_out: "" });
   const [settingsForm, setSettingsForm] = useState(banking.settings || {});
 
@@ -79,27 +102,141 @@ function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy 
   }, [bankAccounts, selectedBankId]);
 
   const selectedBank = bankAccounts.find((account) => account.id === selectedBankId) || null;
-  const bankTransactions = useMemo(() => selectedBank ? transactions.filter((transaction) => rowBelongsToBank(transaction, selectedBank)) : [], [selectedBank, transactions]);
-  const bankImports = useMemo(() => selectedBank ? imports.filter((item) => rowBelongsToBank(item, selectedBank) || !rowBankIdentityValues(item).length) : imports, [imports, selectedBank]);
-  const unreconciled = useMemo(() => bankTransactions.filter(isReconciliationStatus), [bankTransactions]);
-  const visibleAccountTransactions = useMemo(() => outstandingAccountTransactions.filter((transaction) => {
-    const haystack = `${accountTransactionContact(transaction)} ${transaction.description || ""} ${transaction.reference || ""} ${transaction.suggested_bank_match || ""} ${transaction.matched_to || ""}`.toLowerCase();
-    if (filters.bank_account_id) {
-      const filterBank = bankAccounts.find((account) => account.id === filters.bank_account_id);
-      if (filterBank && !rowBelongsToBank(transaction, filterBank)) return false;
-      if (!filterBank && transactionBankId(transaction) !== filters.bank_account_id) return false;
-    }
-    if (filters.search && !haystack.includes(filters.search.toLowerCase())) return false;
-    if (filters.status && String(transaction.status || "") !== filters.status) return false;
-    if (filters.type && String(accountTransactionType(transaction)) !== filters.type) return false;
-    if (filters.module && String(accountTransactionModule(transaction)) !== filters.module) return false;
-    if (filters.contact && !accountTransactionContact(transaction).toLowerCase().includes(filters.contact.toLowerCase())) return false;
-    if (filters.date_from && transactionDate(transaction) < filters.date_from) return false;
-    if (filters.date_to && transactionDate(transaction) > filters.date_to) return false;
-    return true;
-  }), [outstandingAccountTransactions, filters, bankAccounts]);
+  const bankImports = statementData.imports || [];
+  const bankTransactions = statementData.rows || [];
+  const unreconciled = reconciliationData.rows || [];
+  const outstandingAccountTransactions = accountTxData.rows || [];
+  const visibleAccountTransactions = accountTxData.rows || [];
   const selectedImport = bankImports.find((item) => item.id === selectedImportId) || null;
   const selectedImportLines = selectedImport ? importLines(selectedImport, bankTransactions) : [];
+
+  useEffect(() => {
+    setBankAccountsData(workspaceBankAccounts);
+  }, [workspaceBankAccounts]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadBankAccounts() {
+      try {
+        const { data } = await api.get(`${baseUrl}/banking/accounts`);
+        const rows = Array.isArray(data?.rows) ? data.rows : Array.isArray(data?.accounts) ? data.accounts : Array.isArray(data) ? data : [];
+        if (!cancelled && rows.length) setBankAccountsData(rows);
+      } catch {
+        if (!cancelled) setBankAccountsData(workspaceBankAccounts);
+      }
+    }
+    loadBankAccounts();
+    return () => {
+      cancelled = true;
+    };
+  }, [baseUrl, workspaceBankAccounts]);
+
+  useEffect(() => {
+    setReconciliationPage(1);
+    setStatementPage(1);
+    setAccountTxPage(1);
+    setSelectedImportId("");
+  }, [selectedBankId, bankTab, statementStatusFilter, filters.bank_account_id, filters.module, filters.type, filters.contact, filters.date_from, filters.date_to, filters.status, filters.search]);
+
+  useEffect(() => {
+    if (!selectedBankId || bankTab !== "Reconciliation") return;
+    let cancelled = false;
+    const params = new URLSearchParams({
+      page: String(reconciliationPage),
+      page_size: String(reconciliationPageSize),
+    });
+    setReconciliationLoading(true);
+    setReconciliationError("");
+    api.get(`${baseUrl}/banking/accounts/${selectedBankId}/reconciliation?${params.toString()}`)
+      .then(({ data }) => {
+        if (!cancelled) setReconciliationData(normalisePaginatedResponse(data, reconciliationPageSize));
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setReconciliationData(normalisePaginatedResponse({ rows: [], page: reconciliationPage, page_size: reconciliationPageSize }));
+          setReconciliationError(formatApiError(error));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setReconciliationLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bankingRefreshKey, baseUrl, bankTab, reconciliationPage, reconciliationPageSize, selectedBankId]);
+
+  useEffect(() => {
+    if (!selectedBankId || bankTab !== "Bank Statements") return;
+    let cancelled = false;
+    const params = new URLSearchParams({
+      page: String(statementPage),
+      page_size: String(statementPageSize),
+      status: statementStatusFilter || "all",
+    });
+    if (selectedImportId) params.set("import_id", selectedImportId);
+    setStatementLoading(true);
+    setStatementError("");
+    api.get(`${baseUrl}/banking/accounts/${selectedBankId}/statements?${params.toString()}`)
+      .then(({ data }) => {
+        if (!cancelled) setStatementData(normalisePaginatedResponse(data, statementPageSize));
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setStatementData(normalisePaginatedResponse({ rows: [], page: statementPage, page_size: statementPageSize }));
+          setStatementError(formatApiError(error));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setStatementLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bankingRefreshKey, baseUrl, bankTab, selectedBankId, selectedImportId, statementPage, statementPageSize, statementStatusFilter]);
+
+  useEffect(() => {
+    if (bankTab !== "Account Transactions") return;
+    let cancelled = false;
+    const params = new URLSearchParams({
+      page: String(accountTxPage),
+      page_size: String(accountTxPageSize),
+    });
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value) params.set(key, value);
+    });
+    setAccountTxLoading(true);
+    setAccountTxError("");
+    api.get(`${baseUrl}/banking/account-transactions?${params.toString()}`)
+      .then(({ data }) => {
+        if (!cancelled) setAccountTxData(normalisePaginatedResponse(data, accountTxPageSize));
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setAccountTxData(normalisePaginatedResponse({ rows: [], page: accountTxPage, page_size: accountTxPageSize }));
+          setAccountTxError(formatApiError(error));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setAccountTxLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [accountTxPage, accountTxPageSize, bankTab, bankingRefreshKey, baseUrl, filters]);
+
+  useEffect(() => { setAuditPage(1); }, [selectedBankId, auditSearch, auditPageSize]);
+  useEffect(() => {
+    if (bankTab !== "Audit Trail" || !selectedBankId) return;
+    let cancelled = false;
+    const params = new URLSearchParams({ page: String(auditPage), page_size: String(auditPageSize) });
+    if (auditSearch) params.set("search", auditSearch);
+    setAuditLoading(true); setAuditError("");
+    api.get(`${baseUrl}/banking/accounts/${selectedBankId}/audit-trail?${params.toString()}`)
+      .then(({ data }) => { if (!cancelled) setAuditData(normalisePaginatedResponse(data, auditPageSize)); })
+      .catch((error) => { if (!cancelled) setAuditError(formatApiError(error)); })
+      .finally(() => { if (!cancelled) setAuditLoading(false); });
+    return () => { cancelled = true; };
+  }, [baseUrl, bankTab, selectedBankId, auditPage, auditPageSize, auditSearch]);
 
   async function run(action, success) {
     setSaving(true);
@@ -107,6 +244,7 @@ function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy 
       await action();
       toast.success(success);
       await reloadWorkspace();
+      setBankingRefreshKey((key) => key + 1);
       return true;
     } catch (e) {
       toast.error(formatApiError(e));
@@ -137,6 +275,7 @@ function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy 
       const result = importResultCounts(response);
       showImportResult(result);
       await reloadWorkspace();
+      setBankingRefreshKey((key) => key + 1);
       setBankTab("Bank Statements");
       if (result.imported > 0) setImportFile(null);
     } catch (error) {
@@ -158,6 +297,7 @@ function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy 
       await api.post(`${baseUrl}/bank-transactions/${transaction.id}/reconcile/split`, { lines: splitLines, reference: transaction.reference });
       toast.success("Split nominal reconciliation posted");
       await reloadWorkspace();
+      setBankingRefreshKey((key) => key + 1);
       setSelectedTransaction(null);
     } catch (e) {
       const status = e?.response?.status || e?.status;
@@ -190,6 +330,7 @@ function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy 
       await api.post(`${baseUrl}/bank-transactions/${transaction.id}/send-to-client-outstanding-items`, payload);
       toast.success("Sent to client outstanding items");
       await reloadWorkspace();
+      setBankingRefreshKey((key) => key + 1);
       setSelectedTransaction(null);
     } catch (e) {
       const status = e?.response?.status || e?.status;
@@ -216,6 +357,7 @@ function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy 
       await api.post(endpoints[kind], { ids, transactions: rows.map(bankTransactionIdentity) });
       toast.success("Bulk action completed");
       await reloadWorkspace();
+      setBankingRefreshKey((key) => key + 1);
       return { ok: true };
     } catch (e) {
       const status = e?.response?.status || e?.status;
@@ -234,6 +376,7 @@ function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy 
       await api.post(`${baseUrl}/account-transactions/bulk-delete`, { transactions: rows.map(accountTransactionDeleteIdentity) });
       toast.success("Selected accounting transactions deleted");
       await reloadWorkspace();
+      setBankingRefreshKey((key) => key + 1);
       return { ok: true };
     } catch (e) {
       const status = e?.response?.status || e?.status;
@@ -291,8 +434,8 @@ function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy 
                 <BankAccountCard
                   key={account.id || bankCode(account)}
                   account={account}
-                  unreconciledCount={bankUnreconciledCount(account, transactions)}
-                  lastImport={lastImportDate(account, imports, transactions)}
+                  unreconciledCount={account.unreconciled_count ?? account.unreconciled_items ?? account.summary?.unreconciled_count ?? 0}
+                  lastImport={account.last_import_date || account.last_import_at || account.summary?.last_import_date}
                   onOpen={() => openBank(account)}
                 />
               ))}
@@ -329,8 +472,8 @@ function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy 
       <div className="grid gap-3 md:grid-cols-4">
         <SummaryCard label="Current balance" value={formatMoney(selectedBank.current_balance)} tone="emerald" />
         <SummaryCard label="Reconciled balance" value={formatMoney(selectedBank.reconciled_balance)} tone="blue" />
-        <SummaryCard label="Unreconciled items" value={unreconciled.length} tone="amber" />
-        <SummaryCard label="Last import" value={formatDate(lastImportDate(selectedBank, imports, transactions))} tone="stone" />
+        <SummaryCard label="Unreconciled items" value={reconciliationData.summary.unreconciled_count ?? selectedBank.unreconciled_count ?? selectedBank.unreconciled_items ?? reconciliationData.total_rows ?? 0} tone="amber" />
+        <SummaryCard label="Last import" value={formatDate(statementData.summary.last_import_date || selectedBank.last_import_date || selectedBank.last_import_at)} tone="stone" />
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-stone-200 bg-white p-3">
@@ -342,14 +485,24 @@ function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy 
             </Button>
           ))}
         </div>
-        <Button type="button" variant="outline" size="sm" disabled={busy || saving} onClick={reloadWorkspace}><RefreshCw className="mr-2 h-4 w-4" /> Refresh</Button>
+        <Button type="button" variant="outline" size="sm" disabled={busy || saving} onClick={() => { reloadWorkspace?.(); setBankingRefreshKey((key) => key + 1); }}><RefreshCw className="mr-2 h-4 w-4" /> Refresh</Button>
       </div>
       {bankTab === "Reconciliation" ? (
         <ReconciliationTab
           transactions={unreconciled}
           outstandingTransactions={outstandingAccountTransactions}
+          totalRows={reconciliationData.total_rows}
+          totalPages={reconciliationData.total_pages}
+          page={reconciliationPage}
+          pageSize={reconciliationPageSize}
+          loading={reconciliationLoading}
+          error={reconciliationError}
+          onPageChange={setReconciliationPage}
+          onPageSizeChange={(size) => {
+            setReconciliationPageSize(normalisePageSize(size));
+            setReconciliationPage(1);
+          }}
           bankAccounts={bankAccounts}
-          selectedBankId={selectedBankId}
           postingAccounts={postingAccounts}
           vatCodes={vatCodes}
           matchSuggestion={matchSuggestion}
@@ -369,6 +522,22 @@ function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy 
           selectedImportId={selectedImportId}
           setSelectedImportId={setSelectedImportId}
           selectedImportLines={selectedImportLines}
+          statusFilter={statementStatusFilter}
+          setStatusFilter={(value) => {
+            setStatementStatusFilter(value || "all");
+            setStatementPage(1);
+          }}
+          totalRows={statementData.total_rows}
+          totalPages={statementData.total_pages}
+          page={statementPage}
+          pageSize={statementPageSize}
+          loading={statementLoading}
+          error={statementError}
+          onPageChange={setStatementPage}
+          onPageSizeChange={(size) => {
+            setStatementPageSize(normalisePageSize(size));
+            setStatementPage(1);
+          }}
           importFile={importFile}
           setImportFile={setImportFile}
           importStatement={importStatement}
@@ -383,14 +552,30 @@ function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy 
           setFilters={setFilters}
           transactions={visibleAccountTransactions}
           allTransactions={outstandingAccountTransactions}
+          totalRows={accountTxData.total_rows}
+          totalPages={accountTxData.total_pages}
+          page={accountTxPage}
+          pageSize={accountTxPageSize}
+          loading={accountTxLoading}
+          error={accountTxError}
+          onPageChange={setAccountTxPage}
+          onPageSizeChange={(size) => {
+            setAccountTxPageSize(normalisePageSize(size));
+            setAccountTxPage(1);
+          }}
           bankAccounts={bankAccounts}
           bulkDelete={bulkDeleteAccountTransactions}
           busy={busy || saving}
           exportTransactions={() => exportRows(visibleAccountTransactions, "all-outstanding-account-transactions.csv")}
         />
       ) : null}
+      {bankTab === "Audit Trail" ? <BankAuditTrail data={auditData} loading={auditLoading} error={auditError} search={auditSearch} setSearch={setAuditSearch} setPage={setAuditPage} setPageSize={setAuditPageSize} /> : null}
     </div>
   );
+}
+
+function BankAuditTrail({ data, loading, error, search, setSearch, setPage, setPageSize }) {
+  return <Panel title="Bank account audit trail"><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search audit trail" className="mb-3 h-9 max-w-lg" />{error ? <p className="py-8 text-center text-sm text-red-700">{error}</p> : loading && !data.rows.length ? <p className="py-8 text-center text-sm text-stone-500">Loading audit trail...</p> : <div className="overflow-auto"><table className="min-w-full text-left text-sm"><thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500"><tr><th className="px-3 py-2">Date</th><th className="px-3 py-2">User</th><th className="px-3 py-2">Action</th><th className="px-3 py-2">Details</th></tr></thead><tbody>{data.rows.map((row) => <tr key={row.id} className="border-t border-stone-100"><td className="px-3 py-2">{formatDateTime(row.created_at)}</td><td className="px-3 py-2">{row.actor_id || "System"}</td><td className="px-3 py-2 font-medium">{row.action}</td><td className="px-3 py-2 text-stone-600">{row.module || row.entity_type || "Banking"}</td></tr>)}</tbody></table></div>}<PaginationFooter page={data.page} pageSize={data.page_size} totalRows={data.total_rows} totalPages={data.total_pages} onPageChange={setPage} onPageSizeChange={setPageSize} disabled={loading} /></Panel>;
 }
 
 function BankAccountCard({ account, unreconciledCount, lastImport, onOpen }) {
@@ -422,13 +607,15 @@ function BankAccountCard({ account, unreconciledCount, lastImport, onOpen }) {
   );
 }
 
-function ReconciliationTab({ transactions, outstandingTransactions, bankAccounts, selectedBankId, postingAccounts, vatCodes, matchSuggestion, reconcileToAccount, reconcileSplitToAccounts, ignoreTransaction, sendToClientOutstandingItems, bulkAction, saving }) {
+function ReconciliationTab({ transactions, outstandingTransactions, totalRows, totalPages, page, pageSize, loading, error, onPageChange, onPageSizeChange, bankAccounts, postingAccounts, vatCodes, matchSuggestion, reconcileToAccount, reconcileSplitToAccounts, ignoreTransaction, sendToClientOutstandingItems, bulkAction, saving }) {
   const [expanded, setExpanded] = useState(null);
   const [selectedIds, setSelectedIds] = useState([]);
   const [bulkMessage, setBulkMessage] = useState("");
   const activeKey = expanded ? `${expanded.id}-${expanded.action}` : "";
-  const selectedRows = selectedRowsFromIds(transactions, selectedIds);
-  const allVisibleSelected = transactions.length > 0 && selectedRows.length === transactions.length;
+  const pagedTransactions = transactions;
+  const pagedTransactionIds = useMemo(() => pagedTransactions.map(rowId).filter(Boolean), [pagedTransactions]);
+  const selectedVisibleRows = selectedRowsFromIds(pagedTransactions, selectedIds);
+  const allVisibleSelected = pagedTransactionIds.length > 0 && pagedTransactionIds.every((id) => selectedIds.includes(id));
 
   useEffect(() => {
     setSelectedIds([]);
@@ -448,34 +635,39 @@ function ReconciliationTab({ transactions, outstandingTransactions, bankAccounts
   }
 
   function toggleAll() {
-    setSelectedIds(allVisibleSelected ? [] : transactions.map(rowId).filter(Boolean));
+    setSelectedIds((current) => {
+      if (allVisibleSelected) return current.filter((id) => !pagedTransactionIds.includes(id));
+      return Array.from(new Set([...current, ...pagedTransactionIds]));
+    });
   }
 
   async function runBulk(kind, message) {
     setBulkMessage("");
-    const result = await bulkAction(kind, selectedRows, message);
+    const result = await bulkAction(kind, selectedVisibleRows, message);
     if (result?.ok) setSelectedIds([]);
     if (result?.message) setBulkMessage(result.message);
   }
 
   return (
     <Panel title="Unreconciled statement lines">
-      <BulkActionBar selectedCount={selectedRows.length} onClear={() => setSelectedIds([])} message={bulkMessage}>
-        <Button type="button" size="sm" variant="outline" disabled={!selectedRows.length || saving} onClick={() => runBulk("delete", "Backend endpoint required: bulk delete bank statement lines.")}>Delete</Button>
-        <Button type="button" size="sm" variant="outline" disabled={!selectedRows.length || saving} onClick={() => runBulk("exclude", "Backend endpoint required: bulk exclude bank statement lines.")}>Exclude</Button>
+      <BulkActionBar selectedCount={selectedVisibleRows.length} onClear={() => setSelectedIds([])} message={bulkMessage}>
+        <Button type="button" size="sm" variant="outline" disabled={!selectedVisibleRows.length || saving} onClick={() => runBulk("delete", "Backend endpoint required: bulk delete bank statement lines.")}>Delete</Button>
+        <Button type="button" size="sm" variant="outline" disabled={!selectedVisibleRows.length || saving} onClick={() => runBulk("exclude", "Backend endpoint required: bulk exclude bank statement lines.")}>Exclude</Button>
         <Button
           type="button"
           size="sm"
           variant="outline"
-          disabled={!selectedRows.length || saving}
+          disabled={!selectedVisibleRows.length || saving}
           onClick={() => {
-            if (selectedRows.some(isSentToClient) && !window.confirm("This bank transaction has already been sent to the client. Send again?")) return;
+            if (selectedVisibleRows.some(isSentToClient) && !window.confirm("This bank transaction has already been sent to the client. Send again?")) return;
             runBulk("send", "Backend endpoint required: bulk send bank transactions to client.");
           }}
         >
           Send to client
         </Button>
       </BulkActionBar>
+      {error ? <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div> : null}
+      {loading ? <div className="mb-3 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-600">Loading reconciliation lines...</div> : null}
       <div className="overflow-auto rounded-md border border-stone-200">
         <table className="min-w-full text-left text-sm">
           <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
@@ -494,7 +686,7 @@ function ReconciliationTab({ transactions, outstandingTransactions, bankAccounts
             </tr>
           </thead>
           <tbody>
-            {transactions.length ? transactions.map((transaction) => {
+            {transactions.length ? pagedTransactions.map((transaction) => {
               const rows = outstandingRowsForBankLine(transaction, outstandingTransactions);
               const isExpanded = expanded?.id === transaction.id;
               const moneyIn = Number(transaction.money_in || 0) > 0;
@@ -546,6 +738,17 @@ function ReconciliationTab({ transactions, outstandingTransactions, bankAccounts
             }) : <tr><td colSpan="11" className="px-3 py-10 text-center text-stone-500">No unreconciled statement lines for this bank account.</td></tr>}
           </tbody>
         </table>
+        {transactions.length ? (
+          <PaginationFooter
+            page={page}
+            pageSize={pageSize}
+            totalRows={totalRows}
+            totalPages={totalPages}
+            disabled={loading}
+            onPageChange={onPageChange}
+            onPageSizeChange={onPageSizeChange}
+          />
+        ) : null}
       </div>
     </Panel>
   );
@@ -820,26 +1023,20 @@ function BulkActionBar({ selectedCount, onClear, message, children }) {
   );
 }
 
-function BankStatementsTab({ imports, statementLines, selectedImportId, setSelectedImportId, selectedImportLines, importFile, setImportFile, importStatement, bulkAction, busy }) {
-  const [statusFilter, setStatusFilter] = useState("");
+function BankStatementsTab({ imports, statementLines, selectedImportId, setSelectedImportId, selectedImportLines, statusFilter, setStatusFilter, totalRows, totalPages, page, pageSize, loading, error, onPageChange, onPageSizeChange, importFile, setImportFile, importStatement, bulkAction, busy }) {
   const [selectedIds, setSelectedIds] = useState([]);
   const [bulkMessage, setBulkMessage] = useState("");
   const sourceLines = selectedImportId ? selectedImportLines : statementLines;
-  const linesToShow = sourceLines.filter((line) => {
-    const status = normaliseStatus(line.status);
-    if (!statusFilter) return true;
-    if (statusFilter === "unreconciled") return isReconciliationStatus(line);
-    if (statusFilter === "sent_to_client") return status === "documentation_requested" || status === "sent_to_client";
-    if (statusFilter === "excluded") return status === "excluded" || status === "ignored";
-    return status === statusFilter;
-  });
+  const linesToShow = sourceLines;
+  const pagedLines = linesToShow;
   const unreconciledCount = statementLines.filter(isReconciliationStatus).length;
   const duplicateKeys = duplicateStatementKeys(sourceLines);
-  const selectedRows = selectedRowsFromIds(linesToShow, selectedIds);
-  const allVisibleSelected = linesToShow.length > 0 && selectedRows.length === linesToShow.length;
-  const selectedHasReconciled = selectedRows.some((line) => ["reconciled", "matched"].includes(normaliseStatus(line.status)));
-  const selectedCanUnreconcile = selectedRows.some((line) => ["reconciled", "matched"].includes(normaliseStatus(line.status)));
-  const selectedHasNonReconciliation = selectedRows.some((line) => !isReconciliationStatus(line));
+  const selectedVisibleRows = selectedRowsFromIds(pagedLines, selectedIds);
+  const pagedLineIds = useMemo(() => pagedLines.map(rowId).filter(Boolean), [pagedLines]);
+  const allVisibleSelected = pagedLineIds.length > 0 && pagedLineIds.every((id) => selectedIds.includes(id));
+  const selectedHasReconciled = selectedVisibleRows.some((line) => ["reconciled", "matched"].includes(normaliseStatus(line.status)));
+  const selectedCanUnreconcile = selectedVisibleRows.some((line) => ["reconciled", "matched"].includes(normaliseStatus(line.status)));
+  const selectedHasNonReconciliation = selectedVisibleRows.some((line) => !isReconciliationStatus(line));
 
   useEffect(() => {
     setSelectedIds([]);
@@ -852,7 +1049,10 @@ function BankStatementsTab({ imports, statementLines, selectedImportId, setSelec
   }
 
   function toggleAll() {
-    setSelectedIds(allVisibleSelected ? [] : linesToShow.map(rowId).filter(Boolean));
+    setSelectedIds((current) => {
+      if (allVisibleSelected) return current.filter((id) => !pagedLineIds.includes(id));
+      return Array.from(new Set([...current, ...pagedLineIds]));
+    });
   }
 
   async function deleteSelected() {
@@ -862,14 +1062,14 @@ function BankStatementsTab({ imports, statementLines, selectedImportId, setSelec
       return;
     }
     if (selectedHasNonReconciliation && !window.confirm("This statement line is not currently in Reconciliation. Delete from Bank Statements only?")) return;
-    const result = await bulkAction("delete", selectedRows, "Backend endpoint required: bulk delete bank statement lines.");
+    const result = await bulkAction("delete", selectedVisibleRows, "Backend endpoint required: bulk delete bank statement lines.");
     if (result?.ok) setSelectedIds([]);
     if (result?.message) setBulkMessage(result.message);
   }
 
   async function unreconcileSelected() {
     setBulkMessage("");
-    const result = await bulkAction("unreconcile", selectedRows, "Backend endpoint required: bulk unreconcile bank statement lines.");
+    const result = await bulkAction("unreconcile", selectedVisibleRows, "Backend endpoint required: bulk unreconcile bank statement lines.");
     if (result?.ok) setSelectedIds([]);
     if (result?.message) setBulkMessage(result.message);
   }
@@ -880,8 +1080,8 @@ function BankStatementsTab({ imports, statementLines, selectedImportId, setSelec
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div className="text-sm font-semibold text-stone-900">Full statement reflection</div>
           <div className="flex items-center gap-2">
-            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="h-8 rounded-md border border-stone-200 bg-white px-2 text-sm shadow-sm">
-              <option value="">All</option>
+            <select value={statusFilter || "all"} onChange={(event) => setStatusFilter(event.target.value)} className="h-8 rounded-md border border-stone-200 bg-white px-2 text-sm shadow-sm">
+              <option value="all">All</option>
               <option value="unreconciled">Unreconciled</option>
               <option value="reconciled">Reconciled</option>
               <option value="excluded">Excluded</option>
@@ -889,12 +1089,14 @@ function BankStatementsTab({ imports, statementLines, selectedImportId, setSelec
             <Badge className="bg-amber-100 text-amber-800">{unreconciledCount} unreconciled</Badge>
           </div>
         </div>
-        <BulkActionBar selectedCount={selectedRows.length} onClear={() => setSelectedIds([])} message={selectedHasReconciled ? "Reconciled statement lines must be unreconciled before they can be deleted." : bulkMessage}>
-          <Button type="button" size="sm" variant="outline" disabled={!selectedRows.length || selectedHasReconciled || busy} onClick={deleteSelected}>Delete</Button>
-          <Button type="button" size="sm" variant="outline" disabled={!selectedRows.length || !selectedCanUnreconcile || busy} onClick={unreconcileSelected}>Unreconcile</Button>
+        <BulkActionBar selectedCount={selectedVisibleRows.length} onClear={() => setSelectedIds([])} message={selectedHasReconciled ? "Reconciled statement lines must be unreconciled before they can be deleted." : bulkMessage}>
+          <Button type="button" size="sm" variant="outline" disabled={!selectedVisibleRows.length || selectedHasReconciled || busy} onClick={deleteSelected}>Delete</Button>
+          <Button type="button" size="sm" variant="outline" disabled={!selectedVisibleRows.length || !selectedCanUnreconcile || busy} onClick={unreconcileSelected}>Unreconcile</Button>
         </BulkActionBar>
+        {error ? <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div> : null}
+        {loading ? <div className="mb-3 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-600">Loading bank statement lines...</div> : null}
         <BankTransactionTable
-          transactions={linesToShow}
+          transactions={pagedLines}
           selectable
           selectedIds={selectedIds}
           allSelected={allVisibleSelected}
@@ -903,6 +1105,17 @@ function BankStatementsTab({ imports, statementLines, selectedImportId, setSelec
           duplicateKeys={duplicateKeys}
           emptyMessage={imports.length ? "Imported batches exist, but no statement rows are visible for this bank. Backend bank identity mapping may need review." : "No bank transactions found."}
         />
+        {linesToShow.length ? (
+          <PaginationFooter
+            page={page}
+            pageSize={pageSize}
+            totalRows={totalRows}
+            totalPages={totalPages}
+            disabled={loading}
+            onPageChange={onPageChange}
+            onPageSizeChange={onPageSizeChange}
+          />
+        ) : null}
       </Panel>
       <div className="space-y-4">
         <Panel title="Import statement">
@@ -942,14 +1155,16 @@ function BankStatementsTab({ imports, statementLines, selectedImportId, setSelec
   );
 }
 
-function AccountTransactionsTab({ filters, setFilters, transactions, allTransactions, bankAccounts, bulkDelete, busy, exportTransactions }) {
+function AccountTransactionsTab({ filters, setFilters, transactions, allTransactions, totalRows, totalPages, page, pageSize, loading, error, onPageChange, onPageSizeChange, bankAccounts, bulkDelete, busy, exportTransactions }) {
   const [selectedIds, setSelectedIds] = useState([]);
   const [bulkMessage, setBulkMessage] = useState("");
   const moduleOptions = Array.from(new Set(allTransactions.map(accountTransactionModule).filter(Boolean)));
   const typeOptions = Array.from(new Set(allTransactions.map(accountTransactionType).filter(Boolean)));
   const statusOptions = Array.from(new Set(allTransactions.map((item) => item.status).filter(Boolean)));
-  const selectedRows = selectedRowsFromIds(transactions, selectedIds);
-  const allVisibleSelected = transactions.length > 0 && selectedRows.length === transactions.length;
+  const pagedTransactions = transactions;
+  const pagedTransactionIds = useMemo(() => pagedTransactions.map(rowId).filter(Boolean), [pagedTransactions]);
+  const selectedVisibleRows = selectedRowsFromIds(pagedTransactions, selectedIds);
+  const allVisibleSelected = pagedTransactionIds.length > 0 && pagedTransactionIds.every((id) => selectedIds.includes(id));
 
   useEffect(() => {
     setSelectedIds([]);
@@ -962,12 +1177,15 @@ function AccountTransactionsTab({ filters, setFilters, transactions, allTransact
   }
 
   function toggleAll() {
-    setSelectedIds(allVisibleSelected ? [] : transactions.map(rowId).filter(Boolean));
+    setSelectedIds((current) => {
+      if (allVisibleSelected) return current.filter((id) => !pagedTransactionIds.includes(id));
+      return Array.from(new Set([...current, ...pagedTransactionIds]));
+    });
   }
 
   async function deleteSelected() {
     setBulkMessage("");
-    const result = await bulkDelete(selectedRows);
+    const result = await bulkDelete(selectedVisibleRows);
     if (result?.ok) setSelectedIds([]);
     if (result?.message) setBulkMessage(result.message);
   }
@@ -998,17 +1216,30 @@ function AccountTransactionsTab({ filters, setFilters, transactions, allTransact
         </div>
       </div>
       <Panel title="All outstanding account transactions">
-        <BulkActionBar selectedCount={selectedRows.length} onClear={() => setSelectedIds([])} message={bulkMessage}>
-          <Button type="button" size="sm" variant="outline" disabled={!selectedRows.length || busy} onClick={deleteSelected}>Delete</Button>
+        <BulkActionBar selectedCount={selectedVisibleRows.length} onClear={() => setSelectedIds([])} message={bulkMessage}>
+          <Button type="button" size="sm" variant="outline" disabled={!selectedVisibleRows.length || busy} onClick={deleteSelected}>Delete</Button>
         </BulkActionBar>
+        {error ? <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div> : null}
+        {loading ? <div className="mb-3 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-600">Loading outstanding account transactions...</div> : null}
         <AccountTransactionTable
-          transactions={transactions}
+          transactions={pagedTransactions}
           selectable
           selectedIds={selectedIds}
           allSelected={allVisibleSelected}
           onToggleAll={toggleAll}
           onToggleRow={toggleSelected}
         />
+        {transactions.length ? (
+          <PaginationFooter
+            page={page}
+            pageSize={pageSize}
+            totalRows={totalRows}
+            totalPages={totalPages}
+            disabled={loading}
+            onPageChange={onPageChange}
+            onPageSizeChange={onPageSizeChange}
+          />
+        ) : null}
       </Panel>
     </div>
   );
@@ -1016,47 +1247,6 @@ function AccountTransactionsTab({ filters, setFilters, transactions, allTransact
 
 function transactionDate(transaction) {
   return transaction?.transaction_date || transaction?.date || transaction?.posted_at || transaction?.created_at || "";
-}
-
-function transactionBankId(transaction) {
-  return transaction?.bank_account_id || transaction?.account_id || transaction?.bank_id || "";
-}
-
-function normaliseBankIdentity(value) {
-  return String(value ?? "").trim().toLowerCase();
-}
-
-function compactBankIdentities(values) {
-  return Array.from(new Set(values.map(normaliseBankIdentity).filter(Boolean)));
-}
-
-function bankIdentityValues(bank) {
-  return compactBankIdentities([
-    bank?.id,
-    bank?.account_id,
-    bank?.bank_account_id,
-    bank?.code,
-    bank?.account_code,
-    bank?.nominal_account_code,
-  ]);
-}
-
-function rowBankIdentityValues(row) {
-  return compactBankIdentities([
-    row?.bank_account_id,
-    row?.account_id,
-    row?.bank_id,
-    row?.bank_account_code,
-    row?.account_code,
-    row?.nominal_account_code,
-  ]);
-}
-
-function rowBelongsToBank(row, bank) {
-  const bankValues = bankIdentityValues(bank);
-  const rowValues = rowBankIdentityValues(row);
-  if (!bankValues.length || !rowValues.length) return false;
-  return rowValues.some((value) => bankValues.includes(value));
 }
 
 function rowId(row) {
@@ -1277,17 +1467,6 @@ function displayStatus(status) {
 function isReconciliationStatus(transaction) {
   return reconciliationStatuses.has(normaliseStatus(transaction?.status));
 }
-
-function bankUnreconciledCount(bank, transactions) {
-  return transactions.filter((transaction) => rowBelongsToBank(transaction, bank) && isReconciliationStatus(transaction)).length;
-}
-
-function lastImportDate(bank, imports, transactions) {
-  const importDates = imports.filter((item) => rowBelongsToBank(item, bank) || !rowBankIdentityValues(item).length).map((item) => item.created_at || item.imported_at || item.import_date);
-  const transactionDates = transactions.filter((item) => rowBelongsToBank(item, bank) && (item.import_id || item.statement_import_id)).map(transactionDate);
-  return [...importDates, ...transactionDates].filter(Boolean).sort((a, b) => new Date(b) - new Date(a))[0] || "";
-}
-
 
 function importLines(item, transactions) {
   if (Array.isArray(item?.lines)) return item.lines;

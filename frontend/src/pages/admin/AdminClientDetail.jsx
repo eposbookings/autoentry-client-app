@@ -36,6 +36,12 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
+import {
+  DEFAULT_PAGE_SIZE,
+  PaginationFooter,
+  normalisePaginatedResponse,
+  normalisePageSize,
+} from "./accountancy-software/shared";
 
 const DEFAULT_CLIENT_TYPES = [
   ["limited_company", "Limited company"],
@@ -1174,6 +1180,7 @@ function AccountancySoftwarePanel({
 }) {
   const records = detail.records || {};
   const nativeRecords = nativeRecordsFromDetail(nativeDetail);
+  const clientId = client?.id || client?._id;
   const providerName = providerLabel(settings.provider);
   const accountOptions = (records.account || []).map((record) => recordLabel(record));
   const taxOptions = (records.tax_code || []).map((record) => recordLabel(record, true));
@@ -1186,8 +1193,24 @@ function AccountancySoftwarePanel({
   const destinationLocked = accountingDestinationLocked(client);
   const recordTabs = nativeEnabled ? NATIVE_RECORD_TABS : INTEGRATION_RECORD_TABS;
   const visibleRecordTab = recordTabs.some((tab) => tab.key === recordTab) ? recordTab : recordTabs[0].key;
-  const visibleRecords = nativeEnabled ? nativeRecords : records;
-  const visibleCounts = nativeEnabled ? recordCounts(nativeRecords) : (detail.counts || {});
+  const [nativeRecordPage, setNativeRecordPage] = useState(1);
+  const [nativeRecordPageSize, setNativeRecordPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [nativeRecordPages, setNativeRecordPages] = useState({});
+  const [nativeRecordLoading, setNativeRecordLoading] = useState(false);
+  const [nativeRecordError, setNativeRecordError] = useState("");
+  const nativePaginatedTabs = useMemo(() => new Set(["supplier", "customer"]), []);
+  const activeNativePage = nativeRecordPages[visibleRecordTab] || null;
+  const activeNativeRows = nativePaginatedTabs.has(visibleRecordTab)
+    ? (activeNativePage ? activeNativePage.rows : (nativeRecords[visibleRecordTab] || []))
+    : (nativeRecords[visibleRecordTab] || []);
+  const activeRecords = nativeEnabled ? activeNativeRows : (records[visibleRecordTab] || []);
+  const visibleCounts = nativeEnabled
+    ? {
+      ...recordCounts(nativeRecords),
+      supplier: nativeRecordPages.supplier?.total_rows ?? recordCounts(nativeRecords).supplier ?? 0,
+      customer: nativeRecordPages.customer?.total_rows ?? recordCounts(nativeRecords).customer ?? 0,
+    }
+    : (detail.counts || {});
   const sourceMessage = nativeEnabled
     ? "Using EPOS Native Accounting records."
     : `Synced from ${providerName}. Missing suppliers can be created from invoice review.`;
@@ -1200,6 +1223,43 @@ function AccountancySoftwarePanel({
     if (destinationLocked) return;
     setClientField("accounting_destination", value);
     setClientField("native_accounting_enabled", value === "native");
+  }
+
+  const loadNativeRecordPage = useCallback(async ({ force = false } = {}) => {
+    if (!nativeEnabled || !clientId || !nativePaginatedTabs.has(visibleRecordTab)) return;
+    void force;
+    const endpoint = visibleRecordTab === "supplier" ? "ap/suppliers" : "ar/customers";
+    setNativeRecordLoading(true);
+    setNativeRecordError("");
+    try {
+      const { data } = await api.get(`/admin/accounting/clients/${clientId}/${endpoint}`, {
+        params: {
+          page: nativeRecordPage,
+          page_size: nativeRecordPageSize,
+        },
+      });
+      setNativeRecordPages((current) => ({
+        ...current,
+        [visibleRecordTab]: normalisePaginatedResponse(data, nativeRecordPageSize),
+      }));
+    } catch (error) {
+      setNativeRecordError(formatApiError(error));
+    } finally {
+      setNativeRecordLoading(false);
+    }
+  }, [clientId, nativeEnabled, nativePaginatedTabs, nativeRecordPage, nativeRecordPageSize, visibleRecordTab]);
+
+  useEffect(() => {
+    setNativeRecordPage(1);
+  }, [visibleRecordTab]);
+
+  useEffect(() => {
+    loadNativeRecordPage();
+  }, [loadNativeRecordPage]);
+
+  async function refreshNativeLists() {
+    await refreshNative?.();
+    await loadNativeRecordPage({ force: true });
   }
 
   return (
@@ -1391,7 +1451,10 @@ function AccountancySoftwarePanel({
                 <button
                   key={tab.key}
                   type="button"
-                  onClick={() => setRecordTab(tab.key)}
+                  onClick={() => {
+                    if (nativeEnabled && tab.key !== visibleRecordTab) setNativeRecordPage(1);
+                    setRecordTab(tab.key);
+                  }}
                   className={`inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-semibold ${isActive ? "bg-[var(--brand)] text-white" : "bg-stone-100 text-stone-700 hover:bg-stone-200"}`}
                 >
                   <Icon className="h-4 w-4" /> {tab.label}
@@ -1403,24 +1466,44 @@ function AccountancySoftwarePanel({
           <div className="flex flex-wrap items-center gap-2">
             <p className="rounded-md bg-stone-50 px-3 py-2 text-sm text-stone-600">{sourceMessage}</p>
             {nativeEnabled && (
-              <Button type="button" onClick={refreshNative} disabled={busy} className="gap-2" style={{ background: "var(--brand)" }}>
+              <Button type="button" onClick={refreshNativeLists} disabled={busy || nativeRecordLoading} className="gap-2" style={{ background: "var(--brand)" }}>
                 <RefreshCw className="h-4 w-4" /> Refresh native lists
               </Button>
             )}
           </div>
         </div>
 
+        {nativeRecordError && nativeEnabled && nativePaginatedTabs.has(visibleRecordTab) ? (
+          <div className="mx-4 mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{nativeRecordError}</div>
+        ) : null}
+        {nativeRecordLoading && nativeEnabled && nativePaginatedTabs.has(visibleRecordTab) ? (
+          <div className="mx-4 mt-4 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-600">Loading {recordTabs.find((tab) => tab.key === visibleRecordTab)?.label || "native records"}...</div>
+        ) : null}
         <div className="max-h-[620px] overflow-auto">
-          {(visibleRecords[visibleRecordTab] || []).length === 0 ? (
+          {activeRecords.length === 0 ? (
             <p className="py-24 text-center text-sm text-stone-500">
               {recordTabs.find((tab) => tab.key === visibleRecordTab)?.empty || "No records yet."}
             </p>
           ) : (
-            (visibleRecords[visibleRecordTab] || []).map((record) => (
+            activeRecords.map((record) => (
               <RecordRow key={record.id || record.code || record.name} record={record} source={nativeEnabled ? "native" : "external"} onDelete={deleteRecord} />
             ))
           )}
         </div>
+        {nativeEnabled && nativePaginatedTabs.has(visibleRecordTab) ? (
+          <PaginationFooter
+            page={nativeRecordPage}
+            pageSize={nativeRecordPageSize}
+            totalRows={activeNativePage?.total_rows ?? activeRecords.length}
+            totalPages={activeNativePage?.total_pages}
+            disabled={busy || nativeRecordLoading}
+            onPageChange={setNativeRecordPage}
+            onPageSizeChange={(size) => {
+              setNativeRecordPageSize(normalisePageSize(size));
+              setNativeRecordPage(1);
+            }}
+          />
+        ) : null}
       </div>
     </section>
   );
