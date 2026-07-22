@@ -1,6 +1,97 @@
 import json
+from decimal import Decimal
+import pytest
+from fastapi import HTTPException
 
 from backend import server
+
+
+def test_invoice_allocation_values_are_derived_from_gross_and_exact_allocations():
+    invoice = {"gross_amount": "144.00", "status": "posted", "posted_journal_id": "journal-1"}
+
+    unpaid = server.invoice_allocation_values(invoice, Decimal("0.00"))
+    assert unpaid["paid_allocated"] == "0.00"
+    assert unpaid["invoice_balance"] == "144.00"
+    assert unpaid["status"] == "posted"
+
+    partial = server.invoice_allocation_values(invoice, Decimal("64.68"))
+    assert partial["paid_allocated"] == "64.68"
+    assert partial["invoice_balance"] == "79.32"
+    assert partial["status"] == "part_paid"
+
+    paid = server.invoice_allocation_values(invoice, Decimal("144.00"))
+    assert paid["invoice_balance"] == "0.00"
+    assert paid["status"] == "paid"
+
+
+def test_invoice_allocation_values_expose_over_allocation_exception():
+    values = server.invoice_allocation_values(
+        {"gross_amount": "144.00", "status": "part_paid", "posted_journal_id": "journal-1"},
+        Decimal("433.32"),
+    )
+
+    assert values["paid_allocated"] == "433.32"
+    assert values["invoice_balance"] == "-289.32"
+    assert values["status"] == "over_allocated"
+    assert values["display_status"] == "Over Allocated"
+    assert values["is_over_allocated"] is True
+
+
+def test_legacy_draft_invoice_is_exposed_as_awaiting_approval():
+    values = server.invoice_allocation_values(
+        {"gross_amount": "144.00", "status": "draft", "posted_journal_id": None},
+        Decimal("0.00"),
+    )
+
+    assert values["status"] == "awaiting_approval"
+    assert values["display_status"] == "Awaiting Approval"
+
+
+def test_chart_account_classification_separates_pl_from_system_roles():
+    sales = {"code": "4000", "category": "Income", "account_type": "Income", "purpose": "Sales"}
+    creditors = {"code": "2000", "category": "Liability", "account_type": "Payable", "purpose": "Purchase Ledger"}
+
+    assert server.account_statement_section(sales) == "profit_and_loss"
+    assert server.account_system_role(sales, module_required=True) == "none"
+    assert server.account_statement_section(creditors) == "balance_sheet"
+    assert server.account_system_role(creditors) == "accounts_payable_control"
+
+
+def test_chart_account_serializer_only_labels_true_controls():
+    ordinary_asset = server.serialize_native_account({"code": "1500", "category": "Asset", "account_type": "Fixed Asset", "control_account": True})
+    vat_control = server.serialize_native_account({"code": "2200", "category": "Liability", "account_type": "VAT", "control_account": True})
+
+    assert ordinary_asset["statement_section"] == "balance_sheet"
+    assert ordinary_asset["system_role"] == "none"
+    assert ordinary_asset["is_control_account"] is False
+    assert vat_control["system_role"] == "vat_control"
+    assert vat_control["is_control_account"] is True
+
+
+def test_chart_statement_type_is_derived_strictly_from_category():
+    other_income = server.serialize_native_account({"code": "4900", "category": "Other Income", "account_type": "Bank"})
+    current_asset = server.serialize_native_account({"code": "1120", "category": "Asset", "account_type": "Overheads"})
+
+    assert other_income["statement_type"] == "profit_and_loss"
+    assert server.is_bank_compatible_account(other_income) is False
+    assert current_asset["statement_type"] == "balance_sheet"
+
+
+def test_manual_journal_validation_accepts_balanced_nominal_lines():
+    lines, debit, credit = server.validate_manual_journal_payload(
+        {"lines": [{"account_code": "4000", "credit": "100.00"}, {"account_code": "1100", "debit": "100.00"}]},
+        [{"id": "sales", "code": "4000", "name": "Sales"}, {"id": "debtors", "code": "1100", "name": "Debtors"}],
+    )
+    assert len(lines) == 2
+    assert debit == credit == Decimal("100.00")
+
+
+def test_manual_journal_validation_rejects_unbalanced_or_double_sided_lines():
+    accounts = [{"id": "sales", "code": "4000", "name": "Sales"}, {"id": "debtors", "code": "1100", "name": "Debtors"}]
+    with pytest.raises(HTTPException, match="both a debit and a credit"):
+        server.validate_manual_journal_payload({"lines": [{"account_code": "4000", "debit": "10", "credit": "10"}, {"account_code": "1100", "debit": "10"}]}, accounts)
+    with pytest.raises(HTTPException, match="must balance"):
+        server.validate_manual_journal_payload({"lines": [{"account_code": "4000", "credit": "90"}, {"account_code": "1100", "debit": "100"}]}, accounts)
 
 
 def test_ar_document_response_matches_accounts_receivable_contract():
@@ -9,10 +100,14 @@ def test_ar_document_response_matches_accounts_receivable_contract():
     response = server.ar_document_response("sales_invoice", invoice)
 
     assert response["ok"] is True
+    assert response["transaction_type"] == "sales_invoice"
     assert response["document_type"] == "sales_invoice"
     assert response["destination"] == "accounts_receivable"
     assert response["invoice"] == invoice
+    assert response["invoice_or_transaction"] == invoice
     assert response["lines"] == invoice["lines"]
+    assert response["ledger_impact"] == server.ar_ledger_effect("sales_invoice")
+    assert response["source_document"]["status"] == "none"
     assert response["status"] == "draft"
 
 
@@ -201,3 +296,36 @@ def test_workspace_snapshot_pagination_shape_supports_first_page_native_records(
     assert payload["page_size"] == 50
     assert payload["total_rows"] == 125
     assert payload["total_pages"] == 3
+
+
+def test_ar_copy_invoice_payload_uses_today_terms_and_does_not_copy_source_document():
+    original = {
+        "customer_id": "cus-1",
+        "payment_terms_days": "14",
+        "currency": "GBP",
+        "description": "Monthly support",
+        "vat_code": "20% S",
+        "source_submission_id": "sub-1",
+        "attachment_path": "old.pdf",
+    }
+    lines = [{"description": "Support", "nominal_account_code": "4000", "vat_code": "20% S", "quantity": "1.00", "unit_price": "100.00", "net_amount": "100.00", "vat_amount": "20.00", "gross_amount": "120.00"}]
+
+    payload = server.ar_copy_invoice_payload(original, {"payment_terms_days": 30}, lines, server.date(2026, 7, 22))
+
+    assert payload["customer_id"] == "cus-1"
+    assert payload["invoice_date"] == "2026-07-22"
+    assert payload["due_date"] == "2026-08-05"
+    assert payload["lines"][0]["nominal_account_code"] == "4000"
+    assert "source_submission_id" not in payload
+    assert "attachment_path" not in payload
+
+
+def test_ap_document_response_includes_manual_create_contract_fields():
+    invoice = {"id": "ap-1", "status": "draft", "net_amount": "100.00", "vat_amount": "0.00", "gross_amount": "100.00", "lines": [{"vat_code": "NO VAT"}]}
+
+    response = server.ap_document_response("purchase_invoice", invoice)
+
+    assert response["transaction_type"] == "purchase_invoice"
+    assert response["invoice_or_transaction"] == invoice
+    assert response["totals"] == {"net_amount": "100.00", "vat_amount": "0.00", "gross_amount": "100.00"}
+    assert response["ledger_impact"] == server.ap_ledger_effect("purchase_invoice")

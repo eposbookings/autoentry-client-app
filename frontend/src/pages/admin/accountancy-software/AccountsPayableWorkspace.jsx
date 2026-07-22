@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API, api, formatApiError } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import {
   Download,
   Edit3,
+  Filter,
   FileText,
   HelpCircle,
   Plus,
@@ -22,7 +23,6 @@ import {
   DEFAULT_PAGE_SIZE,
   Panel,
   PaginationFooter,
-  SummaryCard,
   formatDate,
   formatDateTime,
   formatMoney,
@@ -31,9 +31,31 @@ import {
   statusBadgeClass,
 } from "./shared";
 
-const apTabs = ["Suppliers", "Create supplier"];
+const apTabs = ["Suppliers", "Create supplier", "General Settings"];
 const supplierRecordTabs = ["General", "Ledger", "Audit Trail"];
 const transactionTypes = ["Purchase Invoice", "Supplier Credit Note", "Supplier Payment", "Payment on Account"];
+const ledgerColumnDefinitions = [
+  { key: "date", label: "Date" },
+  { key: "type", label: "Type" },
+  { key: "reference", label: "Reference" },
+  { key: "description", label: "Description" },
+  { key: "invoice_value", label: "Invoice value" },
+  { key: "allocated", label: "Paid / allocated" },
+  { key: "balance", label: "Invoice balance" },
+  { key: "status", label: "Status" },
+  { key: "attachment", label: "Attachment" },
+];
+const defaultLedgerColumnWidths = {
+  date: 120,
+  type: 160,
+  reference: 160,
+  description: 280,
+  invoice_value: 150,
+  allocated: 160,
+  balance: 170,
+  status: 170,
+  attachment: 140,
+};
 
 const emptySupplierForm = {
   name: "",
@@ -63,9 +85,20 @@ function toInputDate(value) {
   return value ? String(value).slice(0, 10) : "";
 }
 
+function copiedDocumentNumber(value) {
+  const base = String(value || "").trim();
+  return base ? `${base}-COPY` : "";
+}
+
 function asNumber(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
+}
+
+function addDaysInput(value, days) {
+  const date = value ? new Date(value) : new Date();
+  date.setDate(date.getDate() + asNumber(days));
+  return date.toISOString().slice(0, 10);
 }
 
 function formatAmount(value) {
@@ -107,6 +140,7 @@ function normaliseStatusText(value) {
 }
 
 function displayStatus(value) {
+  if (normaliseStatusText(value) === "draft") return "Awaiting Approval";
   return String(value || "")
     .replace(/[_-]+/g, " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -150,18 +184,15 @@ function transactionLineTotals(lines = []) {
 }
 
 function invoiceValue(row = {}) {
-  return asNumber(row.invoice_value ?? row.gross_amount ?? row.gross ?? row.total ?? row.amount ?? row.credit);
+  return asNumber(row.invoice_value);
 }
 
 function allocatedValue(row = {}) {
-  return asNumber(row.paid_allocated ?? row.paid_amount ?? row.allocated_amount ?? row.amount_paid ?? row.debit);
+  return asNumber(row.paid_allocated);
 }
 
 function invoiceBalance(row = {}) {
-  const supplied = row.invoice_balance ?? row.balance ?? row.outstanding_amount ?? row.amount_due;
-  if (supplied !== undefined && supplied !== null && supplied !== "") return asNumber(supplied);
-  if (isPaymentDocument(row.type) || isCreditDocument(row.type)) return 0;
-  return invoiceValue(row) - allocatedValue(row);
+  return asNumber(row.invoice_balance);
 }
 
 function normaliseApLedgerType(type = "") {
@@ -262,6 +293,12 @@ function ledgerImpactFor(type) {
     return {
       debit: "Debit creditors control",
       credit: "Credit purchase nominal/VAT",
+    };
+  }
+  if (isPaymentDocument(type)) {
+    return {
+      debit: "Debit creditors control",
+      credit: "Credit bank/cash",
     };
   }
   return {
@@ -405,7 +442,7 @@ function EditableField({
   );
 }
 
-function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, busy }) {
+function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, busy, setHeaderContext }) {
   const ap = workspace.accounts_payable || {};
   const clientId = workspace.client?.id;
   const [supplierSummaries, setSupplierSummaries] = useState(() => (Array.isArray(ap.suppliers) ? ap.suppliers : []));
@@ -449,6 +486,21 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
   const [ledgerStatusFilter, setLedgerStatusFilter] = useState("All");
   const [ledgerDateFrom, setLedgerDateFrom] = useState("");
   const [ledgerDateTo, setLedgerDateTo] = useState("");
+  const [ledgerReferenceFilter, setLedgerReferenceFilter] = useState("");
+  const [ledgerDescriptionFilter, setLedgerDescriptionFilter] = useState("");
+  const [ledgerAttachmentFilter, setLedgerAttachmentFilter] = useState("All");
+  const [ledgerInvoiceValueMin, setLedgerInvoiceValueMin] = useState("");
+  const [ledgerInvoiceValueMax, setLedgerInvoiceValueMax] = useState("");
+  const [ledgerAllocatedMin, setLedgerAllocatedMin] = useState("");
+  const [ledgerAllocatedMax, setLedgerAllocatedMax] = useState("");
+  const [ledgerBalanceMin, setLedgerBalanceMin] = useState("");
+  const [ledgerBalanceMax, setLedgerBalanceMax] = useState("");
+  const [ledgerSort, setLedgerSort] = useState({ key: "date", direction: "desc" });
+  const [openLedgerFilter, setOpenLedgerFilter] = useState("");
+  const [selectedLedgerKeys, setSelectedLedgerKeys] = useState([]);
+  const [columnSelectorOpen, setColumnSelectorOpen] = useState(false);
+  const [visibleLedgerColumns, setVisibleLedgerColumns] = useState(() => ledgerColumnDefinitions.map((column) => column.key));
+  const [ledgerColumnWidths, setLedgerColumnWidths] = useState(defaultLedgerColumnWidths);
   const [ledgerPage, setLedgerPage] = useState(1);
   const [ledgerPageSize, setLedgerPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [ledgerData, setLedgerData] = useState(() => normalisePaginatedResponse({ rows: [], page_size: DEFAULT_PAGE_SIZE }));
@@ -456,6 +508,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
   const [ledgerError, setLedgerError] = useState("");
   const [ledgerDraftRows, setLedgerDraftRows] = useState([]);
   const [transactionDraft, setTransactionDraft] = useState(null);
+  const [transactionEntryMode, setTransactionEntryMode] = useState("");
   const [transactionErrors, setTransactionErrors] = useState({});
   const [auditSearch, setAuditSearch] = useState("");
   const [auditActionFilter, setAuditActionFilter] = useState("All");
@@ -500,10 +553,19 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
 
   useEffect(() => {
     setLedgerPage(1);
-  }, [selectedSupplierId, ledgerSearch, ledgerTypeFilter, ledgerStatusFilter, ledgerDateFrom, ledgerDateTo]);
+  }, [selectedSupplierId, ledgerSearch, ledgerTypeFilter, ledgerStatusFilter, ledgerDateFrom, ledgerDateTo, ledgerReferenceFilter, ledgerDescriptionFilter, ledgerAttachmentFilter, ledgerInvoiceValueMin, ledgerInvoiceValueMax, ledgerAllocatedMin, ledgerAllocatedMax, ledgerBalanceMin, ledgerBalanceMax]);
 
   useEffect(() => {
-    if (activeTab === "Create supplier") setCreateSupplierOpen(true);
+    setSelectedLedgerKeys([]);
+  }, [selectedSupplierId, ledgerPage, ledgerPageSize, ledgerTypeFilter, ledgerStatusFilter, ledgerDateFrom, ledgerDateTo, ledgerReferenceFilter, ledgerDescriptionFilter, ledgerAttachmentFilter, ledgerInvoiceValueMin, ledgerInvoiceValueMax, ledgerAllocatedMin, ledgerAllocatedMax, ledgerBalanceMin, ledgerBalanceMax]);
+
+  useEffect(() => {
+    if (activeTab === "Create supplier") {
+      setSelectedSupplierId("");
+      setTransactionDraft(null);
+      setTransactionEntryMode("");
+      setCreateSupplierOpen(true);
+    }
   }, [activeTab]);
 
   function closeCreateSupplier() {
@@ -515,6 +577,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
     if (selectedSupplierId && !suppliers.some((supplier) => supplier.id === selectedSupplierId)) {
       setSelectedSupplierId("");
       setTransactionDraft(null);
+      setTransactionEntryMode("");
     }
   }, [selectedSupplierId, suppliers]);
 
@@ -540,7 +603,9 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
       if (selectedSupplierId) await refreshSupplierLedger();
       return true;
     } catch (e) {
-      toast.error(formatApiError(e));
+      const message = formatApiError(e);
+      setTransactionErrors((current) => ({ ...current, backend: message }));
+      toast.error(message);
       return false;
     } finally {
       setSaving(false);
@@ -597,7 +662,9 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
 
   function openSupplier(supplierId) {
     setSelectedSupplierId(supplierId);
-    setSupplierRecordTab("General");
+    setSupplierRecordTab("Ledger");
+    setTransactionDraft(null);
+    setTransactionEntryMode("");
   }
 
   const supplierLedgerRows = useCallback((supplierId) => {
@@ -625,7 +692,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
     const rows = [
       ...baseRows.map((row) => draftOverrides.get(row.ledgerKey) || row),
       ...draftAdditions,
-    ].sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
+    ].sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
 
     let runningBalance = 0;
     return rows.map((row) => {
@@ -645,6 +712,8 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
     const gross = row?.gross || row?.gross_amount || row?.total || (row?.credit || row?.debit) || "";
     const net = row?.net || row?.net_amount || row?.subtotal || "";
     const vat = row?.vat || row?.vat_amount || row?.tax_amount || "";
+    const documentDate = toInputDate(row?.invoice_date || row?.document_date || row?.date) || todayInput();
+    const paymentTerms = selectedSupplier?.payment_terms_days || row?.payment_terms || row?.payment_terms_days || "30";
     const sourceLines = row?.line_items || row?.lines || row?.items || row?.invoice_lines || row?.coding_lines;
     const lineItems = Array.isArray(sourceLines) && sourceLines.length
       ? sourceLines.map((line) => normaliseLineItem(line, row?.description || "", formatAmount(net || gross)))
@@ -660,9 +729,9 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
       supplier_code: row?.supplier_code || selectedSupplier?.supplier_code || "",
       source,
       type: documentType,
-      date: toInputDate(row?.invoice_date || row?.document_date || row?.date) || todayInput(),
-      due_date: toInputDate(row?.due_date) || toInputDate(row?.invoice_date || row?.document_date || row?.date) || todayInput(),
-      payment_terms: selectedSupplier?.payment_terms_days || row?.payment_terms || row?.payment_terms_days || "30",
+      date: documentDate,
+      due_date: toInputDate(row?.due_date) || addDaysInput(documentDate, paymentTerms),
+      payment_terms: paymentTerms,
       currency: selectedSupplier?.default_currency || defaultCurrency,
       document_number: row?.document_number || row?.invoice_number || row?.credit_note_number || (row?.reference === "-" ? "" : row?.reference || ""),
       reference: row?.reference === "-" ? "" : row?.reference || "",
@@ -674,7 +743,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
       gross: formatAmount(gross),
       debit: row?.debit ? String(row.debit) : "",
       credit: row?.credit ? String(row.credit) : "",
-      status: row?.status || "Draft",
+      status: row?.status || "Awaiting approval",
       view_only: row?.view_only,
       attachment_name: row?.attachment_name || row?.attachment_path || row?.attachment_url || row?.document_url || row?.source_document_url || "",
       attachment_path: row?.attachment_path || "",
@@ -718,10 +787,74 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
   }
 
   function openTransactionForm(type, row) {
+    if (row && transactionEntryMode === "inline" && transactionDraft && (
+      transactionDraft.ledgerKey === row.ledgerKey ||
+      (transactionDraft.id && transactionDraft.id === row.id && transactionDraft.source === row.source)
+    )) {
+      setTransactionErrors({});
+      setTransactionDraft(null);
+      setTransactionEntryMode("");
+      return;
+    }
     setTransactionErrors({});
     const draft = buildTransactionDraft(type, row || {});
+    setTransactionEntryMode(row ? "inline" : "modal");
     setTransactionDraft(draft);
     loadTransactionDetail(row || {}, draft);
+  }
+
+  async function copyPurchaseInvoiceToNew() {
+    if (!transactionDraft || transactionDraft.source !== "invoice" || !transactionDraft.id) return;
+    setSaving(true);
+    setTransactionErrors({});
+    try {
+      const { data } = await postJson(`/ap/invoices/${transactionDraft.id}/copy`, {});
+      const detail = normaliseTransactionDetailResponse(data);
+      const copied = buildTransactionDraft("Purchase Invoice", { ...detail, source: "invoice", type: "Purchase Invoice" });
+      setTransactionEntryMode("modal");
+      setTransactionDraft(copied);
+      toast.success("Copied to a new purchase invoice");
+      await reloadWorkspace?.();
+      await refreshSupplierLedger();
+    } catch (error) {
+      setTransactionErrors((current) => ({ ...current, backend: formatApiError(error) }));
+      toast.error(formatApiError(error));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function approvePurchaseInvoice(invoice) {
+    if (!invoice?.id) return;
+    setSaving(true);
+    setTransactionErrors({});
+    try {
+      const { data } = await postJson(`/ap/invoices/${invoice.id}/approve`, {});
+      const detail = normaliseTransactionDetailResponse(data?.detail || data);
+      setTransactionDraft(buildTransactionDraft("Purchase Invoice", { ...detail, source: "invoice", type: "Purchase Invoice" }));
+      toast.success("Purchase invoice approved and posted");
+      await reloadWorkspace?.();
+      await refreshSupplierLedger();
+    } catch (error) {
+      const message = formatApiError(error);
+      setTransactionErrors((current) => ({ ...current, backend: message }));
+      toast.error(message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function unallocateApRow(row) {
+    const allocations = row?.allocation_summary?.allocations || [];
+    if (!allocations.length || !window.confirm(`Unallocate ${allocations.length === 1 ? "this allocation" : `all ${allocations.length} allocations`}? The supplier payment will be preserved.`)) return;
+    const saved = await run(async () => {
+      for (const allocation of allocations) {
+        const paymentId = allocation.payment_id || (row.source === "payment" ? row.id : "");
+        if (!paymentId) throw new Error("The allocation is missing its supplier payment reference.");
+        await postJson(`/ap/payments/${paymentId}/allocations/${allocation.id}/unallocate`, {});
+      }
+    }, "Invoice allocation removed");
+    if (saved) await refreshSupplierLedger();
   }
 
   function validateTransaction() {
@@ -733,7 +866,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
     if (!transactionDraft?.description?.trim()) errors.description = "Description is required";
     if (!isPaymentDocument(transactionDraft?.type) && !transactionDraft?.purchase_nominal?.trim()) errors.purchase_nominal = "Purchase nominal is required";
     if (!isPaymentDocument(transactionDraft?.type) && asNumber(transactionDraft?.gross) <= 0) errors.amount = "Gross amount is required";
-    if (transactionDraft?.line_items?.some((line) => !String(line.description || "").trim())) errors.line_items = "Every line needs a description";
+    if (!isPaymentDocument(transactionDraft?.type) && transactionDraft?.line_items?.some((line) => !String(line.description || "").trim())) errors.line_items = "Every line needs a description";
     if (!transactionDraft?.status) errors.status = "Status is required";
     setTransactionErrors(errors);
     return Object.keys(errors).length === 0;
@@ -752,6 +885,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
       date: transactionDraft.date,
       due_date: transactionDraft.due_date,
       payment_terms: transactionDraft.payment_terms,
+      payment_terms_days: transactionDraft.payment_terms,
       currency: transactionDraft.currency || "GBP",
       description: transactionDraft.description?.trim() || "",
       purchase_nominal: transactionDraft.purchase_nominal,
@@ -759,8 +893,14 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
       net_amount: asNumber(transactionDraft.net),
       vat_amount: asNumber(transactionDraft.vat),
       gross_amount: asNumber(transactionDraft.gross),
+      amount: asNumber(transactionDraft.gross),
+      amount_paid: asNumber(transactionDraft.gross),
+      payment_date: transactionDraft.date,
+      credit_note_number: transactionDraft.document_number?.trim() || "",
+      credit_note_date: transactionDraft.date,
       status: nextStatus,
       line_items: transactionDraft.line_items,
+      lines: transactionDraft.line_items,
       attachment_path: transactionDraft.attachment_path,
       attachment_url: transactionDraft.attachment_url,
       document_url: transactionDraft.document_url,
@@ -777,6 +917,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
       await reloadWorkspace();
       await refreshSupplierLedger();
       setTransactionDraft(null);
+      setTransactionEntryMode("");
     } catch (error) {
       const status = error?.response?.status;
       if ([404, 405, 501].includes(status)) {
@@ -797,6 +938,25 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
     if (!validateTransaction()) return;
     if (transactionDraft.source === "invoice" && transactionDraft.id) {
       await updateExistingApInvoice(nextStatus);
+      return;
+    }
+    if (transactionDraft.source === "frontend") {
+      const payload = transactionPayload(nextStatus);
+      const saved = await run(async () => {
+        if (isPaymentDocument(transactionDraft.type)) {
+          await postJson("/ap/payments", payload);
+          return;
+        }
+        if (isCreditDocument(transactionDraft.type)) {
+          await postJson("/ap/credit-notes", { ...payload, post: nextStatus === "Posted" });
+          return;
+        }
+        await postJson("/ap/invoices", { ...payload, post: nextStatus === "Posted" });
+      }, nextStatus === "Posted" ? "Purchase document posted to Accounts Payable" : "Purchase document submitted for approval");
+      if (saved) {
+        setTransactionDraft(null);
+        setTransactionEntryMode("");
+      }
       return;
     }
     const supplierId = transactionDraft.supplier_id || selectedSupplier?.id || selectedSupplierId;
@@ -830,8 +990,9 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
         row,
       ];
     });
-    toast.success(status === "Posted" ? "Purchase document posted to Accounts Payable in this ledger" : row.originalKey ? "Purchase document saved in this ledger" : "Purchase document draft added");
+    toast.success(status === "Posted" ? "Purchase document posted to Accounts Payable in this ledger" : row.originalKey ? "Purchase document saved in this ledger" : "Purchase document submitted for approval");
     setTransactionDraft(null);
+    setTransactionEntryMode("");
   }
 
   function postTransactionDraft(e) {
@@ -869,21 +1030,76 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
   const selectedLedgerRows = useMemo(() => (
     selectedSupplier ? supplierLedgerRows(selectedSupplier.id) : []
   ), [selectedSupplier, supplierLedgerRows]);
-  const visibleLedgerRows = selectedLedgerRows;
-  const ledgerStatuses = useMemo(() => (
-    ["All", ...Array.from(new Set(selectedLedgerRows.map((row) => row.status).filter(Boolean)))]
-  ), [selectedLedgerRows]);
-  const ledgerTotals = {
-    invoiceValue: asNumber(ledgerData.summary.invoice_value ?? ledgerData.summary.total_invoice_value ?? ledgerData.summary.visible_invoice_value),
-    allocated: asNumber(ledgerData.summary.paid_allocated ?? ledgerData.summary.payments_credits_allocated ?? ledgerData.summary.allocated),
-    balance: asNumber(ledgerData.summary.invoice_balance ?? ledgerData.summary.outstanding ?? ledgerData.summary.outstanding_balance),
+  const ledgerRowKey = (row) => row.ledgerKey || `${row.source}-${row.id}`;
+  const toggleLedgerSort = (key, direction) => setLedgerSort((current) => (
+    direction
+      ? { key, direction }
+      : current.key === key
+        ? { key, direction: current.direction === "asc" ? "desc" : "asc" }
+        : { key, direction: key === "date" ? "desc" : "asc" }
+  ));
+  const clearLedgerColumnFilters = () => {
+    setLedgerSearch("");
+    setLedgerTypeFilter("All");
+    setLedgerStatusFilter("All");
+    setLedgerDateFrom("");
+    setLedgerDateTo("");
+    setLedgerReferenceFilter("");
+    setLedgerDescriptionFilter("");
+    setLedgerAttachmentFilter("All");
+    setLedgerInvoiceValueMin("");
+    setLedgerInvoiceValueMax("");
+    setLedgerAllocatedMin("");
+    setLedgerAllocatedMax("");
+    setLedgerBalanceMin("");
+    setLedgerBalanceMax("");
+    setLedgerSort({ key: "date", direction: "desc" });
   };
+  const visibleLedgerRows = useMemo(() => {
+    const refNeedle = ledgerReferenceFilter.trim().toLowerCase();
+    const descriptionNeedle = ledgerDescriptionFilter.trim().toLowerCase();
+    const attachmentMode = ledgerAttachmentFilter;
+    const inRange = (value, min, max) => (
+      (!String(min).trim() || value >= asNumber(min)) &&
+      (!String(max).trim() || value <= asNumber(max))
+    );
+    const filtered = selectedLedgerRows.filter((row) => {
+      const refOk = !refNeedle || String(row.reference || "").toLowerCase().includes(refNeedle);
+      const descriptionOk = !descriptionNeedle || String(row.description || "").toLowerCase().includes(descriptionNeedle);
+      const attachmentOk = attachmentMode === "All" || (attachmentMode === "Attached" ? hasAttachment(row) : !hasAttachment(row));
+      const invoiceValueOk = inRange(invoiceValue(row), ledgerInvoiceValueMin, ledgerInvoiceValueMax);
+      const allocatedOk = inRange(allocatedValue(row), ledgerAllocatedMin, ledgerAllocatedMax);
+      const balanceOk = inRange(invoiceBalance(row), ledgerBalanceMin, ledgerBalanceMax);
+      return refOk && descriptionOk && attachmentOk && invoiceValueOk && allocatedOk && balanceOk;
+    });
+    const direction = ledgerSort.direction === "asc" ? 1 : -1;
+    return [...filtered].sort((a, b) => {
+      const key = ledgerSort.key;
+      if (key === "date") return (new Date(a.date || 0) - new Date(b.date || 0)) * direction;
+      if (key === "invoice_value") return (invoiceValue(a) - invoiceValue(b)) * direction;
+      if (key === "allocated") return (allocatedValue(a) - allocatedValue(b)) * direction;
+      if (key === "balance") return (invoiceBalance(a) - invoiceBalance(b)) * direction;
+      if (key === "attachment") return ((hasAttachment(a) ? 1 : 0) - (hasAttachment(b) ? 1 : 0)) * direction;
+      return String(a[key] || "").localeCompare(String(b[key] || "")) * direction;
+    });
+  }, [ledgerAllocatedMax, ledgerAllocatedMin, ledgerAttachmentFilter, ledgerBalanceMax, ledgerBalanceMin, ledgerDescriptionFilter, ledgerInvoiceValueMax, ledgerInvoiceValueMin, ledgerReferenceFilter, ledgerSort, selectedLedgerRows]);
+  const ledgerStatuses = useMemo(() => (
+    ["All", ...Array.from(new Set(selectedLedgerRows.map((row) => row.status).filter((status) => status && normaliseStatusText(status) !== "draft")))]
+  ), [selectedLedgerRows]);
   const ledgerVisibleCount = Number(ledgerData.summary.visible_transaction_count ?? ledgerData.total_rows ?? visibleLedgerRows.length) || 0;
   const pagedLedgerRows = visibleLedgerRows;
+  const selectedLedgerRowsForExport = visibleLedgerRows.filter((row) => selectedLedgerKeys.includes(ledgerRowKey(row)));
+  const allVisibleLedgerSelected = pagedLedgerRows.length > 0 && pagedLedgerRows.every((row) => selectedLedgerKeys.includes(ledgerRowKey(row)));
+  const hasLedgerFilters = Boolean(ledgerSearch || ledgerTypeFilter !== "All" || ledgerStatusFilter !== "All" || ledgerDateFrom || ledgerDateTo || ledgerReferenceFilter || ledgerDescriptionFilter || ledgerAttachmentFilter !== "All" || ledgerInvoiceValueMin || ledgerInvoiceValueMax || ledgerAllocatedMin || ledgerAllocatedMax || ledgerBalanceMin || ledgerBalanceMax);
+  const ledgerTableColumnCount = visibleLedgerColumns.length + 1;
+  const ledgerTableMinWidth = 48 + visibleLedgerColumns.reduce((total, key) => total + (ledgerColumnWidths[key] || 120), 0);
+  const isLedgerColumnVisible = (key) => visibleLedgerColumns.includes(key);
+  const ledgerCellStyle = (key) => ({ width: ledgerColumnWidths[key] || 120, minWidth: ledgerColumnWidths[key] || 120 });
+  const resizeLedgerColumn = (key, width) => setLedgerColumnWidths((current) => ({ ...current, [key]: width }));
 
   function exportLedgerRows() {
     const header = "Date,Type,Reference,Description,Invoice value,Paid / allocated,Invoice balance,Status,Attachment";
-    const rows = visibleLedgerRows.map((row) => [
+    const rows = selectedLedgerRowsForExport.map((row) => [
       formatDate(row.date),
       row.type,
       row.reference,
@@ -898,7 +1114,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `${selectedSupplier?.name || "supplier"}-ledger.csv`;
+    link.download = `${selectedSupplier?.name || "supplier"}-selected-ledger.csv`;
     link.click();
     URL.revokeObjectURL(url);
   }
@@ -947,30 +1163,60 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
     URL.revokeObjectURL(url);
   }
 
+  async function saveGeneralSettings() {
+    await run(async () => {
+      await putJson("/ap/settings", settingsForm);
+      await reloadWorkspace?.();
+    }, "Accounts Payable settings saved");
+  }
+
+  useEffect(() => {
+    if (!setHeaderContext) return undefined;
+    if (!selectedSupplier) {
+      setHeaderContext(null);
+      return undefined;
+    }
+    setHeaderContext({
+      backLabel: "Back to suppliers",
+      onBack: () => setSelectedSupplierId(""),
+      title: supplierDraft.name || selectedSupplier.name,
+      subtitle: `${supplierDraft.supplier_code || "No supplier code"} - ${supplierDraft.email || "No email"}`,
+      tabs: supplierRecordTabs,
+      activeTab: supplierRecordTab,
+      onTabChange: setSupplierRecordTab,
+      actions: supplierRecordTab === "Ledger" ? [
+        { label: "Add purchase invoice", onClick: () => openTransactionForm("Purchase Invoice") },
+        { label: "Add supplier credit note", onClick: () => openTransactionForm("Supplier Credit Note") },
+        { label: "Add payment", onClick: () => openTransactionForm("Payment on Account") },
+        { label: "Select Columns", icon: false, onClick: () => setColumnSelectorOpen((open) => !open) },
+      ] : [],
+    });
+    return () => setHeaderContext(null);
+    // Header action callbacks intentionally use the current workspace handlers without forcing the header context to churn every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSupplier, supplierDraft.name, supplierDraft.supplier_code, supplierDraft.email, supplierRecordTab, setHeaderContext]);
+
+  if (activeTab === "General Settings") {
+    return (
+      <Panel title="Accounts Payable General Settings">
+        <div className="grid gap-4 md:grid-cols-2">
+          <EditableField label="Approval required" checkbox value={settingsForm.approval_required} editable onChange={(value) => setSettingsForm((row) => ({ ...row, approval_required: value }))} />
+          <EditableField label="Supplier numbering" value={settingsForm.supplier_numbering || "automatic"} editable options={supplierNumberingOptions} onChange={(value) => setSettingsForm((row) => ({ ...row, supplier_numbering: value }))} />
+          <EditableField label="Default payment terms (days)" type="number" value={settingsForm.default_payment_terms_days || 30} editable onChange={(value) => setSettingsForm((row) => ({ ...row, default_payment_terms_days: value }))} />
+          <EditableField label="Default purchase nominal" value={settingsForm.default_purchase_account || "5000"} editable options={expenseAccounts.map((account) => ({ value: account.code, label: `${account.code} - ${account.name}` }))} onChange={(value) => setSettingsForm((row) => ({ ...row, default_purchase_account: value }))} />
+          <EditableField label="Default VAT code" value={settingsForm.default_vat_code || ""} editable options={vatCodes} onChange={(value) => setSettingsForm((row) => ({ ...row, default_vat_code: value }))} />
+          <EditableField label="Payment on account behaviour" value={settingsForm.payment_on_account_behaviour || "hold"} editable options={paymentOnAccountBehaviourOptions} onChange={(value) => setSettingsForm((row) => ({ ...row, payment_on_account_behaviour: value }))} />
+          <EditableField label="Supplier expense behaviour" value={settingsForm.expense_behaviour || "allow"} editable options={expenseBehaviourOptions} onChange={(value) => setSettingsForm((row) => ({ ...row, expense_behaviour: value }))} />
+        </div>
+        <div className="mt-5 flex justify-end"><Button type="button" disabled={saving} onClick={saveGeneralSettings}><Save className="mr-2 h-4 w-4" />Save settings</Button></div>
+      </Panel>
+    );
+  }
+
   if (activeTab === "Suppliers" || activeTab === "Create supplier") {
     if (selectedSupplier) {
       return (
-        <div className="space-y-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <Button type="button" variant="outline" onClick={() => setSelectedSupplierId("")}>Back to suppliers</Button>
-              <h3 className="mt-3 font-display text-2xl font-semibold text-stone-900">{supplierDraft.name || selectedSupplier.name}</h3>
-              <p className="text-sm text-stone-500">{supplierDraft.supplier_code || "No supplier code"} - {supplierDraft.email || "No email"}</p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {supplierRecordTabs.map((recordTab) => (
-                <Button
-                  key={recordTab}
-                  type="button"
-                  variant={supplierRecordTab === recordTab ? "default" : "outline"}
-                  onClick={() => setSupplierRecordTab(recordTab)}
-                >
-                  {recordTab}
-                </Button>
-              ))}
-            </div>
-          </div>
-
+        <div className="space-y-3">
           {supplierRecordTab === "General" ? (
             <Panel title="Supplier general details">
               <div className="mb-4 flex justify-end gap-2">
@@ -1000,14 +1246,6 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
                     <EditableField label="Phone" value={supplierDraft.phone} editable={supplierEditMode} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, phone: value }))} />
                     <EditableField label="Website" value={supplierDraft.website} editable={supplierEditMode} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, website: value }))} />
                     <EditableField label="Currency" value={supplierDraft.default_currency} editable={supplierEditMode} options={["GBP", "EUR", "USD"]} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, default_currency: value }))} />
-                  </div>
-                </Section>
-                <Section title="Supplier settings">
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <EditableField label="Approval required" checkbox value={settingsForm.approval_required} editable={false} help="Requires supplier transactions to be approved before posting once posting workflow is connected." />
-                    <EditableField label="Supplier numbering" value={optionLabel(settingsForm.supplier_numbering || "manual", supplierNumberingOptions)} editable={false} help="Controls how new supplier records are numbered in the supplier master." />
-                    <EditableField label="Payment on account behaviour" value={optionLabel(settingsForm.payment_on_account_behaviour || "hold", paymentOnAccountBehaviourOptions)} editable={false} help="Controls supplier payments where no invoice exists yet." />
-                    <EditableField label="Expense behaviour" value={optionLabel(settingsForm.expense_behaviour || "allow", expenseBehaviourOptions)} editable={false} help="Controls whether small supplier purchases can be entered directly as expenses in the supplier ledger." />
                   </div>
                 </Section>
                 <Section title="Addresses">
@@ -1056,97 +1294,182 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
 
           {supplierRecordTab === "Ledger" ? (
             <Panel title="Supplier ledger">
-              <div className="mb-3 grid gap-3 md:grid-cols-4">
-                <SummaryCard label="Visible transactions" value={ledgerVisibleCount} />
-                <SummaryCard label="Invoice value" value={formatMoney(ledgerTotals.invoiceValue)} />
-                <SummaryCard label="Invoice balance / outstanding" value={formatMoney(ledgerTotals.balance)} />
-                <SummaryCard label="Payments / credits allocated" value={formatMoney(ledgerTotals.allocated)} />
-              </div>
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <div className="flex flex-wrap gap-2">
-                  <Button type="button" variant="outline" onClick={() => openTransactionForm("Purchase Invoice")}>
-                    <Plus className="mr-2 h-4 w-4" /> Add purchase document
-                  </Button>
-                  <Button type="button" variant="outline" onClick={() => openTransactionForm("Supplier Credit Note")}>
-                    <Plus className="mr-2 h-4 w-4" /> Add supplier credit note
-                  </Button>
-                  <Button type="button" variant="outline" onClick={() => openTransactionForm("Payment on Account")}>
-                    <Plus className="mr-2 h-4 w-4" /> Add payment
-                  </Button>
-                </div>
-                <div className="flex min-w-72 flex-1 flex-wrap justify-end gap-2">
-                  <div className="relative max-w-sm flex-1">
-                    <Search className="absolute left-3 top-2.5 h-4 w-4 text-stone-400" />
-                    <Input value={ledgerSearch} onChange={(e) => setLedgerSearch(e.target.value)} placeholder="Search ledger" className="h-9 pl-9" />
-                  </div>
-                  <select value={ledgerTypeFilter} onChange={(e) => setLedgerTypeFilter(e.target.value)} className="h-9 rounded-md border border-stone-200 bg-white px-3 text-sm">
-                    <option value="All">All types</option>
-                    {transactionTypes.map((type) => <option key={type} value={type}>{type}</option>)}
-                    <option value="Supplier Payment">Supplier Payment</option>
-                  </select>
-                  <select value={ledgerStatusFilter} onChange={(e) => setLedgerStatusFilter(e.target.value)} className="h-9 rounded-md border border-stone-200 bg-white px-3 text-sm">
-                    {ledgerStatuses.map((status) => <option key={status} value={status}>{status === "All" ? "All statuses" : status}</option>)}
-                  </select>
-                  <Input type="date" value={ledgerDateFrom} onChange={(e) => setLedgerDateFrom(e.target.value)} className="h-9 w-36" />
-                  <Input type="date" value={ledgerDateTo} onChange={(e) => setLedgerDateTo(e.target.value)} className="h-9 w-36" />
-                  <Button type="button" variant="outline" onClick={exportLedgerRows}>
-                    <Download className="mr-2 h-4 w-4" /> Export
-                  </Button>
-                </div>
-              </div>
+              {columnSelectorOpen ? (
+                <ColumnSelectorPanel
+                  columns={ledgerColumnDefinitions}
+                  visibleColumns={visibleLedgerColumns}
+                  setVisibleColumns={setVisibleLedgerColumns}
+                  onClose={() => setColumnSelectorOpen(false)}
+                />
+              ) : null}
               {ledgerError ? <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{ledgerError}</div> : null}
               {ledgerLoading ? <div className="mb-3 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-600">Loading supplier ledger...</div> : null}
-              <div className="overflow-hidden rounded-md border border-stone-200">
-                <table className="w-full text-sm">
+              {(selectedLedgerRowsForExport.length || hasLedgerFilters) ? (
+                <div className="mb-2 flex flex-wrap justify-end gap-2">
+                  {hasLedgerFilters ? <Button type="button" variant="outline" size="sm" onClick={clearLedgerColumnFilters}>Clear filters</Button> : null}
+                  {selectedLedgerRowsForExport.length ? (
+                    <Button type="button" variant="outline" size="sm" onClick={exportLedgerRows}>
+                      <Download className="mr-2 h-4 w-4" /> Export selected ({selectedLedgerRowsForExport.length})
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
+              <div className="overflow-auto rounded-md border border-stone-200">
+                <table className="w-full text-sm" style={{ minWidth: ledgerTableMinWidth }}>
                   <thead className="bg-stone-50 text-left text-xs uppercase tracking-wide text-stone-500">
                     <tr>
-                      <th className="px-3 py-2">Date</th>
-                      <th className="px-3 py-2">Type</th>
-                      <th className="px-3 py-2">Reference</th>
-                      <th className="px-3 py-2">Description</th>
-                      <th className="px-3 py-2 text-right">Invoice value</th>
-                      <th className="px-3 py-2 text-right">Paid / allocated</th>
-                      <th className="px-3 py-2 text-right">Invoice balance</th>
-                      <th className="px-3 py-2">Status</th>
-                      <th className="px-3 py-2">Attachment</th>
+                      <th className="w-9 px-2 py-1.5">
+                        <input
+                          type="checkbox"
+                          checked={allVisibleLedgerSelected}
+                          onChange={(event) => {
+                            const pageKeys = pagedLedgerRows.map(ledgerRowKey);
+                            setSelectedLedgerKeys((current) => event.target.checked
+                              ? Array.from(new Set([...current, ...pageKeys]))
+                              : current.filter((key) => !pageKeys.includes(key)));
+                          }}
+                          aria-label="Select visible ledger rows"
+                        />
+                      </th>
+                      {isLedgerColumnVisible("date") ? <LedgerColumnHeader label="Date" sortKey="date" sort={ledgerSort} onSort={toggleLedgerSort} openKey={openLedgerFilter} setOpenKey={setOpenLedgerFilter} activeFilter={Boolean(ledgerDateFrom || ledgerDateTo)} width={ledgerColumnWidths.date} onResize={(width) => resizeLedgerColumn("date", width)}>
+                        <div className="grid gap-2">
+                          <SortControls sortKey="date" onSort={toggleLedgerSort} />
+                          <Label className="text-[10px] uppercase text-stone-500">From</Label>
+                          <Input type="date" value={ledgerDateFrom} onChange={(e) => setLedgerDateFrom(e.target.value)} className="h-8 text-xs" />
+                          <Label className="text-[10px] uppercase text-stone-500">To</Label>
+                          <Input type="date" value={ledgerDateTo} onChange={(e) => setLedgerDateTo(e.target.value)} className="h-8 text-xs" />
+                          <ClearFilterButton onClick={() => { setLedgerDateFrom(""); setLedgerDateTo(""); }}>Clear date filter</ClearFilterButton>
+                        </div>
+                      </LedgerColumnHeader> : null}
+                      {isLedgerColumnVisible("type") ? <LedgerColumnHeader label="Type" sortKey="type" sort={ledgerSort} onSort={toggleLedgerSort} openKey={openLedgerFilter} setOpenKey={setOpenLedgerFilter} activeFilter={ledgerTypeFilter !== "All"} width={ledgerColumnWidths.type} onResize={(width) => resizeLedgerColumn("type", width)}>
+                        <SortControls sortKey="type" onSort={toggleLedgerSort} />
+                        <select value={ledgerTypeFilter} onChange={(e) => setLedgerTypeFilter(e.target.value)} className="mt-2 h-8 w-full rounded-md border border-stone-200 bg-white px-2 text-xs normal-case">
+                          <option value="All">All types</option>
+                          {transactionTypes.map((type) => <option key={type} value={type}>{type}</option>)}
+                          <option value="Supplier Payment">Supplier Payment</option>
+                        </select>
+                        <ClearFilterButton onClick={() => setLedgerTypeFilter("All")} />
+                      </LedgerColumnHeader> : null}
+                      {isLedgerColumnVisible("reference") ? <LedgerColumnHeader label="Reference" sortKey="reference" sort={ledgerSort} onSort={toggleLedgerSort} openKey={openLedgerFilter} setOpenKey={setOpenLedgerFilter} activeFilter={Boolean(ledgerReferenceFilter)} width={ledgerColumnWidths.reference} onResize={(width) => resizeLedgerColumn("reference", width)}>
+                        <SortControls sortKey="reference" onSort={toggleLedgerSort} />
+                        <Input value={ledgerReferenceFilter} onChange={(e) => setLedgerReferenceFilter(e.target.value)} placeholder="Filter reference" className="mt-2 h-8 text-xs normal-case" />
+                        <ClearFilterButton onClick={() => setLedgerReferenceFilter("")} />
+                      </LedgerColumnHeader> : null}
+                      {isLedgerColumnVisible("description") ? <LedgerColumnHeader label="Description" sortKey="description" sort={ledgerSort} onSort={toggleLedgerSort} openKey={openLedgerFilter} setOpenKey={setOpenLedgerFilter} activeFilter={Boolean(ledgerDescriptionFilter)} width={ledgerColumnWidths.description} onResize={(width) => resizeLedgerColumn("description", width)}>
+                        <SortControls sortKey="description" onSort={toggleLedgerSort} />
+                        <Input value={ledgerDescriptionFilter} onChange={(e) => setLedgerDescriptionFilter(e.target.value)} placeholder="Filter description" className="mt-2 h-8 text-xs normal-case" />
+                        <ClearFilterButton onClick={() => setLedgerDescriptionFilter("")} />
+                      </LedgerColumnHeader> : null}
+                      {isLedgerColumnVisible("invoice_value") ? <LedgerColumnHeader label="Invoice value" sortKey="invoice_value" sort={ledgerSort} onSort={toggleLedgerSort} openKey={openLedgerFilter} setOpenKey={setOpenLedgerFilter} align="right" activeFilter={Boolean(ledgerInvoiceValueMin || ledgerInvoiceValueMax)} width={ledgerColumnWidths.invoice_value} onResize={(width) => resizeLedgerColumn("invoice_value", width)}>
+                        <SortControls sortKey="invoice_value" onSort={toggleLedgerSort} />
+                        <div className="mt-2 grid grid-cols-2 gap-1">
+                          <Input type="number" step="0.01" value={ledgerInvoiceValueMin} onChange={(e) => setLedgerInvoiceValueMin(e.target.value)} placeholder="Min" className="h-8 text-xs" />
+                          <Input type="number" step="0.01" value={ledgerInvoiceValueMax} onChange={(e) => setLedgerInvoiceValueMax(e.target.value)} placeholder="Max" className="h-8 text-xs" />
+                        </div>
+                        <ClearFilterButton onClick={() => { setLedgerInvoiceValueMin(""); setLedgerInvoiceValueMax(""); }} />
+                      </LedgerColumnHeader> : null}
+                      {isLedgerColumnVisible("allocated") ? <LedgerColumnHeader label="Paid / allocated" sortKey="allocated" sort={ledgerSort} onSort={toggleLedgerSort} openKey={openLedgerFilter} setOpenKey={setOpenLedgerFilter} align="right" activeFilter={Boolean(ledgerAllocatedMin || ledgerAllocatedMax)} width={ledgerColumnWidths.allocated} onResize={(width) => resizeLedgerColumn("allocated", width)}>
+                        <SortControls sortKey="allocated" onSort={toggleLedgerSort} />
+                        <div className="mt-2 grid grid-cols-2 gap-1">
+                          <Input type="number" step="0.01" value={ledgerAllocatedMin} onChange={(e) => setLedgerAllocatedMin(e.target.value)} placeholder="Min" className="h-8 text-xs" />
+                          <Input type="number" step="0.01" value={ledgerAllocatedMax} onChange={(e) => setLedgerAllocatedMax(e.target.value)} placeholder="Max" className="h-8 text-xs" />
+                        </div>
+                        <ClearFilterButton onClick={() => { setLedgerAllocatedMin(""); setLedgerAllocatedMax(""); }} />
+                      </LedgerColumnHeader> : null}
+                      {isLedgerColumnVisible("balance") ? <LedgerColumnHeader label="Invoice balance" sortKey="balance" sort={ledgerSort} onSort={toggleLedgerSort} openKey={openLedgerFilter} setOpenKey={setOpenLedgerFilter} align="right" activeFilter={Boolean(ledgerBalanceMin || ledgerBalanceMax)} width={ledgerColumnWidths.balance} onResize={(width) => resizeLedgerColumn("balance", width)}>
+                        <SortControls sortKey="balance" onSort={toggleLedgerSort} />
+                        <div className="mt-2 grid grid-cols-2 gap-1">
+                          <Input type="number" step="0.01" value={ledgerBalanceMin} onChange={(e) => setLedgerBalanceMin(e.target.value)} placeholder="Min" className="h-8 text-xs" />
+                          <Input type="number" step="0.01" value={ledgerBalanceMax} onChange={(e) => setLedgerBalanceMax(e.target.value)} placeholder="Max" className="h-8 text-xs" />
+                        </div>
+                        <ClearFilterButton onClick={() => { setLedgerBalanceMin(""); setLedgerBalanceMax(""); }} />
+                      </LedgerColumnHeader> : null}
+                      {isLedgerColumnVisible("status") ? <LedgerColumnHeader label="Status" sortKey="status" sort={ledgerSort} onSort={toggleLedgerSort} openKey={openLedgerFilter} setOpenKey={setOpenLedgerFilter} activeFilter={ledgerStatusFilter !== "All"} width={ledgerColumnWidths.status} onResize={(width) => resizeLedgerColumn("status", width)}>
+                        <SortControls sortKey="status" onSort={toggleLedgerSort} />
+                        <select value={ledgerStatusFilter} onChange={(e) => setLedgerStatusFilter(e.target.value)} className="mt-2 h-8 w-full rounded-md border border-stone-200 bg-white px-2 text-xs normal-case">
+                          {ledgerStatuses.map((status) => <option key={status} value={status}>{status === "All" ? "All statuses" : status}</option>)}
+                        </select>
+                        <ClearFilterButton onClick={() => setLedgerStatusFilter("All")} />
+                      </LedgerColumnHeader> : null}
+                      {isLedgerColumnVisible("attachment") ? <LedgerColumnHeader label="Attachment" sortKey="attachment" sort={ledgerSort} onSort={toggleLedgerSort} openKey={openLedgerFilter} setOpenKey={setOpenLedgerFilter} align="right" activeFilter={ledgerAttachmentFilter !== "All"} width={ledgerColumnWidths.attachment} onResize={(width) => resizeLedgerColumn("attachment", width)}>
+                        <SortControls sortKey="attachment" onSort={toggleLedgerSort} />
+                        <select value={ledgerAttachmentFilter} onChange={(e) => setLedgerAttachmentFilter(e.target.value)} className="mt-2 h-8 w-full rounded-md border border-stone-200 bg-white px-2 text-xs normal-case">
+                          <option value="All">All</option>
+                          <option value="Attached">Attached</option>
+                          <option value="Missing">Missing</option>
+                        </select>
+                        <ClearFilterButton onClick={() => setLedgerAttachmentFilter("All")} />
+                      </LedgerColumnHeader> : null}
                     </tr>
                   </thead>
                   <tbody>
-                    {visibleLedgerRows.length ? pagedLedgerRows.map((row) => (
-                      <tr key={row.ledgerKey || `${row.source}-${row.id}`} className="cursor-pointer border-t border-stone-100 hover:bg-emerald-50/50" onClick={() => openTransactionForm(row.type, row)}>
-                        <td className="px-3 py-2">{formatDate(row.date)}</td>
-                        <td className="px-3 py-2 font-medium">
-                          <div className="flex flex-wrap items-center gap-2">
-                            {row.type}
-                            {row.source === "frontend" ? <Badge className="bg-amber-100 text-amber-800">Staged</Badge> : null}
-                          </div>
-                        </td>
-                        <td className="px-3 py-2">{row.reference}</td>
-                        <td className="px-3 py-2 text-stone-600">{row.description}</td>
-                        <td className="px-3 py-2 text-right">{invoiceValue(row) ? formatMoney(invoiceValue(row)) : "-"}</td>
-                        <td className="px-3 py-2 text-right">{allocatedValue(row) ? formatMoney(allocatedValue(row)) : "-"}</td>
-                        <td className="px-3 py-2 text-right font-semibold">{invoiceBalance(row) ? formatMoney(invoiceBalance(row)) : "-"}</td>
-                        <td className="px-3 py-2"><Badge className={statusBadgeClass(row.status)}>{row.status}</Badge></td>
-                        <td className="px-3 py-2">{hasAttachment(row) ? <Badge className="bg-emerald-100 text-emerald-800">Attached</Badge> : "-"}</td>
-                      </tr>
-                    )) : (
+                    {visibleLedgerRows.length ? pagedLedgerRows.map((row) => {
+                      const selected = transactionEntryMode === "inline" && transactionDraft && (transactionDraft.ledgerKey === row.ledgerKey || (transactionDraft.id && transactionDraft.id === row.id && transactionDraft.source === row.source));
+                      return (
+                        <React.Fragment key={row.ledgerKey || `${row.source}-${row.id}`}>
+                          <tr className={`cursor-pointer border-t border-stone-100 hover:bg-emerald-50/50 ${selected ? "bg-emerald-50 ring-1 ring-inset ring-emerald-200" : ""}`} onClick={() => openTransactionForm(row.type, row)}>
+                            <td className="px-2 py-1.5" onClick={(event) => event.stopPropagation()}>
+                              <input
+                                type="checkbox"
+                                checked={selectedLedgerKeys.includes(ledgerRowKey(row))}
+                                onChange={(event) => {
+                                  const key = ledgerRowKey(row);
+                                  setSelectedLedgerKeys((current) => event.target.checked ? [...current, key] : current.filter((item) => item !== key));
+                                }}
+                                aria-label={`Select ${row.reference || row.type}`}
+                              />
+                            </td>
+                            {isLedgerColumnVisible("date") ? <td className="px-2 py-1.5" style={ledgerCellStyle("date")}>{formatDate(row.date)}</td> : null}
+                            {isLedgerColumnVisible("type") ? <td className="px-2 py-1.5 font-medium" style={ledgerCellStyle("type")}>
+                              <div className="flex flex-wrap items-center gap-2">
+                                {row.type}
+                                {row.source === "frontend" ? <Badge className="bg-amber-100 text-amber-800">Staged</Badge> : null}
+                              </div>
+                            </td> : null}
+                            {isLedgerColumnVisible("reference") ? <td className="px-2 py-1.5" style={ledgerCellStyle("reference")}>{row.reference}</td> : null}
+                            {isLedgerColumnVisible("description") ? <td className="px-2 py-1.5 text-stone-600" style={ledgerCellStyle("description")}>{row.description}</td> : null}
+                            {isLedgerColumnVisible("invoice_value") ? <td className="px-2 py-1.5 text-right" style={ledgerCellStyle("invoice_value")}>{invoiceValue(row) ? formatMoney(invoiceValue(row)) : "-"}</td> : null}
+                            {isLedgerColumnVisible("allocated") ? <td className="px-2 py-1.5 text-right" style={ledgerCellStyle("allocated")}>{allocatedValue(row) ? formatMoney(allocatedValue(row)) : "-"}</td> : null}
+                            {isLedgerColumnVisible("balance") ? <td className="px-2 py-1.5 text-right font-semibold" style={ledgerCellStyle("balance")}>{invoiceBalance(row) ? formatMoney(invoiceBalance(row)) : "-"}</td> : null}
+                            {isLedgerColumnVisible("status") ? <td className="px-2 py-1.5" style={ledgerCellStyle("status")}>
+                              <Badge className={row.is_over_allocated ? "bg-red-100 text-red-800" : statusBadgeClass(row.status)}>{row.display_status || displayStatus(row.status)}</Badge>
+                              {row.is_over_allocated ? <div className="mt-1 text-xs font-medium text-red-700">Allocation exceeds invoice value</div> : null}
+                              {row.can_unallocate ? <Button type="button" variant="outline" size="sm" className="mt-1" onClick={(event) => { event.stopPropagation(); unallocateApRow(row); }}>Unallocate</Button> : null}
+                            </td> : null}
+                            {isLedgerColumnVisible("attachment") ? <td className="px-2 py-1.5" style={ledgerCellStyle("attachment")}>{hasAttachment(row) ? <Badge className="bg-emerald-100 text-emerald-800">Attached</Badge> : "-"}</td> : null}
+                          </tr>
+                          {selected ? (
+                            <tr className="border-t border-emerald-200 bg-emerald-50/40">
+                              <td colSpan={ledgerTableColumnCount} className="p-0">
+                                <ManualPurchaseDocumentDrawer
+                                  draft={transactionDraft}
+                                  setDraft={setTransactionDraft}
+                                  errors={transactionErrors}
+                                  supplier={selectedSupplier}
+                                  expenseAccounts={expenseAccounts}
+                                  vatCodes={vatCodes}
+                                  saving={saving}
+                                  onClose={() => {
+                                    setTransactionDraft(null);
+                                    setTransactionEntryMode("");
+                                  }}
+                                  onSave={saveTransactionDraft}
+                                  onPost={postTransactionDraft}
+                                  onApproveInvoice={approvePurchaseInvoice}
+                                  onCopyInvoice={copyPurchaseInvoiceToNew}
+                                  approvalRequired={Boolean(settingsForm.approval_required)}
+                                />
+                              </td>
+                            </tr>
+                          ) : null}
+                        </React.Fragment>
+                      );
+                    }) : (
                       <tr>
-                        <td colSpan="9" className="px-3 py-8 text-center text-stone-500">No ledger transactions found.</td>
+                        <td colSpan={ledgerTableColumnCount} className="px-3 py-8 text-center text-stone-500">No ledger transactions found.</td>
                       </tr>
                     )}
                   </tbody>
-                  {visibleLedgerRows.length ? (
-                    <tfoot className="border-t border-stone-200 bg-stone-50 text-sm font-semibold">
-                      <tr>
-                        <td colSpan="4" className="px-3 py-2 text-right">Visible total</td>
-                        <td className="px-3 py-2 text-right">{formatMoney(ledgerTotals.invoiceValue)}</td>
-                        <td className="px-3 py-2 text-right">{formatMoney(ledgerTotals.allocated)}</td>
-                        <td className="px-3 py-2 text-right">{formatMoney(ledgerTotals.balance)}</td>
-                        <td className="px-3 py-2" />
-                        <td className="px-3 py-2" />
-                      </tr>
-                    </tfoot>
-                  ) : null}
                 </table>
                 {ledgerVisibleCount ? (
                   <PaginationFooter
@@ -1212,20 +1535,32 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
             </Panel>
           ) : null}
 
-          {transactionDraft ? (
-            <ManualPurchaseDocumentDrawer
-              draft={transactionDraft}
-              setDraft={setTransactionDraft}
-              errors={transactionErrors}
-              supplier={selectedSupplier}
-              expenseAccounts={expenseAccounts}
-              vatCodes={vatCodes}
-              saving={saving}
-              onClose={() => setTransactionDraft(null)}
-              onSave={saveTransactionDraft}
-              onPost={postTransactionDraft}
-            />
+          {transactionEntryMode === "modal" && transactionDraft ? (
+            <TransactionEntryModal onClose={() => {
+              setTransactionDraft(null);
+              setTransactionEntryMode("");
+            }}>
+              <ManualPurchaseDocumentDrawer
+                draft={transactionDraft}
+                setDraft={setTransactionDraft}
+                errors={transactionErrors}
+                supplier={selectedSupplier}
+                expenseAccounts={expenseAccounts}
+                vatCodes={vatCodes}
+                saving={saving}
+                onClose={() => {
+                  setTransactionDraft(null);
+                  setTransactionEntryMode("");
+                }}
+                onSave={saveTransactionDraft}
+                onPost={postTransactionDraft}
+                onApproveInvoice={approvePurchaseInvoice}
+                onCopyInvoice={copyPurchaseInvoiceToNew}
+                approvalRequired={Boolean(settingsForm.approval_required)}
+              />
+            </TransactionEntryModal>
           ) : null}
+
         </div>
       );
     }
@@ -1239,7 +1574,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
               <Input value={supplierQuery} onChange={(e) => setSupplierQuery(e.target.value)} placeholder="Search supplier cards" className="h-9 pl-9" />
             </div>
           </div>
-          <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
+          <div className="grid gap-2 md:grid-cols-2 2xl:grid-cols-3">
             {visibleSuppliers.map((supplier) => (
               <SupplierCard
                 key={supplier.id}
@@ -1289,12 +1624,210 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
               </div>
             </form>
           </div>
-        ) : null}
-      </div>
-    );
+          ) : null}
+
+          {transactionEntryMode === "modal" && transactionDraft ? (
+            <TransactionEntryModal onClose={() => {
+              setTransactionDraft(null);
+              setTransactionEntryMode("");
+            }}>
+              <ManualPurchaseDocumentDrawer
+                draft={transactionDraft}
+                setDraft={setTransactionDraft}
+                errors={transactionErrors}
+                supplier={selectedSupplier}
+                expenseAccounts={expenseAccounts}
+                vatCodes={vatCodes}
+                saving={saving}
+                onClose={() => {
+                  setTransactionDraft(null);
+                  setTransactionEntryMode("");
+                }}
+                onSave={saveTransactionDraft}
+                onPost={postTransactionDraft}
+                onApproveInvoice={approvePurchaseInvoice}
+                onCopyInvoice={copyPurchaseInvoiceToNew}
+                approvalRequired={Boolean(settingsForm.approval_required)}
+              />
+            </TransactionEntryModal>
+          ) : null}
+        </div>
+      );
   }
 
   return null;
+}
+
+function TransactionEntryModal({ children, onClose }) {
+  const dialogRef = useRef(null);
+  const initialDraftRef = useRef(JSON.stringify(children?.props?.draft || {}));
+  const isDirty = JSON.stringify(children?.props?.draft || {}) !== initialDraftRef.current;
+  const requestClose = useCallback(() => {
+    if (isDirty && !window.confirm("You have unsaved changes. Close this transaction without saving?")) return;
+    onClose();
+  }, [isDirty, onClose]);
+
+  useEffect(() => {
+    const scrollY = window.scrollY;
+    const previous = {
+      overflow: document.body.style.overflow,
+      htmlOverflow: document.documentElement.style.overflow,
+    };
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+    const dialog = dialogRef.current;
+    const focusable = dialog?.querySelector('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])');
+    focusable?.focus();
+    return () => {
+      document.body.style.overflow = previous.overflow;
+      document.documentElement.style.overflow = previous.htmlOverflow;
+      window.scrollTo(0, scrollY);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        requestClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = [...(dialogRef.current?.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])];
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [requestClose]);
+
+  const guardedChildren = React.isValidElement(children) ? React.cloneElement(children, { onClose: requestClose }) : children;
+  return (
+    <div className="fixed inset-0 z-50 h-[100dvh] w-screen overflow-hidden bg-stone-950/60 p-0 sm:p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose(); }}>
+      <div className="mx-auto flex h-full w-full max-w-[1500px] items-stretch sm:items-center" onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose(); }}>
+        <div ref={dialogRef} role="dialog" aria-modal="true" tabIndex={-1} className="relative flex max-h-full min-h-0 w-full max-w-[min(1380px,calc(100vw-24px))] overflow-hidden rounded-none bg-white shadow-2xl sm:max-h-[calc(100dvh-32px)] sm:rounded-md">
+          <Button type="button" variant="outline" size="icon" onClick={requestClose} className="absolute right-3 top-3 z-20 bg-white">
+            <X className="h-4 w-4" />
+          </Button>
+          <div className="min-h-0 w-full overflow-hidden">
+            {guardedChildren}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LedgerColumnHeader({ label, sortKey, sort, onSort, children, align = "left", activeFilter = false, openKey = "", setOpenKey = () => {}, width, onResize }) {
+  const wrapperRef = useRef(null);
+  const open = openKey === sortKey;
+  const sorted = sort?.key === sortKey;
+  const indicator = sorted ? (sort.direction === "asc" ? "Asc" : "Desc") : "";
+  const startResize = (event) => {
+    if (!onResize) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startWidth = width || wrapperRef.current?.getBoundingClientRect().width || 120;
+    const handleMouseMove = (moveEvent) => {
+      onResize(Math.max(88, Math.round(startWidth + moveEvent.clientX - startX)));
+    };
+    const handleMouseUp = () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+  };
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeOnOutsideClick = (event) => {
+      if (wrapperRef.current?.contains(event.target)) return;
+      setOpenKey("");
+    };
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    return () => document.removeEventListener("mousedown", closeOnOutsideClick);
+  }, [open, setOpenKey]);
+
+  return (
+    <th ref={wrapperRef} className={`relative select-none px-2 py-1.5 align-top ${align === "right" ? "text-right" : "text-left"}`} style={width ? { width, minWidth: width } : undefined}>
+      <div className={`flex items-center gap-1 ${align === "right" ? "justify-end" : "justify-start"}`}>
+        <span className="font-semibold text-stone-600">{label}</span>
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            setOpenKey(open ? "" : sortKey);
+          }}
+          className={`inline-flex h-6 w-6 items-center justify-center rounded-md border transition ${activeFilter || sorted ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-transparent text-stone-400 hover:border-stone-200 hover:bg-white hover:text-stone-700"}`}
+          aria-label={`${label} filter and sort`}
+          title={`${label} filter and sort`}
+        >
+          <Filter className="h-3.5 w-3.5" />
+        </button>
+        {indicator ? <span className="text-[10px] normal-case text-emerald-700">{indicator}</span> : null}
+      </div>
+      {open ? (
+        <div className={`absolute z-30 mt-1 w-56 rounded-md border border-stone-200 bg-white p-2 text-left normal-case tracking-normal shadow-lg ${align === "right" ? "right-0" : "left-0"}`}>
+          {children || <SortControls sortKey={sortKey} onSort={onSort} />}
+        </div>
+      ) : null}
+      {onResize ? <span role="separator" aria-orientation="vertical" className="absolute right-0 top-0 h-full w-1 cursor-col-resize bg-transparent hover:bg-emerald-200" onMouseDown={startResize} /> : null}
+    </th>
+  );
+}
+
+function ColumnSelectorPanel({ columns, visibleColumns, setVisibleColumns, onClose }) {
+  const visibleSet = new Set(visibleColumns);
+  const toggleColumn = (key) => {
+    setVisibleColumns((current) => {
+      if (current.includes(key)) return current.length === 1 ? current : current.filter((item) => item !== key);
+      const order = columns.map((column) => column.key);
+      return [...current, key].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+    });
+  };
+  return (
+    <div className="mb-3 flex justify-end">
+      <div className="w-full max-w-sm rounded-md border border-stone-200 bg-white p-3 shadow-lg">
+        <div className="mb-2 flex items-start justify-between gap-3">
+          <div>
+            <h4 className="text-sm font-semibold text-stone-900">Select columns</h4>
+            <p className="text-xs text-stone-500">Choose the columns shown in this ledger.</p>
+          </div>
+          <Button type="button" variant="outline" size="sm" onClick={onClose}>Close</Button>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {columns.map((column) => (
+            <label key={column.key} className="flex items-center gap-2 text-sm text-stone-700">
+              <input type="checkbox" checked={visibleSet.has(column.key)} onChange={() => toggleColumn(column.key)} />
+              <span>{column.label}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SortControls({ sortKey, onSort }) {
+  return (
+    <div className="grid grid-cols-2 gap-1">
+      <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={() => onSort(sortKey, "asc")}>Asc</Button>
+      <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={() => onSort(sortKey, "desc")}>Desc</Button>
+    </div>
+  );
+}
+
+function ClearFilterButton({ children = "Clear filter", onClick }) {
+  return (
+    <Button type="button" variant="ghost" size="sm" className="mt-2 h-7 w-full justify-center text-xs" onClick={onClick}>
+      {children}
+    </Button>
+  );
 }
 
 function ManualPurchaseDocumentDrawer({
@@ -1308,9 +1841,18 @@ function ManualPurchaseDocumentDrawer({
   onClose,
   onSave,
   onPost,
+  onApproveInvoice,
+  onCopyInvoice,
+  approvalRequired,
 }) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const readOnly = isReadOnlyTransaction(draft);
+  const existingLedgerRecord = Boolean(draft.id) && draft.source !== "frontend";
+  const [editMode, setEditMode] = useState(false);
+  const formReadOnly = readOnly || (existingLedgerRecord && !editMode);
+  useEffect(() => {
+    setEditMode(false);
+  }, [draft.id, draft.ledgerKey]);
   const isCredit = isCreditDocument(draft.type);
   const isPayment = isPaymentDocument(draft.type);
   const lineTotals = transactionLineTotals(draft.line_items);
@@ -1326,7 +1868,9 @@ function ManualPurchaseDocumentDrawer({
   const sourceKind = sourceDocumentKind(previewUrl || draft.attachment_name || draft.attachment_path);
   const sourceLabel = draft.source_submission_id ? "Source: Submitted Items" : "Source document";
   const isExistingApInvoice = draft.source === "invoice" && draft.id;
-  const saveLabel = draft.source === "invoice" && draft.id ? "Update AP invoice" : "Save draft";
+  const existingInvoiceStatus = String(draft.status || "").trim().toLowerCase().replaceAll(" ", "_");
+  const canApproveExistingInvoice = isExistingApInvoice && !draft.posted_journal_id && ["awaiting_approval", "draft"].includes(existingInvoiceStatus);
+  const saveLabel = draft.source === "invoice" && draft.id ? "Update AP invoice" : (approvalRequired ? "Submit for approval" : "Post to AP");
   const showPostAction = !isExistingApInvoice && !isPayment;
   const accountOptions = useMemo(() => {
     const seen = new Set();
@@ -1378,15 +1922,15 @@ function ManualPurchaseDocumentDrawer({
   };
 
   return (
-    <div className="fixed inset-y-0 right-0 z-40 w-full max-w-[1180px] overflow-hidden border-l border-stone-200 bg-white shadow-2xl">
-      <div className="flex h-full min-h-0 flex-col">
-        <header className="border-b border-stone-200 bg-stone-50 px-4 py-3">
+    <div className="w-full overflow-hidden rounded-b-md border-t border-emerald-200 bg-white shadow-inner">
+      <div className="flex max-h-[calc(100dvh-32px)] min-h-0 flex-col">
+        <header className="sticky top-0 z-10 border-b border-stone-200 bg-stone-50 px-4 py-3">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="font-display text-lg font-semibold text-stone-900">{supplier?.name || draft.supplier_name || "Supplier"}</h3>
                 <Badge variant="secondary">{supplier?.supplier_code || draft.supplier_code || "No supplier code"}</Badge>
-                <Badge className={statusBadgeClass(draft.status)}>{displayStatus(draft.status || "Draft")}</Badge>
+                <Badge className={statusBadgeClass(draft.status)}>{displayStatus(draft.status || "Awaiting approval")}</Badge>
               </div>
               <p className="mt-1 text-sm text-stone-500">
                 {isExistingApInvoice ? "Accounts Payable invoice details. Editable fields can be updated here." : "Manual Accounts Payable purchase document entry. Supplier is locked from the open supplier account."}
@@ -1395,19 +1939,28 @@ function ManualPurchaseDocumentDrawer({
             <div className="flex flex-wrap gap-2">
               {draft.originalKey ? <Button type="button" variant="outline" onClick={() => set("showImpact", !draft.showImpact)}>View ledger impact</Button> : null}
               {draft.originalKey ? <Button type="button" variant="outline" onClick={() => set("showAudit", !draft.showAudit)}>View audit trail</Button> : null}
+              {isExistingApInvoice ? <Button type="button" variant="outline" disabled={saving} onClick={onCopyInvoice}>Copy to new purchase invoice</Button> : null}
+              {existingLedgerRecord && !readOnly && !editMode ? <Button type="button" onClick={() => setEditMode(true)} style={{ background: "var(--brand)" }}><Edit3 className="mr-2 h-4 w-4" /> Edit</Button> : null}
+              {existingLedgerRecord && editMode ? <Button type="button" variant="outline" onClick={() => setEditMode(false)}>Cancel edit</Button> : null}
               <Button type="button" variant="outline" onClick={onClose}>Cancel / close</Button>
-              {!readOnly ? <Button type="button" variant="outline" disabled={saving} onClick={(event) => onSave(event, draft.status || "Draft")}>{saveLabel}</Button> : null}
-              {!readOnly && showPostAction ? <Button type="button" disabled={saving} onClick={onPost} style={{ background: "var(--brand)" }}>Post to AP</Button> : null}
+              {!formReadOnly ? <Button type="button" variant="outline" disabled={saving} onClick={(event) => onSave(event, draft.status || "Awaiting approval")}>{saveLabel}</Button> : null}
+              {!formReadOnly && showPostAction ? <Button type="button" disabled={saving} onClick={onPost} style={{ background: "var(--brand)" }}>Post to AP</Button> : null}
+              {canApproveExistingInvoice ? <Button type="button" disabled={saving} onClick={() => onApproveInvoice(draft)} style={{ background: "var(--brand)" }}>Approve</Button> : null}
               <Button type="button" variant="outline" size="sm" onClick={onClose}><X className="h-4 w-4" /></Button>
             </div>
           </div>
         </header>
 
-        <div className="grid min-h-0 flex-1 gap-0 lg:grid-cols-[minmax(620px,1fr)_380px]">
-          <form onSubmit={(event) => onSave(event, draft.status || "Draft")} className="min-h-0 overflow-auto p-4">
+        <div className="grid min-h-0 flex-1 gap-0 overflow-y-auto overflow-x-hidden xl:grid-cols-[minmax(0,1fr)_340px]">
+          <form onSubmit={(event) => onSave(event, draft.status || "Awaiting approval")} className="min-h-0 min-w-0 p-3">
             {readOnly ? (
               <div className="mb-3 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-600">
                 This AP invoice is view-only because its status is {displayStatus(draft.status)}. Corrections should be entered through the appropriate AP adjustment flow.
+              </div>
+            ) : null}
+            {existingLedgerRecord && !readOnly && !editMode ? (
+              <div className="mb-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+                This AP ledger item is open in read-only view mode. Select Edit to update its header or line items.
               </div>
             ) : null}
             {errors.backend ? <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{errors.backend}</div> : null}
@@ -1426,25 +1979,25 @@ function ManualPurchaseDocumentDrawer({
                   <Input value={supplier?.supplier_code || draft.supplier_code || ""} readOnly className="h-9 bg-stone-50" />
                 </FieldControl>
                 <FieldControl label="Type" error={errors.type}>
-                  <select value={draft.type} disabled={readOnly} onChange={(e) => set("type", e.target.value)} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm disabled:bg-stone-50">
+                  <select value={draft.type} disabled={formReadOnly} onChange={(e) => set("type", e.target.value)} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm disabled:bg-stone-50">
                     {transactionTypes.map((type) => <option key={type} value={type}>{type === "Purchase Invoice" ? "Purchase Invoice / Bill" : type}</option>)}
                   </select>
                 </FieldControl>
                 {!isPayment ? (
                   <FieldControl label={documentNumberLabel(draft.type)} error={errors.document_number}>
-                    <Input value={draft.document_number || ""} readOnly={readOnly} onChange={(e) => set("document_number", e.target.value)} className="h-9" />
+                    <Input value={draft.document_number || ""} readOnly={formReadOnly} onChange={(e) => set("document_number", e.target.value)} className="h-9" />
                   </FieldControl>
                 ) : null}
                 <FieldControl label="Reference">
-                  <Input value={draft.reference || ""} readOnly={readOnly} onChange={(e) => set("reference", e.target.value)} className="h-9" />
+                  <Input value={draft.reference || ""} readOnly={formReadOnly} onChange={(e) => set("reference", e.target.value)} className="h-9" />
                 </FieldControl>
                 <FieldControl label={documentDateLabel(draft.type)} error={errors.date}>
-                  <Input type="date" value={draft.date || ""} readOnly={readOnly} onChange={(e) => set("date", e.target.value)} className="h-9" />
+                  <Input type="date" value={draft.date || ""} readOnly={formReadOnly} onChange={(e) => set("date", e.target.value)} className="h-9" />
                 </FieldControl>
                 {!isCredit && !isPayment ? (
                   <>
                     <FieldControl label="Due date">
-                      <Input type="date" value={draft.due_date || ""} readOnly={readOnly} onChange={(e) => set("due_date", e.target.value)} className="h-9" />
+                      <Input type="date" value={draft.due_date || ""} readOnly={formReadOnly} onChange={(e) => set("due_date", e.target.value)} className="h-9" />
                     </FieldControl>
                     <FieldControl label="Payment terms">
                       <Input value={supplier?.payment_terms_days || draft.payment_terms || ""} readOnly className="h-9 bg-stone-50" />
@@ -1457,20 +2010,20 @@ function ManualPurchaseDocumentDrawer({
                 {!isPayment ? (
                   <>
                     <FieldControl label="Purchase nominal / category" error={errors.purchase_nominal}>
-                      <select value={canonicalOptionValue(draft.purchase_nominal, accountOptions)} disabled={readOnly} onChange={(e) => set("purchase_nominal", e.target.value)} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm disabled:bg-stone-50">
+                      <select value={canonicalOptionValue(draft.purchase_nominal, accountOptions)} disabled={formReadOnly} onChange={(e) => set("purchase_nominal", e.target.value)} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm disabled:bg-stone-50">
                         <option value="">Select purchase nominal</option>
                         {accountOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                       </select>
                     </FieldControl>
                     <FieldControl label="VAT code">
                       {hasVatOptions ? (
-                        <select value={canonicalOptionValue(draft.vat_code, vatOptions)} disabled={readOnly} onChange={(e) => set("vat_code", e.target.value)} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm disabled:bg-stone-50">
+                        <select value={canonicalOptionValue(draft.vat_code, vatOptions)} disabled={formReadOnly} onChange={(e) => set("vat_code", e.target.value)} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm disabled:bg-stone-50">
                           <option value="">Select VAT code</option>
                           {vatOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                         </select>
                       ) : (
                         <>
-                          <Input value={draft.vat_code || ""} readOnly={readOnly} onChange={(e) => set("vat_code", e.target.value)} className="h-9" />
+                          <Input value={draft.vat_code || ""} readOnly={formReadOnly} onChange={(e) => set("vat_code", e.target.value)} className="h-9" />
                           <p className="mt-1 text-xs text-amber-700">VAT code list unavailable. Free text is enabled until native VAT codes are returned.</p>
                         </>
                       )}
@@ -1480,7 +2033,7 @@ function ManualPurchaseDocumentDrawer({
               </div>
               <div className="mt-3">
                 <FieldControl label="Description" error={errors.description}>
-                  <textarea value={draft.description || ""} readOnly={readOnly} onChange={(e) => set("description", e.target.value)} className="min-h-20 w-full rounded-md border border-stone-200 px-3 py-2 text-sm read-only:bg-stone-50" />
+                  <textarea value={draft.description || ""} readOnly={formReadOnly} onChange={(e) => set("description", e.target.value)} className="min-h-20 w-full rounded-md border border-stone-200 px-3 py-2 text-sm read-only:bg-stone-50" />
                 </FieldControl>
               </div>
             </section>
@@ -1490,13 +2043,13 @@ function ManualPurchaseDocumentDrawer({
                 <h4 className="mb-3 text-sm font-semibold text-stone-900">Amounts</h4>
                 <div className="grid gap-3 md:grid-cols-4">
                   <FieldControl label="Net amount" error={errors.amount}>
-                    <Input type="number" step="0.01" value={draft.net || ""} readOnly={readOnly} onChange={(e) => set("net", e.target.value)} className="h-9" />
+                    <Input type="number" step="0.01" value={draft.net || ""} readOnly={formReadOnly} onChange={(e) => set("net", e.target.value)} className="h-9" />
                   </FieldControl>
                   <FieldControl label="VAT amount">
-                    <Input type="number" step="0.01" value={draft.vat || ""} readOnly={readOnly} onChange={(e) => set("vat", e.target.value)} className="h-9" />
+                    <Input type="number" step="0.01" value={draft.vat || ""} readOnly={formReadOnly} onChange={(e) => set("vat", e.target.value)} className="h-9" />
                   </FieldControl>
                   <FieldControl label="Gross amount">
-                    <Input type="number" step="0.01" value={draft.gross || ""} readOnly={readOnly} onChange={(e) => set("gross", e.target.value)} className="h-9" />
+                    <Input type="number" step="0.01" value={draft.gross || ""} readOnly={formReadOnly} onChange={(e) => set("gross", e.target.value)} className="h-9" />
                   </FieldControl>
                   <div className="rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-600">
                     <div className="text-xs font-semibold uppercase tracking-wide text-stone-500">Lines gross</div>
@@ -1514,13 +2067,13 @@ function ManualPurchaseDocumentDrawer({
                 <h4 className="mb-3 text-sm font-semibold text-stone-900">Supplier payment</h4>
                 <div className="grid gap-3 md:grid-cols-3">
                   <FieldControl label="Payment date" error={errors.date}>
-                    <Input type="date" value={draft.date || ""} readOnly={readOnly} onChange={(e) => set("date", e.target.value)} className="h-9" />
+                    <Input type="date" value={draft.date || ""} readOnly={formReadOnly} onChange={(e) => set("date", e.target.value)} className="h-9" />
                   </FieldControl>
                   <FieldControl label="Bank reference">
-                    <Input value={draft.reference || ""} readOnly={readOnly} onChange={(e) => set("reference", e.target.value)} className="h-9" />
+                    <Input value={draft.reference || ""} readOnly={formReadOnly} onChange={(e) => set("reference", e.target.value)} className="h-9" />
                   </FieldControl>
                   <FieldControl label="Amount paid" error={errors.amount}>
-                    <Input type="number" step="0.01" value={draft.gross || ""} readOnly={readOnly} onChange={(e) => set("gross", e.target.value)} className="h-9" />
+                    <Input type="number" step="0.01" value={draft.gross || ""} readOnly={formReadOnly} onChange={(e) => set("gross", e.target.value)} className="h-9" />
                   </FieldControl>
                 </div>
               </section>
@@ -1530,51 +2083,51 @@ function ManualPurchaseDocumentDrawer({
               <section className="mt-3 rounded-md border border-stone-200 bg-white p-3">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <h4 className="text-sm font-semibold text-stone-900">Line items</h4>
-                  {!readOnly ? <Button type="button" variant="outline" size="sm" onClick={addLine}>Add line item</Button> : null}
+                  {!formReadOnly ? <Button type="button" variant="outline" size="sm" onClick={addLine}>Add line item</Button> : null}
                 </div>
                 {errors.line_items ? <div className="mb-2 text-xs font-medium text-red-600">{errors.line_items}</div> : null}
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[1080px] text-xs">
+                <div className="w-full overflow-x-auto">
+                  <table className="w-full table-fixed text-xs">
                     <thead className="border-b border-stone-200 text-left text-[10px] uppercase tracking-wider text-stone-500">
                       <tr>
-                        <th className="w-56 py-1 pr-1.5">Description</th>
-                        <th className="w-52 py-1 pr-1.5">Purchase nominal/account code</th>
-                        <th className="w-56 py-1 pr-1.5">VAT code</th>
+                        <th className="w-[20%] py-1 pr-1.5">Description</th>
+                        <th className="w-[19%] py-1 pr-1.5">Purchase nominal</th>
+                        <th className="w-[17%] py-1 pr-1.5">VAT code</th>
                         <th className="py-1 pr-1.5">Quantity / units</th>
                         <th className="py-1 pr-1.5">Unit price</th>
                         <th className="py-1 pr-1.5">Net</th>
                         <th className="py-1 pr-1.5">VAT</th>
                         <th className="py-1">Total</th>
-                        <th className="py-1 pl-1.5"></th>
+                        <th className="w-8 py-1 pl-1.5"></th>
                       </tr>
                     </thead>
                     <tbody>
                       {draft.line_items.map((line, index) => (
                         <tr key={index}>
-                          <td className="py-0.5 pr-1.5"><Input value={line.description || ""} readOnly={readOnly} onChange={(e) => setLine(index, "description", e.target.value)} className="h-8 min-w-52 px-1.5 text-xs" /></td>
+                          <td className="py-0.5 pr-1.5"><Input value={line.description || ""} readOnly={formReadOnly} onChange={(e) => setLine(index, "description", e.target.value)} className="h-8 w-full px-1.5 text-xs" /></td>
                           <td className="py-0.5 pr-1.5">
-                            <select value={canonicalOptionValue(line.purchase_nominal, accountOptions)} disabled={readOnly} onChange={(e) => setLine(index, "purchase_nominal", e.target.value)} className="h-8 min-w-48 rounded-md border border-stone-200 bg-white px-1.5 text-xs disabled:bg-stone-50">
+                            <select value={canonicalOptionValue(line.purchase_nominal, accountOptions)} disabled={formReadOnly} onChange={(e) => setLine(index, "purchase_nominal", e.target.value)} className="h-8 w-full rounded-md border border-stone-200 bg-white px-1.5 text-xs disabled:bg-stone-50">
                               <option value="">Select nominal</option>
                               {accountOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                             </select>
                           </td>
                           <td className="py-0.5 pr-1.5">
                             {hasVatOptions ? (
-                              <select value={canonicalOptionValue(line.vat_code, vatOptions)} disabled={readOnly} onChange={(e) => setLine(index, "vat_code", e.target.value)} className="h-8 min-w-52 rounded-md border border-stone-200 bg-white px-1.5 text-xs disabled:bg-stone-50">
+                              <select value={canonicalOptionValue(line.vat_code, vatOptions)} disabled={formReadOnly} onChange={(e) => setLine(index, "vat_code", e.target.value)} className="h-8 w-full rounded-md border border-stone-200 bg-white px-1.5 text-xs disabled:bg-stone-50">
                                 <option value="">Select VAT code</option>
                                 {vatOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                               </select>
                             ) : (
-                              <Input value={line.vat_code || ""} readOnly={readOnly} onChange={(e) => setLine(index, "vat_code", e.target.value)} className="h-8 min-w-52 px-1.5 text-xs" />
+                              <Input value={line.vat_code || ""} readOnly={formReadOnly} onChange={(e) => setLine(index, "vat_code", e.target.value)} className="h-8 w-full px-1.5 text-xs" />
                             )}
                           </td>
-                          <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.quantity || ""} readOnly={readOnly} onChange={(e) => setLine(index, "quantity", e.target.value)} className="h-7 min-w-20 px-1.5 text-xs" /></td>
-                          <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.unit_price || ""} readOnly={readOnly} onChange={(e) => setLine(index, "unit_price", e.target.value)} className="h-7 min-w-20 px-1.5 text-xs" /></td>
-                          <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.net || ""} readOnly={readOnly} onChange={(e) => setLine(index, "net", e.target.value)} className="h-7 min-w-20 px-1.5 text-xs" /></td>
-                          <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.vat || ""} readOnly={readOnly} onChange={(e) => setLine(index, "vat", e.target.value)} className="h-7 min-w-20 px-1.5 text-xs" /></td>
-                          <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.gross || ""} readOnly={readOnly} onChange={(e) => setLine(index, "gross", e.target.value)} className="h-7 min-w-20 px-1.5 text-xs" /></td>
+                          <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.quantity || ""} readOnly={formReadOnly} onChange={(e) => setLine(index, "quantity", e.target.value)} className="h-7 w-full px-1 text-xs" /></td>
+                          <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.unit_price || ""} readOnly={formReadOnly} onChange={(e) => setLine(index, "unit_price", e.target.value)} className="h-7 w-full px-1 text-xs" /></td>
+                          <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.net || ""} readOnly={formReadOnly} onChange={(e) => setLine(index, "net", e.target.value)} className="h-7 w-full px-1 text-xs" /></td>
+                          <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.vat || ""} readOnly={formReadOnly} onChange={(e) => setLine(index, "vat", e.target.value)} className="h-7 w-full px-1 text-xs" /></td>
+                          <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.gross || ""} readOnly={formReadOnly} onChange={(e) => setLine(index, "gross", e.target.value)} className="h-7 w-full px-1 text-xs" /></td>
                           <td className="py-0.5 pl-1.5">
-                            {!readOnly ? <Button type="button" variant="ghost" size="icon" onClick={() => removeLine(index)} className="h-7 w-7 text-stone-500 hover:text-red-600"><X className="h-3.5 w-3.5" /></Button> : null}
+                            {!formReadOnly ? <Button type="button" variant="ghost" size="icon" onClick={() => removeLine(index)} className="h-7 w-7 text-stone-500 hover:text-red-600"><X className="h-3.5 w-3.5" /></Button> : null}
                           </td>
                         </tr>
                       ))}
@@ -1588,7 +2141,7 @@ function ManualPurchaseDocumentDrawer({
             ) : null}
           </form>
 
-          <aside className="min-h-0 overflow-auto border-t border-stone-200 bg-stone-50 p-4 lg:border-l lg:border-t-0">
+          <aside className="min-h-0 min-w-0 border-t border-stone-200 bg-stone-50 p-3 xl:border-l xl:border-t-0">
             <section className="rounded-md border border-stone-200 bg-white p-3">
               <h4 className="text-sm font-semibold text-stone-900">Source document</h4>
               <div className="mt-3 min-h-56 rounded-md border border-dashed border-stone-300 bg-stone-50 p-4 text-sm text-stone-600">
@@ -1683,7 +2236,7 @@ function ManualPurchaseDocumentDrawer({
                 <h4 className="text-sm font-semibold text-stone-900">Audit trail</h4>
                 <div className="mt-2 space-y-1 text-sm text-stone-600">
                   <div>Opened from supplier ledger</div>
-                  <div>Status: {draft.status || "Draft"}</div>
+                  <div>Status: {displayStatus(draft.status || "Awaiting approval")}</div>
                   <div>Source: {draft.source === "frontend" ? "Manual AP entry" : "Accounts Payable ledger"}</div>
                 </div>
               </section>
@@ -1707,27 +2260,27 @@ function FieldControl({ label, error, children }) {
 
 function SupplierCard({ supplier, outstanding, paymentOnAccount, lastActivity, onOpen }) {
   return (
-    <button type="button" onClick={onOpen} className="rounded-md border border-stone-200 bg-white p-4 text-left shadow-sm transition hover:border-emerald-300 hover:shadow-md">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h4 className="font-display text-base font-semibold text-stone-900">{supplier.name || "Unnamed supplier"}</h4>
-          <p className="mt-0.5 text-xs text-stone-500">{supplier.supplier_code || supplier.email || "No supplier code"}</p>
+    <button type="button" onClick={onOpen} className="rounded-md border border-stone-200 bg-white p-2.5 text-left shadow-sm transition hover:border-emerald-300 hover:shadow-md">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <h4 className="truncate font-display text-sm font-semibold text-stone-900">{supplier.name || "Unnamed supplier"}</h4>
+          <p className="mt-0.5 truncate text-[11px] text-stone-500">{supplier.supplier_code || supplier.email || "No supplier code"}</p>
         </div>
-        <Badge className={statusBadgeClass(supplier.status || "active")}>{supplier.status || "Active"}</Badge>
+        <Badge className={`${statusBadgeClass(supplier.status || "active")} shrink-0`}>{supplier.status || "Active"}</Badge>
       </div>
-      <div className="mt-4 grid grid-cols-2 gap-2">
-        <div className="rounded-md bg-amber-50 px-3 py-2">
-          <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-amber-700"><ReceiptText className="h-3.5 w-3.5" /> Outstanding</div>
-          <div className="mt-1 font-display text-lg font-bold text-amber-900">{formatMoney(outstanding)}</div>
+      <div className="mt-2 grid grid-cols-2 gap-1.5">
+        <div className="min-w-0 rounded-md bg-amber-50 px-2 py-1">
+          <div className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-amber-700"><ReceiptText className="h-3 w-3 shrink-0" /> Outstanding</div>
+          <div className="mt-0.5 truncate font-display text-sm font-bold text-amber-900">{formatMoney(outstanding)}</div>
         </div>
-        <div className="rounded-md bg-sky-50 px-3 py-2">
-          <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-sky-700"><WalletCards className="h-3.5 w-3.5" /> On account</div>
-          <div className="mt-1 font-display text-lg font-bold text-sky-900">{formatMoney(paymentOnAccount)}</div>
+        <div className="min-w-0 rounded-md bg-sky-50 px-2 py-1">
+          <div className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-sky-700"><WalletCards className="h-3 w-3 shrink-0" /> On account</div>
+          <div className="mt-0.5 truncate font-display text-sm font-bold text-sky-900">{formatMoney(paymentOnAccount)}</div>
         </div>
       </div>
-      <div className="mt-3 flex items-center justify-between text-xs text-stone-500">
-        <span className="inline-flex items-center gap-1.5"><FileText className="h-3.5 w-3.5" /> Last transaction</span>
-        <span className="font-medium text-stone-700">{lastActivity ? formatDate(lastActivity) : "-"}</span>
+      <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px] text-stone-500">
+        <span className="inline-flex min-w-0 items-center gap-1"><FileText className="h-3 w-3 shrink-0" /> <span className="truncate">Last transaction</span></span>
+        <span className="shrink-0 font-medium text-stone-700">{lastActivity ? formatDate(lastActivity) : "-"}</span>
       </div>
     </button>
   );

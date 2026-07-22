@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ArrowLeft, Download, FileText, Plus, Printer, RefreshCw, Search, Upload } from "lucide-react";
+import { Download, FileText, Printer, Search, Upload } from "lucide-react";
 import { toast } from "sonner";
 import {
   AccountCodeSelect,
@@ -33,10 +33,9 @@ const creationActions = [
   "Create transfer",
   "Create direct expense",
   "Create direct income",
-  "Import statement",
 ];
 
-function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy }) {
+function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy, setHeaderContext }) {
   const banking = workspace.banking || {};
   const accounts = useMemo(() => workspace.accounts || [], [workspace.accounts]);
   const supportsBankingAccountFlag = useMemo(() => accounts.some((account) => "show_in_banking" in account || "banking_enabled" in account), [accounts]);
@@ -109,6 +108,58 @@ function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy 
   const visibleAccountTransactions = accountTxData.rows || [];
   const selectedImport = bankImports.find((item) => item.id === selectedImportId) || null;
   const selectedImportLines = selectedImport ? importLines(selectedImport, bankTransactions) : [];
+
+  useEffect(() => {
+    if (!setHeaderContext) return undefined;
+    if (!selectedBank) {
+      setHeaderContext(null);
+      return undefined;
+    }
+    setHeaderContext({
+      backLabel: "Back to bank accounts",
+      onBack: () => {
+        setSelectedBankId("");
+        setSelectedTransaction(null);
+      },
+      title: bankName(selectedBank) || "Bank account",
+      subtitle: `${[selectedBank.bank_name, selectedBank.sort_code, selectedBank.account_number].filter(Boolean).join(" - ") || "Chart of Accounts bank-enabled account"} - Nominal ${bankCode(selectedBank) || "-"}`,
+      tabs: bankTabs,
+      activeTab: bankTab,
+      onTabChange: (item) => {
+        setBankTab(item);
+        setSelectedTransaction(null);
+        if (item === "Account Transactions") setFilters((current) => ({ ...current, bank_account_id: "" }));
+      },
+      variant: "banking",
+      actionMenu: creationActions.map((action) => ({
+        label: action,
+        onClick: () => showBackendRequired(action),
+      })),
+      actions: [
+        {
+          label: "Import Statement",
+          icon: false,
+          onClick: () => setBankTab("Bank Statements"),
+        },
+        {
+          label: "Refresh",
+          icon: false,
+          onClick: () => {
+            reloadWorkspace?.();
+            setBankingRefreshKey((key) => key + 1);
+          },
+        },
+        {
+          label: "Link Bank",
+          icon: false,
+          onClick: () => toast.info("Link Bank will be available later in the project."),
+        },
+      ],
+    });
+    return () => setHeaderContext(null);
+    // Header actions intentionally use current Banking handlers without rebuilding on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedBank, bankTab, setHeaderContext]);
 
   useEffect(() => {
     setBankAccountsData(workspaceBankAccounts);
@@ -454,21 +505,6 @@ function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy 
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <Button type="button" variant="outline" onClick={() => setSelectedBankId("")}><ArrowLeft className="mr-2 h-4 w-4" /> Back to bank accounts</Button>
-          <h3 className="mt-3 font-display text-2xl font-semibold text-stone-900">{bankName(selectedBank) || "Bank account"}</h3>
-          <p className="text-sm text-stone-500">{[selectedBank.bank_name, selectedBank.sort_code, selectedBank.account_number].filter(Boolean).join(" - ") || "Chart of Accounts bank-enabled account"} | Nominal {bankCode(selectedBank) || "-"}</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {bankTabs.map((item) => (
-            <Button key={item} type="button" variant={bankTab === item ? "default" : "outline"} onClick={() => { setBankTab(item); setSelectedTransaction(null); if (item === "Account Transactions") setFilters((current) => ({ ...current, bank_account_id: "" })); }}>
-              {item}
-            </Button>
-          ))}
-        </div>
-      </div>
-
       <div className="grid gap-3 md:grid-cols-4">
         <SummaryCard label="Current balance" value={formatMoney(selectedBank.current_balance)} tone="emerald" />
         <SummaryCard label="Reconciled balance" value={formatMoney(selectedBank.reconciled_balance)} tone="blue" />
@@ -476,17 +512,6 @@ function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy 
         <SummaryCard label="Last import" value={formatDate(statementData.summary.last_import_date || selectedBank.last_import_date || selectedBank.last_import_at)} tone="stone" />
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-stone-200 bg-white p-3">
-        <div className="flex flex-wrap gap-2">
-          {creationActions.map((action) => (
-            <Button key={action} type="button" variant="outline" size="sm" onClick={() => action === "Import statement" ? setBankTab("Bank Statements") : showBackendRequired(action)}>
-              {action === "Import statement" ? <Upload className="mr-2 h-4 w-4" /> : <Plus className="mr-2 h-4 w-4" />}
-              {action}
-            </Button>
-          ))}
-        </div>
-        <Button type="button" variant="outline" size="sm" disabled={busy || saving} onClick={() => { reloadWorkspace?.(); setBankingRefreshKey((key) => key + 1); }}><RefreshCw className="mr-2 h-4 w-4" /> Refresh</Button>
-      </div>
       {bankTab === "Reconciliation" ? (
         <ReconciliationTab
           transactions={unreconciled}
@@ -503,6 +528,7 @@ function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy 
             setReconciliationPage(1);
           }}
           bankAccounts={bankAccounts}
+          selectedBankId={selectedBankId}
           postingAccounts={postingAccounts}
           vatCodes={vatCodes}
           matchSuggestion={matchSuggestion}
@@ -519,6 +545,7 @@ function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy 
         <BankStatementsTab
           imports={bankImports}
           statementLines={bankTransactions}
+          selectedBank={selectedBank}
           selectedImportId={selectedImportId}
           setSelectedImportId={setSelectedImportId}
           selectedImportLines={selectedImportLines}
@@ -607,7 +634,7 @@ function BankAccountCard({ account, unreconciledCount, lastImport, onOpen }) {
   );
 }
 
-function ReconciliationTab({ transactions, outstandingTransactions, totalRows, totalPages, page, pageSize, loading, error, onPageChange, onPageSizeChange, bankAccounts, postingAccounts, vatCodes, matchSuggestion, reconcileToAccount, reconcileSplitToAccounts, ignoreTransaction, sendToClientOutstandingItems, bulkAction, saving }) {
+function ReconciliationTab({ transactions, outstandingTransactions, totalRows, totalPages, page, pageSize, loading, error, onPageChange, onPageSizeChange, bankAccounts, selectedBankId, postingAccounts, vatCodes, matchSuggestion, reconcileToAccount, reconcileSplitToAccounts, ignoreTransaction, sendToClientOutstandingItems, bulkAction, saving }) {
   const [expanded, setExpanded] = useState(null);
   const [selectedIds, setSelectedIds] = useState([]);
   const [bulkMessage, setBulkMessage] = useState("");
@@ -1023,7 +1050,7 @@ function BulkActionBar({ selectedCount, onClear, message, children }) {
   );
 }
 
-function BankStatementsTab({ imports, statementLines, selectedImportId, setSelectedImportId, selectedImportLines, statusFilter, setStatusFilter, totalRows, totalPages, page, pageSize, loading, error, onPageChange, onPageSizeChange, importFile, setImportFile, importStatement, bulkAction, busy }) {
+function BankStatementsTab({ imports, statementLines, selectedBank, selectedImportId, setSelectedImportId, selectedImportLines, statusFilter, setStatusFilter, totalRows, totalPages, page, pageSize, loading, error, onPageChange, onPageSizeChange, importFile, setImportFile, importStatement, bulkAction, busy }) {
   const [selectedIds, setSelectedIds] = useState([]);
   const [bulkMessage, setBulkMessage] = useState("");
   const sourceLines = selectedImportId ? selectedImportLines : statementLines;
@@ -1037,6 +1064,12 @@ function BankStatementsTab({ imports, statementLines, selectedImportId, setSelec
   const selectedHasReconciled = selectedVisibleRows.some((line) => ["reconciled", "matched"].includes(normaliseStatus(line.status)));
   const selectedCanUnreconcile = selectedVisibleRows.some((line) => ["reconciled", "matched"].includes(normaliseStatus(line.status)));
   const selectedHasNonReconciliation = selectedVisibleRows.some((line) => !isReconciliationStatus(line));
+  const currentBalance = Number(selectedBank?.current_balance || 0);
+  const noStatementLinesMessage = imports.length
+    ? "Imported batches exist, but no statement rows are visible for this bank. Backend bank identity mapping may need review."
+    : currentBalance
+      ? `Current balance comes from posted accounting entries on nominal ${bankCode(selectedBank) || "this bank account"}. No bank statement lines have been imported for this bank account yet.`
+      : "No bank transactions found.";
 
   useEffect(() => {
     setSelectedIds([]);
@@ -1103,7 +1136,7 @@ function BankStatementsTab({ imports, statementLines, selectedImportId, setSelec
           onToggleAll={toggleAll}
           onToggleRow={toggleSelected}
           duplicateKeys={duplicateKeys}
-          emptyMessage={imports.length ? "Imported batches exist, but no statement rows are visible for this bank. Backend bank identity mapping may need review." : "No bank transactions found."}
+          emptyMessage={noStatementLinesMessage}
         />
         {linesToShow.length ? (
           <PaginationFooter

@@ -133,6 +133,7 @@ export default function AdminSubmissions() {
 
   useEffect(() => {
     setDraft(makeDraft(selected));
+    setActiveField(submittedDocumentFlow(selected) === "sales" ? "customer_name" : "vendor_name");
   }, [selected]);
 
   useEffect(() => {
@@ -201,7 +202,7 @@ export default function AdminSubmissions() {
     const isSalesInvoice = submittedDocumentFlow(selected) === "sales";
     const isPublishStatus = reviewStatus === "published" || reviewStatus === "published_to_ap" || reviewStatus === "published_to_ar";
     const nextInboxId = isPublishStatus ? getNextRowId(rows, selected.id) : "";
-    const codingFields = isSalesInvoice ? normaliseSalesReviewDraftForPayload(draft, codingOptions) : draft;
+    const codingFields = isSalesInvoice ? normaliseSalesReviewDraftForPayload(draft, codingOptions) : normalisePurchaseReviewDraftForPayload(draft, codingOptions);
     setBusy(true);
     try {
       const { data } = await api.patch(`/admin/submissions/${selected.id}/review-status`, { review_status: reviewStatus, coding_fields: codingFields });
@@ -798,10 +799,13 @@ function DetailLayer({
             <Sparkles className="h-4 w-4" /> AI prefill
           </Button>
           <Button type="button" variant="outline" onClick={() => moveSelected("archived")} disabled={busy} className="h-8 gap-2 px-3">
-            <Archive className="h-4 w-4" /> Archive
+            <Archive className="h-4 w-4" /> Reject / archive
           </Button>
-          <Button type="button" onClick={() => moveSelected("published")} disabled={busy || !purchaseReviewReady(draft, codingContext)} className="h-8 gap-2 px-3" style={{ background: "var(--brand)" }}>
-            <CheckCircle2 className="h-4 w-4" /> Publish and Next
+          <Button type="button" variant="outline" onClick={() => moveSelected("reviewed")} disabled={busy} className="h-8 gap-2 px-3">
+            <CheckCircle2 className="h-4 w-4" /> Save review
+          </Button>
+          <Button type="button" onClick={() => moveSelected("published_to_ap")} disabled={busy || !purchaseReviewReady(draft, codingContext)} className="h-8 gap-2 px-3" style={{ background: "var(--brand)" }}>
+            <CheckCircle2 className="h-4 w-4" /> Publish to Accounts Payable
           </Button>
         </div>
       </header>
@@ -1067,9 +1071,6 @@ function SalesInvoiceDetailLayer({
           <Button type="button" variant="outline" onClick={prefillSelected} disabled={busy} className="h-8 gap-2 px-3">
             <Sparkles className="h-4 w-4" /> AI prefill
           </Button>
-          <Button type="button" variant="outline" onClick={() => moveSelected("needs_clarification")} disabled={busy} className="h-8 gap-2 px-3">
-            <AlertTriangle className="h-4 w-4" /> Needs clarification
-          </Button>
           <Button type="button" variant="outline" onClick={() => moveSelected("archived")} disabled={busy} className="h-8 gap-2 px-3">
             <Archive className="h-4 w-4" /> Reject / archive
           </Button>
@@ -1114,7 +1115,7 @@ function SalesInvoiceDetailLayer({
             <div className="flex items-center justify-between gap-3 border-b border-stone-200 bg-white px-3 py-2">
               <div className="min-w-0">
                 <div className="truncate font-semibold text-stone-900">{row.image_filename || "Source document preview"}</div>
-                <div className="truncate text-xs text-stone-500">Original submitted item audit trail remains with this document</div>
+                <div className="truncate text-xs text-stone-500">Review against the original source document</div>
               </div>
               <Badge className={isPublishedToAr(row) ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-100" : "bg-sky-100 text-sky-800 hover:bg-sky-100"}>
                 {isPublishedToAr(row) ? "Published to Accounts Receivable" : "Sales Invoice"}
@@ -1391,25 +1392,6 @@ function SalesInvoiceReviewForm({ row, draft, setDraft, activeField, setActiveFi
           </div>
         </div>
 
-        <ReviewSection title="AI learning and review">
-          <div className="grid gap-2 md:grid-cols-2">
-            {["customer_name", "sales_invoice_number", "invoice_date", "due_date", "net", "vat", "total"].map((field) => (
-              <AiReviewField key={field} row={row} draft={draft} field={field} />
-            ))}
-          </div>
-        </ReviewSection>
-
-        <ReviewSection title="Submitted item audit trail">
-          <div className="space-y-1.5 text-xs text-stone-600">
-            {submittedItemAuditRows(row).map((entry, index) => (
-              <div key={index} className="flex items-start justify-between gap-3 rounded-md border border-stone-200 bg-stone-50 px-2 py-1.5">
-                <span className="font-medium text-stone-800">{entry.action}</span>
-                <span className="text-right">{entry.detail}</span>
-              </div>
-            ))}
-          </div>
-        </ReviewSection>
-
         {isPublishedToAr(row) && (
           <div className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
             <div className="font-semibold">Published to Accounts Receivable</div>
@@ -1524,15 +1506,15 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
 
       <div className="min-h-0 flex-1 overflow-auto p-2.5">
         <div className="grid gap-2 lg:grid-cols-3">
-          <DatalistField id="vendor_name" label="Vendor Name" value={draft.vendor_name} options={options.supplierOptions} onChange={(v) => setSupplierDraftFromOption(v, options.supplierOptions, setDraft)} activeField={activeField} setActiveField={setActiveField} />
+          <DatalistField id="vendor_name" label="Supplier" value={draft.vendor_name} options={options.supplierOptions} onChange={(v) => setSupplierDraftFromOption(v, options.supplierOptions, setDraft)} activeField={activeField} setActiveField={setActiveField} />
           <div>
             <Label className="text-xs font-semibold text-stone-700">Type</Label>
             <div className="mt-1 flex h-8 items-center gap-3 text-sm">
-              <label className="flex items-center gap-2"><input type="radio" checked={draft.document_type === "bill"} onChange={() => set("document_type", "bill")} /> Bill</label>
-              <label className="flex items-center gap-2"><input type="radio" checked={draft.document_type === "credit_note"} onChange={() => set("document_type", "credit_note")} /> Credit Note</label>
+              <label className="flex items-center gap-2"><input type="radio" checked={draft.document_type === "bill"} onChange={() => set("document_type", "bill")} /> Purchase invoice / bill</label>
+              <label className="flex items-center gap-2"><input type="radio" checked={draft.document_type === "credit_note"} onChange={() => set("document_type", "credit_note")} /> Supplier credit note</label>
             </div>
           </div>
-          <TextField id="bill_number" label="Bill #" value={draft.bill_number} onChange={(v) => set("bill_number", v)} activeField={activeField} setActiveField={setActiveField} />
+          <TextField id="bill_number" label="Invoice / bill number" value={draft.bill_number} onChange={(v) => set("bill_number", v)} activeField={activeField} setActiveField={setActiveField} />
           <div className="lg:col-span-3 -mt-1">
             <Button
               type="button"
@@ -1549,7 +1531,7 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
             )}
           </div>
           {hasCategoryOptions ? (
-            <SelectOptionField id="category" label="Category" value={draft.category} options={options.categoryOptions} onChange={(v) => set("category", v)} activeField={activeField} setActiveField={setActiveField} placeholder="Select category" />
+            <SelectOptionField id="category" label="Purchase nominal" value={draft.category} options={options.categoryOptions} onChange={(v) => set("category", v)} activeField={activeField} setActiveField={setActiveField} placeholder="Select purchase nominal" />
           ) : (
             <DatalistField id="category" label="Category" value={draft.category} options={options.categoryOptions} onChange={(v) => set("category", v)} activeField={activeField} setActiveField={setActiveField} />
           )}
@@ -1614,7 +1596,7 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
                 <tr>
                   <th className="py-1 pr-1.5">Pattern</th>
                   <th className="py-1 pr-1.5">Description</th>
-                  <th className="py-1 pr-1.5">Category</th>
+                  <th className="py-1 pr-1.5">Purchase nominal</th>
                   <th className="py-1 pr-1.5">VAT Code</th>
                   <th className="py-1 pr-1.5">Units</th>
                   <th className="py-1 pr-1.5">Price</th>
@@ -1766,7 +1748,12 @@ function DatalistField({ id, label, value, options = [], onChange, activeField, 
         className={`mt-0.5 h-8 px-2 text-sm ${active ? "border-emerald-500 ring-2 ring-emerald-100" : ""}`}
       />
       <datalist id={listId}>
-        {options.map((option) => <option key={option.value} value={option.value} label={option.label}>{option.label}</option>)}
+        {options.flatMap((option) => [
+          <option key={option.value} value={option.value} label={option.label}>{option.label}</option>,
+          option.supplier_email || option.customer_email
+            ? <option key={`${option.value}-email`} value={option.supplier_email || option.customer_email} label={option.label}>{option.label}</option>
+            : null,
+        ])}
       </datalist>
     </div>
   );
@@ -1774,33 +1761,37 @@ function DatalistField({ id, label, value, options = [], onChange, activeField, 
 
 function SelectOptionField({ id, label, value, options = [], onChange, activeField, setActiveField, placeholder = "Select" }) {
   const active = activeField === id;
+  const listId = `${id}-search-options`;
   return (
     <div>
       <Label className="text-xs font-semibold text-stone-700">{label}</Label>
-      <select
+      <Input
         value={canonicalOptionValue(value, options)}
-        onChange={(e) => onChange(e.target.value)}
+        list={listId}
+        placeholder={placeholder}
+        onChange={(e) => onChange(canonicalOptionValue(e.target.value, options))}
         onFocus={() => setActiveField(id)}
-        className={`mt-0.5 h-8 w-full rounded-md border border-stone-200 bg-white px-2 text-sm ${active ? "border-emerald-500 ring-2 ring-emerald-100" : ""}`}
-      >
-        <option value="">{placeholder}</option>
-        {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-      </select>
+        className={`mt-0.5 h-8 px-2 text-sm ${active ? "border-emerald-500 ring-2 ring-emerald-100" : ""}`}
+      />
+      <datalist id={listId}>{options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</datalist>
     </div>
   );
 }
 
 function LineSelect({ value, options = [], placeholder = "Select", onChange, onFocus, active }) {
+  const listId = `line-${String(placeholder).toLowerCase().replace(/[^a-z0-9]+/g, "-")}-options`;
   return (
-    <select
+    <>
+    <Input
       value={canonicalOptionValue(value, options)}
-      onChange={(e) => onChange(e.target.value)}
+      list={listId}
+      placeholder={placeholder}
+      onChange={(e) => onChange(canonicalOptionValue(e.target.value, options))}
       onFocus={onFocus}
       className={`h-7 min-w-44 rounded-md border border-stone-200 bg-white px-1.5 text-xs ${active ? "border-emerald-500 ring-2 ring-emerald-100" : ""}`}
-    >
-      <option value="">{placeholder}</option>
-      {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-    </select>
+    />
+    <datalist id={listId}>{options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</datalist>
+    </>
   );
 }
 
@@ -1924,8 +1915,11 @@ function makeDraft(row) {
     description: suggested.description || description,
     date: suggested.date || row?.date || "",
     due_date: suggested.due_date || suggested.date || row?.date || "",
-    net: suggested.net || amount,
-    total: suggested.total || amount,
+    bill_number: suggested.bill_number || suggested.invoice_number || suggested.document_number || "",
+    reference: suggested.reference || "",
+    net: suggested.net ?? suggested.net_amount ?? amount,
+    vat: suggested.vat ?? suggested.vat_amount ?? "",
+    total: suggested.total ?? suggested.gross ?? suggested.gross_amount ?? amount,
     currency: suggested.currency || "GBP",
     payment_method: displayPaymentMethod(suggested.payment_method) || paymentMethodLabel(row?.ai_payment_method),
     classification: suggested.classification || row?.classification || "",
@@ -1939,23 +1933,23 @@ function makeDraft(row) {
     customer_account_code: suggested.customer_account_code || suggested.customer_reference || suggested.customer_account || "",
     sales_invoice_number: suggested.sales_invoice_number || suggested.invoice_number || suggested.bill_number || "",
     invoice_date: suggested.invoice_date || suggested.date || row?.date || "",
-    payment_terms: suggested.payment_terms || "",
+    payment_terms: suggested.payment_terms || suggested.payment_terms_days || "",
     ar_sales_invoice_id: suggested.ar_sales_invoice_id || suggested.accounts_receivable_invoice_id || "",
     ar_sales_invoice_url: suggested.ar_sales_invoice_url || suggested.accounts_receivable_invoice_url || "",
     ocr_text_lines: Array.isArray(suggested.ocr_text_lines) ? suggested.ocr_text_lines : [],
     ocr_text_boxes: Array.isArray(suggested.ocr_text_boxes) ? suggested.ocr_text_boxes : [],
     line_items: lineItems.map((line) => ({
       description: line.description || "",
-      category: line.category || "",
-      sales_nominal: line.sales_nominal || line.sales_account || line.category || "",
+      category: line.category || line.nominal_account_code || line.purchase_account_code || "",
+      sales_nominal: line.sales_nominal || line.sales_account || line.sales_account_code || line.nominal_account_code || line.category || "",
       vat_code: line.vat_code || "",
-      units: line.units || "1",
+      units: line.units || line.quantity || "1",
       quantity: line.quantity || line.units || "1",
-      price: line.price || "",
+      price: line.price || line.unit_price || "",
       unit_price: line.unit_price || line.price || "",
-      net: line.net || "",
-      vat: line.vat || "",
-      total: line.total || "",
+      net: line.net ?? line.net_amount ?? "",
+      vat: line.vat ?? line.vat_amount ?? "",
+      total: line.total ?? line.gross ?? line.gross_amount ?? "",
     })),
   });
 }
@@ -2070,6 +2064,21 @@ function salesReviewProblems(draft, codingOptions = {}) {
     if (!String(line?.vat_code || "").trim()) problems.push(`Line ${index + 1} VAT code is required`);
   });
   return problems;
+}
+
+function normalisePurchaseReviewDraftForPayload(draft = {}, codingOptions = {}) {
+  const accountOptions = codingOptions.categoryOptions || [];
+  const vatOptions = codingOptions.vatOptions || [];
+  return {
+    ...draft,
+    category: canonicalOptionValue(draft.category, accountOptions),
+    vat_code: canonicalOptionValue(draft.vat_code, vatOptions),
+    line_items: (draft.line_items || []).map((line) => ({
+      ...line,
+      category: canonicalOptionValue(line.category, accountOptions),
+      vat_code: canonicalOptionValue(line.vat_code, vatOptions),
+    })),
+  };
 }
 
 function normaliseSalesReviewDraftForPayload(draft = {}, codingOptions = {}) {
@@ -2413,6 +2422,11 @@ function buildCodingContextOptions(context = {}) {
     supplier_id: record.supplier_id || record.id || record._id || "",
     supplier_name: record.name || "",
     supplier_code: record.supplier_code || record.code || "",
+    supplier_email: record.email || record.supplier_email || "",
+    currency: record.currency || record.default_currency || "",
+    payment_terms: record.payment_terms_days || record.payment_terms || "",
+    default_purchase_account: record.default_purchase_account || "",
+    default_vat_code: record.default_vat_code || "",
     external_id: record.external_id || "",
   })));
   const supplierAccountOptions = uniqueOptions((context.suppliers || []).filter(activeRecord).map((record) => ({
@@ -2433,6 +2447,8 @@ function buildCodingContextOptions(context = {}) {
     customer_email: record.email || record.customer_email || "",
     currency: record.currency || "",
     payment_terms: record.payment_terms_days || record.payment_terms || record.terms || "",
+    default_sales_account: record.default_sales_account || "",
+    default_vat_code: record.default_vat_code || "",
     external_id: record.external_id || "",
   })));
   const salesAccountOptions = uniqueOptions((context.sales_accounts || []).filter(activeRecord).map(accountOption));
@@ -2484,18 +2500,23 @@ function codingProviderLabel(context = {}) {
 }
 
 function setSupplierDraftFromOption(value, options = [], setDraft) {
-  const option = options.find((item) => item.value === value || item.label === value);
+  const option = options.find((item) => item.value === value || item.label === value || item.supplier_email === value);
   setDraft((current) => ({
     ...current,
     supplier_id: option?.supplier_id || current.supplier_id || "",
     supplier_code: option?.supplier_code || current.supplier_code || "",
     vendor_account: option?.supplier_code || current.vendor_account || "",
     vendor_name: option?.supplier_name || value,
+    supplier_email: option?.supplier_email || current.supplier_email || "",
+    currency: option?.currency || current.currency || "GBP",
+    payment_terms: option?.payment_terms || current.payment_terms || "",
+    category: option?.default_purchase_account || current.category || "",
+    vat_code: option?.default_vat_code || current.vat_code || "",
   }));
 }
 
 function setCustomerDraftFromOption(value, options = [], setDraft) {
-  const option = options.find((item) => item.value === value || item.label === value);
+  const option = options.find((item) => item.value === value || item.label === value || item.customer_email === value);
   setDraft((current) => ({
     ...current,
     customer_id: option?.customer_id || "",
@@ -2506,6 +2527,9 @@ function setCustomerDraftFromOption(value, options = [], setDraft) {
     customer_email: option?.customer_email || (option ? current.customer_email : ""),
     currency: option?.currency || current.currency || "GBP",
     payment_terms: option?.payment_terms || current.payment_terms || "",
+    sales_nominal: option?.default_sales_account || current.sales_nominal || current.category || "",
+    category: option?.default_sales_account || current.category || "",
+    vat_code: option?.default_vat_code || current.vat_code || "",
     customer_match_status: option?.label || "",
     create_new_customer: option ? false : current.create_new_customer,
   }));

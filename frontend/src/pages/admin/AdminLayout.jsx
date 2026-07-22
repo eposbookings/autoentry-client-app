@@ -3,16 +3,24 @@ import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
 import { EposLogo } from "@/components/Brand";
-import { Users, FileText, Settings, LogOut, PlugZap, ClipboardList, Landmark, Workflow, ServerCog, ShieldCheck } from "lucide-react";
+import { Users, FileText, Settings, LogOut, PlugZap, ClipboardList, Landmark, Workflow, ServerCog, ShieldCheck, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 const linkBase =
-  "admin-nav-link flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors";
+  "admin-nav-link flex items-center gap-2.5 whitespace-nowrap rounded-md text-sm font-medium transition-colors";
 
 export default function AdminLayout() {
   const { user, logout } = useAuth();
   const nav = useNavigate();
   const [features, setFeatures] = useState({ document_processing_enabled: true });
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.localStorage.getItem("admin-sidebar-collapsed") === "true");
+
+  function toggleSidebar() {
+    setSidebarCollapsed((current) => {
+      window.localStorage.setItem("admin-sidebar-collapsed", String(!current));
+      return !current;
+    });
+  }
 
   useEffect(() => {
     const loadFeatures = () => api.get("/admin/settings/features")
@@ -28,66 +36,82 @@ export default function AdminLayout() {
     nav("/login", { replace: true });
   }
 
+  const navLabelClass = sidebarCollapsed ? "hidden" : "";
+  const navLinkLayoutClass = sidebarCollapsed ? "justify-center px-0 py-2" : "px-3 py-2";
+  const navLinkClass = (isActive) => `${linkBase} ${navLinkLayoutClass} ${isActive ? "admin-nav-link-active" : "text-stone-600 hover:bg-white/80 hover:text-stone-900"}`;
+
   return (
-    <div className="app-shell-bg min-h-screen flex flex-col md:flex-row text-[14px]" data-testid="admin-shell">
-      <aside className="admin-sidebar md:w-52 md:min-h-screen border-b md:border-b-0 md:border-r border-stone-200">
-        <div className="admin-brand-panel px-3 py-3 flex items-center gap-2.5">
-          <EposLogo size={34} />
-          <div>
+    <div className="app-shell-bg flex h-screen overflow-hidden text-[14px]" data-testid="admin-shell">
+      <aside className={`admin-sidebar flex h-screen shrink-0 flex-col overflow-hidden border-r border-stone-200 transition-[width] ${sidebarCollapsed ? "w-16" : "w-52"}`}>
+        <div className={`admin-brand-panel flex shrink-0 items-center gap-2.5 px-3 py-3 ${sidebarCollapsed ? "justify-center px-2" : ""}`}>
+          {!sidebarCollapsed && <EposLogo size={34} />}
+          {!sidebarCollapsed && <div className="min-w-0">
             <div className="font-display text-sm font-bold text-stone-900 leading-tight">EPOS Accountancy</div>
             <div className="text-[10px] uppercase tracking-[0.18em] text-stone-500 font-semibold">Practice Admin</div>
-          </div>
+          </div>}
+          <Button type="button" variant="ghost" size="icon" onClick={toggleSidebar} className={`hidden h-8 w-8 md:inline-flex ${sidebarCollapsed ? "" : "ml-auto"}`} aria-label={sidebarCollapsed ? "Expand navigation" : "Collapse navigation"} title={sidebarCollapsed ? "Expand navigation" : "Collapse navigation"}>
+            {sidebarCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+          </Button>
         </div>
 
-        <nav className="px-2 pt-1 pb-4 space-y-1">
+        <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 pb-4 pt-1">
           <NavLink end to="/admin" data-testid="nav-clients"
-            className={({isActive}) => `${linkBase} ${isActive ? "admin-nav-link-active" : "text-stone-600 hover:bg-white/80 hover:text-stone-900"}`}>
-            <Users className="h-4 w-4" /> Client settings
+            title="Client settings"
+            className={({isActive}) => navLinkClass(isActive)}>
+            <Users className="h-4 w-4 shrink-0" /> <span className={navLabelClass}>Client settings</span>
           </NavLink>
           {features.document_processing_enabled && (
             <NavLink to="/admin/submissions" data-testid="nav-submissions"
-              className={({isActive}) => `${linkBase} ${isActive ? "admin-nav-link-active" : "text-stone-600 hover:bg-white/80 hover:text-stone-900"}`}>
-              <FileText className="h-4 w-4" /> Submitted items
+              title="Submitted items"
+              className={({isActive}) => navLinkClass(isActive)}>
+              <FileText className="h-4 w-4 shrink-0" /> <span className={navLabelClass}>Submitted items</span>
             </NavLink>
           )}
           <NavLink to="/admin/integrations" data-testid="nav-integrations"
-            className={({isActive}) => `${linkBase} ${isActive ? "admin-nav-link-active" : "text-stone-600 hover:bg-white/80 hover:text-stone-900"}`}>
-            <PlugZap className="h-4 w-4" /> Global integrations
+            title="Global integrations"
+            className={({isActive}) => navLinkClass(isActive)}>
+            <PlugZap className="h-4 w-4 shrink-0" /> <span className={navLabelClass}>Global integrations</span>
           </NavLink>
           <NavLink to="/admin/accounting" data-testid="nav-accounting"
-            className={({isActive}) => `${linkBase} ${isActive ? "admin-nav-link-active" : "text-stone-600 hover:bg-white/80 hover:text-stone-900"}`}>
-            <Landmark className="h-4 w-4" /> Accountancy software
+            title="Accountancy software"
+            className={({isActive}) => navLinkClass(isActive)}>
+            <Landmark className="h-4 w-4 shrink-0" /> <span className={navLabelClass}>Accountancy software</span>
           </NavLink>
           <NavLink to="/admin/accountancy" data-testid="nav-accountancy"
-            className={({isActive}) => `${linkBase} ${isActive ? "admin-nav-link-active" : "text-stone-600 hover:bg-white/80 hover:text-stone-900"}`}>
-            <ClipboardList className="h-4 w-4" /> Accountancy settings
+            title="Accountancy settings"
+            className={({isActive}) => navLinkClass(isActive)}>
+            <ClipboardList className="h-4 w-4 shrink-0" /> <span className={navLabelClass}>Accountancy settings</span>
           </NavLink>
           <NavLink to="/admin/automation" data-testid="nav-automation"
-            className={({isActive}) => `${linkBase} ${isActive ? "admin-nav-link-active" : "text-stone-600 hover:bg-white/80 hover:text-stone-900"}`}>
-            <Workflow className="h-4 w-4" /> Automation
+            title="Automation"
+            className={({isActive}) => navLinkClass(isActive)}>
+            <Workflow className="h-4 w-4 shrink-0" /> <span className={navLabelClass}>Automation</span>
           </NavLink>
           <NavLink to="/admin/integration-hub" data-testid="nav-integration-hub"
-            className={({isActive}) => `${linkBase} ${isActive ? "admin-nav-link-active" : "text-stone-600 hover:bg-white/80 hover:text-stone-900"}`}>
-            <ServerCog className="h-4 w-4" /> Integration Hub
+            title="Integration Hub"
+            className={({isActive}) => navLinkClass(isActive)}>
+            <ServerCog className="h-4 w-4 shrink-0" /> <span className={navLabelClass}>Integration Hub</span>
           </NavLink>
           <NavLink to="/admin/platform" data-testid="nav-platform"
-            className={({isActive}) => `${linkBase} ${isActive ? "admin-nav-link-active" : "text-stone-600 hover:bg-white/80 hover:text-stone-900"}`}>
-            <ShieldCheck className="h-4 w-4" /> Platform
+            title="Platform"
+            className={({isActive}) => navLinkClass(isActive)}>
+            <ShieldCheck className="h-4 w-4 shrink-0" /> <span className={navLabelClass}>Platform</span>
           </NavLink>
           <NavLink to="/admin/settings" data-testid="nav-settings"
-            className={({isActive}) => `${linkBase} ${isActive ? "admin-nav-link-active" : "text-stone-600 hover:bg-white/80 hover:text-stone-900"}`}>
-            <Settings className="h-4 w-4" /> SMTP Settings
+            title="SMTP Settings"
+            className={({isActive}) => navLinkClass(isActive)}>
+            <Settings className="h-4 w-4 shrink-0" /> <span className={navLabelClass}>SMTP Settings</span>
           </NavLink>
         </nav>
 
-        <div className="px-3 pb-3 mt-auto md:absolute md:bottom-3 md:w-52">
-          <Button variant="outline" onClick={onLogout} className="h-8 w-full justify-start gap-2" data-testid="logout-btn">
-            <LogOut className="h-4 w-4" /> Sign out
+        <div className="mt-auto shrink-0 px-3 pb-3">
+          <Button variant="outline" onClick={onLogout} className={`h-8 w-full gap-2 ${sidebarCollapsed ? "justify-center px-0" : "justify-start"}`} data-testid="logout-btn" title="Sign out">
+            <LogOut className="h-4 w-4 shrink-0" /> {!sidebarCollapsed && "Sign out"}
           </Button>
         </div>
       </aside>
 
-      <main className="admin-main flex-1 p-2 sm:p-3 max-w-none w-full fade-up overflow-hidden">
+      <main className="admin-main h-screen min-w-0 flex-1 overflow-y-auto p-2 sm:p-3 max-w-none w-full fade-up">
         <Outlet />
       </main>
     </div>
