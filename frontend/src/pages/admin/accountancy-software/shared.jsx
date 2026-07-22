@@ -2,6 +2,102 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 
+export const PAGE_SIZE_OPTIONS = [10, 25, 50, 100, 250];
+export const DEFAULT_PAGE_SIZE = 50;
+export const MAX_PAGE_SIZE = 250;
+
+export function normalisePageSize(value) {
+  const size = Number(value) || DEFAULT_PAGE_SIZE;
+  if (size > MAX_PAGE_SIZE) return MAX_PAGE_SIZE;
+  return PAGE_SIZE_OPTIONS.includes(size) ? size : DEFAULT_PAGE_SIZE;
+}
+
+export function pageSlice(rows = [], page = 1, pageSize = DEFAULT_PAGE_SIZE) {
+  const safePageSize = normalisePageSize(pageSize);
+  const safePage = Math.max(1, Number(page) || 1);
+  const start = (safePage - 1) * safePageSize;
+  return rows.slice(start, start + safePageSize);
+}
+
+export function normalisePaginatedResponse(payload = {}, fallbackPageSize = DEFAULT_PAGE_SIZE) {
+  const source = payload?.data || payload;
+  const nested = source?.ledger || source?.statements || source?.reconciliation || source?.account_transactions || source;
+  const firstArray = (...lists) => lists.find((list) => Array.isArray(list)) || [];
+  const rows = firstArray(
+    source?.rows,
+    nested?.rows,
+    source?.items,
+    source?.suppliers,
+    source?.customers,
+    source?.statement_lines,
+    source?.ledger_rows,
+    source?.transactions,
+    source?.lines
+  );
+  const pageSize = normalisePageSize(source?.page_size || nested?.page_size || source?.pageSize || fallbackPageSize);
+  const totalRows = Number(source?.total_rows ?? nested?.total_rows ?? source?.totalRows ?? nested?.totalRows ?? source?.count ?? rows.length) || 0;
+  return {
+    rows,
+    page: Math.max(1, Number(source?.page ?? nested?.page) || 1),
+    page_size: pageSize,
+    total_rows: totalRows,
+    total_pages: Math.max(1, Number(source?.total_pages ?? nested?.total_pages ?? source?.totalPages ?? nested?.totalPages) || Math.ceil(totalRows / pageSize) || 1),
+    summary: source?.summary || nested?.summary || {},
+    imports: firstArray(source?.imports, source?.import_batches, source?.batches),
+  };
+}
+
+export function PaginationFooter({
+  page = 1,
+  pageSize = DEFAULT_PAGE_SIZE,
+  totalRows = 0,
+  totalPages,
+  onPageChange,
+  onPageSizeChange,
+  disabled = false,
+}) {
+  const safeTotalRows = Number(totalRows) || 0;
+  const safePageSize = normalisePageSize(pageSize);
+  const calculatedPages = Math.max(1, Math.ceil(safeTotalRows / safePageSize));
+  const safeTotalPages = Math.max(1, Number(totalPages) || calculatedPages);
+  const safePage = Math.min(Math.max(1, Number(page) || 1), safeTotalPages);
+  const start = safeTotalRows ? ((safePage - 1) * safePageSize) + 1 : 0;
+  const end = Math.min(safeTotalRows, safePage * safePageSize);
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-stone-100 px-3 py-3 text-sm text-stone-600">
+      <div className="font-medium text-stone-700">Showing {start}-{end} of {safeTotalRows}</div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Label className="text-xs font-semibold text-stone-600">Rows per page</Label>
+        <select
+          value={safePageSize}
+          disabled={disabled}
+          onChange={(event) => onPageSizeChange?.(normalisePageSize(event.target.value))}
+          className="h-8 rounded-md border border-stone-200 bg-white px-2 text-sm disabled:bg-stone-50"
+        >
+          {PAGE_SIZE_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+        </select>
+        <button
+          type="button"
+          disabled={disabled || safePage <= 1}
+          onClick={() => onPageChange?.(safePage - 1)}
+          className="h-8 rounded-md border border-stone-200 bg-white px-3 font-semibold text-stone-700 disabled:cursor-not-allowed disabled:bg-stone-50 disabled:text-stone-400"
+        >
+          Previous
+        </button>
+        <span className="min-w-20 text-center font-semibold text-stone-800">Page {safePage}</span>
+        <button
+          type="button"
+          disabled={disabled || safePage >= safeTotalPages}
+          onClick={() => onPageChange?.(safePage + 1)}
+          className="h-8 rounded-md border border-stone-200 bg-white px-3 font-semibold text-stone-700 disabled:cursor-not-allowed disabled:bg-stone-50 disabled:text-stone-400"
+        >
+          Next
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function Panel({ title, children }) {
   return (
     <section className="rounded-md border border-stone-200 bg-white">

@@ -19,14 +19,18 @@ import { toast } from "sonner";
 import {
   AccountCodeSelect,
   BankReportLine,
+  DEFAULT_PAGE_SIZE,
   Field,
   Panel,
+  PaginationFooter,
   SummaryCard,
   VatCodeSelect,
   canonicalVatCodeValue,
   formatDate,
   formatDateTime,
   formatMoney,
+  normalisePaginatedResponse,
+  normalisePageSize,
   statusBadgeClass,
   vatCodeOptionsFromWorkspace,
 } from "./shared";
@@ -34,7 +38,7 @@ import {
 const arTabs = ["Customers", "Create customer"];
 const customerRecordTabs = ["General", "Ledger", "Audit Trail"];
 const transactionTypes = ["Sales Invoice", "Customer Credit Note", "Receipt", "Receipt on Account"];
-const editableStatuses = ["draft", "awaiting approval"];
+const editableStatuses = ["draft", "awaiting approval", "awaiting_approval"];
 const customerNumberingOptions = [
   { value: "manual", label: "Manual" },
   { value: "automatic", label: "Automatic" },
@@ -269,6 +273,21 @@ function arInvoiceBalance(row = {}) {
   return arInvoiceValue(row) - arAllocatedValue(row);
 }
 
+function normaliseArLedgerType(type = "") {
+  const value = String(type || "").toLowerCase();
+  if (value.includes("credit")) return "Customer Credit Note";
+  if (value.includes("receipt") && value.includes("account")) return "Receipt on Account";
+  if (value.includes("receipt") || value.includes("payment")) return "Receipt";
+  return "Sales Invoice";
+}
+
+function normaliseArLedgerSource(type = "") {
+  const value = String(type || "").toLowerCase();
+  if (value.includes("credit")) return "credit_note";
+  if (value.includes("receipt") || value.includes("payment")) return "receipt";
+  return "invoice";
+}
+
 function ledgerImpactFor(type) {
   if (isCreditDocument(type)) {
     return ["Debit sales/VAT", "Credit debtors control"];
@@ -305,6 +324,9 @@ function emptyTransactionDraft(type, customer, bankAccountCode) {
     sales_nominal: customer?.default_sales_account || "4000",
     vat_code: customer?.default_vat_code || "",
     amount: "",
+    net_amount: "",
+    vat_amount: "",
+    gross_amount: "",
     bank_account_code: bankAccountCode || "1200",
     payment_method: "Bank Transfer",
     allocation_target: isReceipt ? "oldest" : "",
@@ -318,16 +340,12 @@ function emptyTransactionDraft(type, customer, bankAccountCode) {
 export default function AccountsReceivableWorkspace({ workspace, tab, setTab, reloadWorkspace, busy }) {
   const ar = workspace.accounts_receivable || {};
   const clientId = workspace.client?.id;
-  const customers = useMemo(() => (Array.isArray(ar.customers) ? ar.customers : []), [ar.customers]);
+  const [customerSummaries, setCustomerSummaries] = useState(() => (Array.isArray(ar.customers) ? ar.customers : []));
+  const customers = customerSummaries;
   const invoices = useMemo(() => (Array.isArray(ar.invoices) ? ar.invoices : []), [ar.invoices]);
   const creditNotes = useMemo(() => (Array.isArray(ar.credit_notes) ? ar.credit_notes : []), [ar.credit_notes]);
   const receipts = useMemo(() => (Array.isArray(ar.receipts) ? ar.receipts : []), [ar.receipts]);
   const accounts = useMemo(() => (Array.isArray(workspace.accounts) ? workspace.accounts : []), [workspace.accounts]);
-  const auditTrail = useMemo(() => {
-    if (Array.isArray(ar.audit_trail)) return ar.audit_trail;
-    if (Array.isArray(workspace.audit_trail)) return workspace.audit_trail;
-    return [];
-  }, [ar.audit_trail, workspace.audit_trail]);
   const bankAccounts = useMemo(() => accounts.filter((account) => account.purpose === "Bank Account" || account.account_type === "Bank"), [accounts]);
   const incomeAccounts = useMemo(() => accounts.filter((account) => account.category === "Income" || account.account_type === "Sales"), [accounts]);
   const vatCodes = useMemo(() => vatCodeOptionsFromWorkspace(workspace), [workspace]);
@@ -342,19 +360,62 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
   const [customerEditMode, setCustomerEditMode] = useState(false);
   const [customerDraft, setCustomerDraft] = useState(normaliseCustomerDraft());
   const [transactionDraft, setTransactionDraft] = useState(null);
+  const [transactionEditMode, setTransactionEditMode] = useState(false);
   const [transactionErrors, setTransactionErrors] = useState({});
   const [ledgerSearch, setLedgerSearch] = useState("");
   const [ledgerTypeFilter, setLedgerTypeFilter] = useState("All");
   const [ledgerStatusFilter, setLedgerStatusFilter] = useState("All");
   const [ledgerDateFrom, setLedgerDateFrom] = useState("");
   const [ledgerDateTo, setLedgerDateTo] = useState("");
+  const [ledgerPage, setLedgerPage] = useState(1);
+  const [ledgerPageSize, setLedgerPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [ledgerData, setLedgerData] = useState(() => normalisePaginatedResponse({ rows: [], page_size: DEFAULT_PAGE_SIZE }));
+  const [ledgerLoading, setLedgerLoading] = useState(false);
+  const [ledgerError, setLedgerError] = useState("");
   const [auditSearch, setAuditSearch] = useState("");
+  const [auditPage, setAuditPage] = useState(1);
+  const [auditPageSize, setAuditPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [auditData, setAuditData] = useState(() => normalisePaginatedResponse({ page_size: DEFAULT_PAGE_SIZE }));
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditError, setAuditError] = useState("");
+  const auditTrail = auditData.rows;
   const [settingsForm, setSettingsForm] = useState(ar.settings || {});
   const [statementCustomerId, setStatementCustomerId] = useState("");
+
+  useEffect(() => { setAuditPage(1); }, [selectedCustomerId, auditSearch, auditPageSize]);
+  useEffect(() => {
+    if (customerRecordTab !== "Audit Trail" || !clientId || !selectedCustomerId) return;
+    let cancelled = false;
+    const params = new URLSearchParams({ page: String(auditPage), page_size: String(auditPageSize) });
+    if (auditSearch) params.set("search", auditSearch);
+    setAuditLoading(true); setAuditError("");
+    api.get(`/admin/accounting/clients/${clientId}/ar/customers/${selectedCustomerId}/audit-trail?${params.toString()}`)
+      .then(({ data }) => { if (!cancelled) setAuditData(normalisePaginatedResponse(data, auditPageSize)); })
+      .catch((error) => { if (!cancelled) setAuditError(formatApiError(error)); })
+      .finally(() => { if (!cancelled) setAuditLoading(false); });
+    return () => { cancelled = true; };
+  }, [customerRecordTab, clientId, selectedCustomerId, auditPage, auditPageSize, auditSearch]);
+
+  useEffect(() => {
+    if (!clientId) return;
+    let cancelled = false;
+    api.get(`/admin/accounting/clients/${clientId}/ar/customers`)
+      .then(({ data }) => {
+        if (!cancelled) setCustomerSummaries(Array.isArray(data?.rows) ? data.rows : []);
+      })
+      .catch((error) => {
+        if (!cancelled) toast.error(`Unable to load customer summaries: ${formatApiError(error)}`);
+      });
+    return () => { cancelled = true; };
+  }, [clientId, workspace]);
 
   useEffect(() => {
     setSettingsForm(ar.settings || {});
   }, [ar.settings]);
+
+  useEffect(() => {
+    setLedgerPage(1);
+  }, [selectedCustomerId, ledgerSearch, ledgerTypeFilter, ledgerStatusFilter, ledgerDateFrom, ledgerDateTo]);
 
   useEffect(() => {
     if (activeTab === "Create customer") setCreateCustomerOpen(true);
@@ -385,6 +446,7 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
       await action();
       toast.success(success);
       await reloadWorkspace?.();
+      if (selectedCustomerId) await refreshCustomerLedger();
       return true;
     } catch (e) {
       toast.error(formatApiError(e));
@@ -396,6 +458,39 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
 
   const postJson = (url, payload) => api.post(`/admin/accounting/clients/${clientId}${url}`, payload);
   const putJson = (url, payload) => api.put(`/admin/accounting/clients/${clientId}${url}`, payload);
+
+  const refreshCustomerLedger = useCallback(async () => {
+    if (!clientId || !selectedCustomerId) {
+      setLedgerData(normalisePaginatedResponse({ rows: [], page_size: ledgerPageSize }));
+      return;
+    }
+    const params = new URLSearchParams({
+      page: String(ledgerPage),
+      page_size: String(ledgerPageSize),
+      customer_id: selectedCustomerId,
+    });
+    if (ledgerSearch.trim()) params.set("search", ledgerSearch.trim());
+    if (ledgerTypeFilter !== "All") params.set("type", ledgerTypeFilter);
+    if (ledgerStatusFilter !== "All") params.set("status", ledgerStatusFilter);
+    if (ledgerDateFrom) params.set("date_from", ledgerDateFrom);
+    if (ledgerDateTo) params.set("date_to", ledgerDateTo);
+    setLedgerLoading(true);
+    setLedgerError("");
+    try {
+      const { data } = await api.get(`/admin/accounting/clients/${clientId}/ar/customers/${selectedCustomerId}/ledger?${params.toString()}`);
+      setLedgerData(normalisePaginatedResponse(data, ledgerPageSize));
+    } catch (error) {
+      setLedgerData(normalisePaginatedResponse({ rows: [], page: ledgerPage, page_size: ledgerPageSize }));
+      setLedgerError(formatApiError(error));
+    } finally {
+      setLedgerLoading(false);
+    }
+  }, [clientId, ledgerDateFrom, ledgerDateTo, ledgerPage, ledgerPageSize, ledgerSearch, ledgerStatusFilter, ledgerTypeFilter, selectedCustomerId]);
+
+  useEffect(() => {
+    if (!selectedCustomerId) return;
+    refreshCustomerLedger();
+  }, [refreshCustomerLedger, selectedCustomerId]);
 
   async function createCustomer(e) {
     e.preventDefault();
@@ -423,105 +518,95 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
   }
 
   const customerLedgerRows = useCallback((customerId) => {
-    const rows = [
-      ...invoices.filter((invoice) => invoice.customer_id === customerId).map((invoice) => ({
-        ...invoice,
-        id: invoice.id,
-        ledgerKey: `invoice-${invoice.id}`,
-        source: "invoice",
-        customer_id: customerId,
-        date: invoice.invoice_date || invoice.date || invoice.created_at,
-        type: "Sales Invoice",
-        reference: invoice.invoice_number || invoice.reference || "-",
-        description: invoice.description || invoice.customer_name || "Sales invoice",
-        status: invoice.status || "Posted",
-        debit: asNumber(invoice.gross_amount || invoice.total || invoice.amount),
-        credit: 0,
-        invoice_value: arInvoiceValue(invoice),
-        paid_allocated: arAllocatedValue(invoice),
-        invoice_balance: arInvoiceBalance(invoice),
-        outstanding: asNumber(invoice.outstanding_amount),
-        raw: invoice,
-      })),
-      ...creditNotes.filter((note) => note.customer_id === customerId).map((note) => ({
-        ...note,
-        id: note.id,
-        ledgerKey: `credit-note-${note.id}`,
-        source: "credit_note",
-        customer_id: customerId,
-        date: note.credit_note_date || note.date || note.created_at,
-        type: "Customer Credit Note",
-        reference: note.credit_note_number || note.reference || "-",
-        description: note.description || "Customer credit note",
-        status: note.status || "Posted",
-        debit: 0,
-        credit: asNumber(note.gross_amount || note.total || note.amount),
-        invoice_value: 0,
-        paid_allocated: asNumber(note.gross_amount || note.total || note.amount),
-        invoice_balance: 0,
-        outstanding: asNumber(note.unallocated_amount),
-        raw: note,
-      })),
-      ...receipts.filter((receipt) => receipt.customer_id === customerId).map((receipt) => ({
-        ...receipt,
-        id: receipt.id,
-        ledgerKey: `receipt-${receipt.id}`,
-        source: "receipt",
-        customer_id: customerId,
-        date: receipt.receipt_date || receipt.date || receipt.created_at,
-        type: receipt.invoice_id ? "Receipt" : "Receipt on Account",
-        reference: receipt.reference || receipt.payment_reference || "-",
-        description: receipt.description || "Customer receipt",
-        status: receipt.status || (receipt.invoice_id ? "Allocated" : "Open"),
-        debit: 0,
-        credit: asNumber(receipt.amount || receipt.gross_amount),
-        invoice_value: 0,
-        paid_allocated: asNumber(receipt.amount || receipt.gross_amount),
-        invoice_balance: 0,
-        outstanding: asNumber(receipt.unallocated_amount),
-        raw: receipt,
-      })),
-    ].sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
+    const rows = (ledgerData.rows || []).map((row) => ({
+      ...row,
+      id: row.id,
+      ledgerKey: row.ledgerKey || row.ledger_key || `${row.source || row.type || "ledger"}-${row.id || row.reference || row.date}`,
+      source: row.source || row.record_type || normaliseArLedgerSource(row.type || row.record_type || row.document_type),
+      customer_id: row.customer_id || customerId,
+      date: row.invoice_date || row.credit_note_date || row.receipt_date || row.date || row.created_at,
+      type: normaliseArLedgerType(row.type || row.record_type || row.document_type),
+      reference: row.invoice_number || row.credit_note_number || row.payment_reference || row.reference || "-",
+      description: row.description || row.customer_name || "Customer ledger item",
+      status: row.status || "Open",
+      debit: row.debit ?? arInvoiceValue(row),
+      credit: row.credit ?? arAllocatedValue(row),
+      invoice_value: arInvoiceValue(row),
+      paid_allocated: arAllocatedValue(row),
+      invoice_balance: arInvoiceBalance(row),
+      outstanding: asNumber(row.outstanding_amount ?? row.unallocated_amount),
+      raw: row,
+    }));
     let runningBalance = 0;
     return rows.map((row) => {
       runningBalance += row.debit - row.credit;
       return { ...row, runningBalance };
     });
-  }, [creditNotes, invoices, receipts]);
+  }, [ledgerData.rows]);
 
   const selectedLedgerRows = useMemo(() => selectedCustomer ? customerLedgerRows(selectedCustomer.id) : [], [customerLedgerRows, selectedCustomer]);
-  const visibleLedgerRows = useMemo(() => selectedLedgerRows.filter((row) => {
-    const typeOk = ledgerTypeFilter === "All" || row.type === ledgerTypeFilter;
-    const statusOk = ledgerStatusFilter === "All" || row.status === ledgerStatusFilter;
-    const rowDate = toInputDate(row.date);
-    const fromOk = !ledgerDateFrom || rowDate >= ledgerDateFrom;
-    const toOk = !ledgerDateTo || rowDate <= ledgerDateTo;
-    const needle = ledgerSearch.trim().toLowerCase();
-    const searchOk = !needle || `${row.type} ${row.reference} ${row.description} ${row.status}`.toLowerCase().includes(needle);
-    return typeOk && statusOk && fromOk && toOk && searchOk;
-  }), [ledgerDateFrom, ledgerDateTo, ledgerSearch, ledgerStatusFilter, ledgerTypeFilter, selectedLedgerRows]);
+  const visibleLedgerRows = selectedLedgerRows;
 
   const ledgerStatuses = useMemo(() => ["All", ...Array.from(new Set(selectedLedgerRows.map((row) => row.status).filter(Boolean)))], [selectedLedgerRows]);
-  const ledgerTotals = useMemo(() => visibleLedgerRows.reduce((totals, row) => ({
-    debit: totals.debit + asNumber(row.debit),
-    credit: totals.credit + asNumber(row.credit),
-    invoiceValue: totals.invoiceValue + arInvoiceValue(row),
-    allocated: totals.allocated + arAllocatedValue(row),
-    balance: totals.balance + arInvoiceBalance(row),
-  }), { debit: 0, credit: 0, invoiceValue: 0, allocated: 0, balance: 0 }), [visibleLedgerRows]);
+  const ledgerTotals = {
+    debit: asNumber(ledgerData.summary.debit),
+    credit: asNumber(ledgerData.summary.credit),
+    invoiceValue: asNumber(ledgerData.summary.invoice_value ?? ledgerData.summary.total_invoice_value ?? ledgerData.summary.visible_invoice_value),
+    allocated: asNumber(ledgerData.summary.paid_allocated ?? ledgerData.summary.receipts_credits_allocated ?? ledgerData.summary.allocated),
+    balance: asNumber(ledgerData.summary.invoice_balance ?? ledgerData.summary.outstanding ?? ledgerData.summary.outstanding_balance),
+  };
+  const ledgerVisibleCount = Number(ledgerData.summary.visible_transaction_count ?? ledgerData.total_rows ?? visibleLedgerRows.length) || 0;
+  const pagedLedgerRows = visibleLedgerRows;
   const visibleCustomers = useMemo(() => customers.filter((customer) => {
     const needle = customerQuery.trim().toLowerCase();
     if (!needle) return true;
     return `${customer.name || ""} ${customer.business_name || ""} ${customer.trading_name || ""} ${customer.customer_code || ""} ${customer.email || ""}`.toLowerCase().includes(needle);
   }), [customerQuery, customers]);
 
+  async function loadTransactionDetail(row, initialDraft) {
+    if (!clientId || !row?.id || row?.source === "frontend") return;
+    const endpoint = row.source === "credit_note" ? `/ar/credit-notes/${row.id}` : row.source === "invoice" ? `/ar/invoices/${row.id}` : row.source === "receipt" ? `/ar/receipts/${row.id}` : "";
+    if (!endpoint) return;
+    try {
+      const { data } = await api.get(`/admin/accounting/clients/${clientId}${endpoint}`);
+      const detail = data?.invoice || data?.credit_note || data?.receipt || data;
+      const detailLines = Array.isArray(data?.lines) ? data.lines : Array.isArray(detail?.lines) ? detail.lines : [];
+      setTransactionDraft((current) => current?.id === initialDraft.id ? {
+        ...current,
+        ...detail,
+        source: row.source,
+        originalKey: initialDraft.originalKey,
+        ledgerKey: initialDraft.ledgerKey,
+        type: initialDraft.type,
+        document_number: detail.invoice_number || detail.credit_note_number || current.document_number,
+        date: toInputDate(detail.invoice_date || detail.credit_note_date || detail.receipt_date || current.date),
+        invoice_date: toInputDate(detail.invoice_date || current.invoice_date),
+        credit_note_date: toInputDate(detail.credit_note_date || current.credit_note_date),
+        receipt_date: toInputDate(detail.receipt_date || current.receipt_date),
+        due_date: toInputDate(detail.due_date || current.due_date),
+        payment_terms: detail.payment_terms_days ?? current.payment_terms,
+        sales_nominal: detail.nominal_account_code || detail.sales_nominal || detailLines[0]?.nominal_account_code || current.sales_nominal,
+        lines: detailLines.length ? detailLines : current.lines,
+        audit_trail: data?.audit_trail || detail.audit_trail || [],
+        allocation_summary: detail.allocation_summary || data?.allocation_summary || {},
+        ledger_effect: data?.ledger_effect || detail.ledger_effect,
+        source_document: data?.source_document || detail.source_document,
+        editable: data?.editable ?? detail.editable,
+        view_only: data?.view_only ?? detail.view_only,
+      } : current);
+    } catch (error) {
+      toast.error(`Unable to load AR document detail: ${formatApiError(error)}`);
+    }
+  }
+
   function openTransaction(type, row) {
     setTransactionErrors({});
+    setTransactionEditMode(false);
     const customer = selectedCustomer || customers.find((item) => item.id === row?.customer_id);
     const next = emptyTransactionDraft(type || row?.type || "Sales Invoice", customer, bankAccounts[0]?.code);
     const raw = row?.raw || row || {};
     const gross = raw.gross_amount || raw.amount || row?.debit || row?.credit || "";
-    setTransactionDraft({
+    const draft = {
       ...next,
       ...raw,
       id: raw.id || row?.id || "",
@@ -545,6 +630,9 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
       sales_nominal: raw.default_sales_account || raw.nominal_account_code || customer?.default_sales_account || "4000",
       vat_code: raw.vat_code || customer?.default_vat_code || "",
       amount: formatAmount(raw.amount || row?.credit),
+      net_amount: formatAmount(raw.net_amount),
+      vat_amount: formatAmount(raw.vat_amount),
+      gross_amount: formatAmount(raw.gross_amount || gross),
       lines: Array.isArray(raw.lines) && raw.lines.length ? raw.lines : (isReceiptDocument(row?.type || type) ? [] : [{
         ...emptyArLine,
         description: raw.description || row?.description || "",
@@ -555,7 +643,9 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
         gross_amount: formatAmount(gross),
       }]),
       showImpact: true,
-    });
+    };
+    setTransactionDraft(draft);
+    loadTransactionDetail({ ...row, source: row?.source || draft.source, id: draft.id }, draft);
   }
 
   function validateTransaction() {
@@ -592,12 +682,16 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
       sales_nominal: transactionDraft.sales_nominal,
       nominal_account_code: transactionDraft.sales_nominal,
       vat_code: canonicalVatCodeValue(transactionDraft.vat_code, vatCodes),
+      net_amount: transactionDraft.net_amount,
+      vat_amount: transactionDraft.vat_amount,
+      gross_amount: transactionDraft.gross_amount,
       lines: normaliseLineVatPayload(transactionDraft.lines, vatCodes),
     };
     const saved = await run(async () => {
-      const { data } = await postJson("/ar/invoices", payload);
+      const existing = transactionDraft.source === "invoice" && transactionDraft.id;
+      const { data } = existing ? await putJson(`/ar/invoices/${transactionDraft.id}`, { ...payload, payment_terms_days: transactionDraft.payment_terms }) : await postJson("/ar/invoices", { ...payload, payment_terms_days: transactionDraft.payment_terms });
       if (approve && data?.id) await postJson(`/ar/invoices/${data.id}/approve`, {});
-    }, approve ? "Sales invoice approved" : "Sales invoice draft saved");
+    }, approve ? "Sales invoice approved" : transactionDraft.source === "invoice" && transactionDraft.id ? "Sales invoice updated" : "Sales invoice draft saved");
     if (saved) setTransactionDraft(null);
   }
 
@@ -626,12 +720,16 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
       sales_nominal: transactionDraft.sales_nominal,
       nominal_account_code: transactionDraft.sales_nominal,
       vat_code: canonicalVatCodeValue(transactionDraft.vat_code, vatCodes),
+      net_amount: transactionDraft.net_amount,
+      vat_amount: transactionDraft.vat_amount,
+      gross_amount: transactionDraft.gross_amount,
       lines: normaliseLineVatPayload(transactionDraft.lines, vatCodes),
     };
     const saved = await run(async () => {
-      const { data } = await postJson("/ar/credit-notes", payload);
+      const existing = transactionDraft.source === "credit_note" && transactionDraft.id;
+      const { data } = existing ? await putJson(`/ar/credit-notes/${transactionDraft.id}`, payload) : await postJson("/ar/credit-notes", payload);
       if (post && data?.id) await postJson(`/ar/credit-notes/${data.id}/post`, {});
-    }, post ? "Customer credit note posted" : "Customer credit note draft saved");
+    }, post ? "Customer credit note posted" : transactionDraft.source === "credit_note" && transactionDraft.id ? "Customer credit note updated" : "Customer credit note draft saved");
     if (saved) setTransactionDraft(null);
   }
 
@@ -658,6 +756,22 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
     if (isCreditDocument(transactionDraft?.type)) return createCreditNoteFromDraft(e, false);
     if (isReceiptDocument(transactionDraft?.type)) return createReceiptFromDraft(e);
     return createInvoiceFromDraft(e, false);
+  }
+
+  async function copyInvoiceToNew() {
+    if (!transactionDraft?.id || transactionDraft.source !== "invoice") return;
+    setSaving(true);
+    try {
+      const { data } = await postJson(`/ar/invoices/${transactionDraft.id}/copy`, {});
+      const invoice = data?.invoice || data;
+      toast.success("Copied to a new draft sales invoice");
+      await reloadWorkspace?.();
+      openTransaction("Sales Invoice", { ...invoice, raw: invoice, source: "invoice", type: "Sales Invoice" });
+    } catch (error) {
+      toast.error(formatApiError(error));
+    } finally {
+      setSaving(false);
+    }
   }
 
   function primaryPostAction(e) {
@@ -688,15 +802,8 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
       action: row.action || row.event || "Updated",
       description: row.description || row.new_value || row.module || "Customer activity",
     }));
-    if (realRows.length) return realRows;
-    return selectedLedgerRows.map((row) => ({
-      id: `${row.source}-${row.id}`,
-      date: row.date,
-      user: "System",
-      action: `${row.type} recorded`,
-      description: `${row.reference} - ${row.description}`,
-    }));
-  }, [auditTrail, selectedCustomer, selectedLedgerRows]);
+    return realRows;
+  }, [auditTrail, selectedCustomer]);
 
   if (activeTab === "Customers" || activeTab === "Create customer") {
     if (selectedCustomer) {
@@ -800,7 +907,7 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
           {customerRecordTab === "Ledger" ? (
             <Panel title="Customer ledger">
               <div className="mb-3 grid gap-3 md:grid-cols-4">
-                <SummaryCard label="Visible transactions" value={visibleLedgerRows.length} />
+                <SummaryCard label="Visible transactions" value={ledgerVisibleCount} />
                 <SummaryCard label="Invoice value" value={formatMoney(ledgerTotals.invoiceValue)} />
                 <SummaryCard label="Invoice balance / outstanding" value={formatMoney(ledgerTotals.balance)} />
                 <SummaryCard label="Receipts / credits allocated" value={formatMoney(ledgerTotals.allocated)} />
@@ -836,7 +943,23 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
                   </Button>
                 </div>
               </div>
-              <LedgerTable rows={visibleLedgerRows} onOpen={(row) => openTransaction(row.type, row)} totals={ledgerTotals} />
+              {ledgerError ? <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{ledgerError}</div> : null}
+              {ledgerLoading ? <div className="mb-3 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-600">Loading customer ledger...</div> : null}
+              <LedgerTable
+                rows={pagedLedgerRows}
+                totalRows={ledgerVisibleCount}
+                page={ledgerPage}
+                pageSize={ledgerPageSize}
+                totalPages={ledgerData.total_pages}
+                loading={ledgerLoading}
+                onPageChange={setLedgerPage}
+                onPageSizeChange={(size) => {
+                  setLedgerPageSize(normalisePageSize(size));
+                  setLedgerPage(1);
+                }}
+                onOpen={(row) => openTransaction(row.type, row)}
+                totals={ledgerTotals}
+              />
             </Panel>
           ) : null}
 
@@ -846,7 +969,10 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
                 <Search className="absolute left-3 top-2.5 h-4 w-4 text-stone-400" />
                 <Input value={auditSearch} onChange={(e) => setAuditSearch(e.target.value)} placeholder="Search audit trail" className="h-9 pl-9" />
               </div>
+              {auditError ? <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{auditError}</div> : null}
+              {auditLoading && !customerAuditRows.length ? <div className="py-8 text-center text-sm text-stone-500">Loading customer audit trail...</div> : null}
               <AuditTable rows={customerAuditRows.filter((row) => `${row.date} ${row.user} ${row.action} ${row.description}`.toLowerCase().includes(auditSearch.trim().toLowerCase()))} />
+              <PaginationFooter page={auditData.page} pageSize={auditData.page_size} totalRows={auditData.total_rows} totalPages={auditData.total_pages} onPageChange={setAuditPage} onPageSizeChange={setAuditPageSize} disabled={auditLoading} />
             </Panel>
           ) : null}
 
@@ -867,6 +993,9 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
               onApproveInvoice={approveInvoice}
               onPostInvoice={postInvoice}
               onArchiveInvoice={archiveInvoice}
+              editMode={transactionEditMode}
+              setEditMode={setTransactionEditMode}
+              onCopyInvoice={copyInvoiceToNew}
               saving={saving || busy}
             />
           ) : null}
@@ -889,8 +1018,8 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
                 key={customer.id}
                 customer={customer}
                 outstanding={customer.outstanding_balance ?? customer.current_balance ?? 0}
-                receiptsOnAccount={receipts.filter((receipt) => receipt.customer_id === customer.id).reduce((sum, receipt) => sum + asNumber(receipt.unallocated_amount || (!receipt.invoice_id ? receipt.amount : 0)), 0)}
-                lastActivity={customerLedgerRows(customer.id).at(-1)?.date}
+                receiptsOnAccount={customer.on_account_balance ?? customer.receipts_on_account_balance ?? 0}
+                lastActivity={customer.last_transaction_date || customer.last_activity_date || customer.last_transaction_at}
                 onOpen={() => openCustomer(customer.id)}
               />
             ))}
@@ -991,7 +1120,8 @@ function CustomerCard({ customer, outstanding, receiptsOnAccount, lastActivity, 
   );
 }
 
-function LedgerTable({ rows, onOpen, totals }) {
+function LedgerTable({ rows, onOpen, totals, totalRows, totalPages, page, pageSize, loading = false, onPageChange, onPageSizeChange }) {
+  const footerTotalRows = totalRows;
   return (
     <div className="overflow-hidden rounded-md border border-stone-200">
       <table className="w-full text-sm">
@@ -1043,6 +1173,17 @@ function LedgerTable({ rows, onOpen, totals }) {
           </tfoot>
         ) : null}
       </table>
+      {footerTotalRows ? (
+        <PaginationFooter
+          page={page || 1}
+          pageSize={pageSize || DEFAULT_PAGE_SIZE}
+          totalRows={footerTotalRows}
+          totalPages={totalPages}
+          disabled={loading}
+          onPageChange={onPageChange}
+          onPageSizeChange={onPageSizeChange}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1089,14 +1230,20 @@ function RegisterPanel({ title, rows = [], numberKey, dateKey, amountKey, empty,
   );
 }
 
-function ManualSalesDocumentDrawer({ draft, setDraft, errors, customer, customers, invoices, incomeAccounts, vatCodes, bankAccounts, onClose, onSave, onPost, onApproveInvoice, onPostInvoice, onArchiveInvoice, saving }) {
+function ManualSalesDocumentDrawer({ draft, setDraft, errors, customer, customers, invoices, incomeAccounts, vatCodes, bankAccounts, onClose, onSave, onPost, onApproveInvoice, onPostInvoice, onArchiveInvoice, editMode, setEditMode, onCopyInvoice, saving }) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const readOnly = isReadOnlyTransaction(draft);
-  const existingLedgerRecord = !!draft.originalKey && draft.source !== "frontend";
-  const formReadOnly = readOnly || existingLedgerRecord;
+  const existingLedgerRecord = Boolean(draft.id) && draft.source !== "frontend";
+  const formReadOnly = readOnly || (existingLedgerRecord && !editMode);
   const isReceipt = isReceiptDocument(draft.type);
   const isCredit = isCreditDocument(draft.type);
   const totals = transactionTotals(draft);
+  const totalsDifference = {
+    net: asNumber(draft.net_amount) - asNumber(totals.net),
+    vat: asNumber(draft.vat_amount) - asNumber(totals.vat),
+    gross: asNumber(draft.gross_amount) - asNumber(totals.gross),
+  };
+  const totalsDiffer = Math.abs(totalsDifference.net) > 0.01 || Math.abs(totalsDifference.vat) > 0.01 || Math.abs(totalsDifference.gross) > 0.01;
   const impact = ledgerImpactFor(draft.type);
   const customerInvoices = invoices.filter((invoice) => invoice.customer_id === draft.customer_id && Number(invoice.outstanding_amount || 0) > 0);
   const set = (key, value) => setDraft((current) => ({ ...current, [key]: value }));
@@ -1112,7 +1259,7 @@ function ManualSalesDocumentDrawer({ draft, setDraft, errors, customer, customer
   const sourceLabel = draft.source_submission_id ? "Source: Submitted Items" : "Source document";
 
   return (
-    <div className="fixed inset-y-0 right-0 z-40 w-full max-w-[1180px] overflow-hidden border-l border-stone-200 bg-white shadow-2xl">
+    <div className="fixed inset-2 z-40 overflow-hidden rounded-md border border-stone-200 bg-white shadow-2xl sm:inset-4">
       <div className="flex h-full min-h-0 flex-col">
         <header className="border-b border-stone-200 bg-stone-50 px-4 py-3">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -1127,11 +1274,14 @@ function ManualSalesDocumentDrawer({ draft, setDraft, errors, customer, customer
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
-              {draft.originalKey ? <Button type="button" variant="outline" onClick={() => set("showImpact", !draft.showImpact)}>View ledger impact</Button> : null}
-              {draft.originalKey ? <Button type="button" variant="outline" onClick={() => set("showAudit", !draft.showAudit)}>View audit trail</Button> : null}
+              {existingLedgerRecord ? <Button type="button" variant="outline" onClick={() => set("showImpact", !draft.showImpact)}>View ledger impact</Button> : null}
+              {existingLedgerRecord ? <Button type="button" variant="outline" onClick={() => set("showAudit", !draft.showAudit)}>View audit trail</Button> : null}
+              {draft.source === "invoice" && draft.id ? <Button type="button" variant="outline" disabled={saving} onClick={onCopyInvoice}>Copy to new invoice</Button> : null}
+              {existingLedgerRecord && !readOnly && !editMode ? <Button type="button" onClick={() => setEditMode(true)} style={{ background: "var(--brand)" }}><Edit3 className="mr-2 h-4 w-4" /> Edit</Button> : null}
+              {existingLedgerRecord && editMode ? <Button type="button" variant="outline" onClick={() => setEditMode(false)}>Cancel edit</Button> : null}
               <Button type="button" variant="outline" onClick={onClose}>Cancel / close</Button>
               {!formReadOnly && !isReceipt ? <Button type="button" variant="outline" disabled={saving} onClick={(event) => onSave(event)}>Save draft</Button> : null}
-              {!formReadOnly ? <Button type="button" disabled={saving} onClick={onPost} style={{ background: "var(--brand)" }}>{isReceipt ? "Post receipt" : "Post to AR"}</Button> : null}
+              {!formReadOnly && !existingLedgerRecord ? <Button type="button" disabled={saving} onClick={onPost} style={{ background: "var(--brand)" }}>{isReceipt ? "Post receipt" : "Post to AR"}</Button> : null}
               {canApproveExistingInvoice ? <Button type="button" disabled={saving} onClick={() => onApproveInvoice(draft)} style={{ background: "var(--brand)" }}>Approve</Button> : null}
               {canPostExistingInvoice ? <Button type="button" disabled={saving} onClick={() => onPostInvoice(draft)} style={{ background: "var(--brand)" }}>Post</Button> : null}
               {canArchiveExistingInvoice ? <Button type="button" variant="outline" disabled={saving} onClick={() => onArchiveInvoice(draft)}>Archive</Button> : null}
@@ -1140,10 +1290,10 @@ function ManualSalesDocumentDrawer({ draft, setDraft, errors, customer, customer
           </div>
         </header>
 
-        <div className="grid min-h-0 flex-1 gap-0 lg:grid-cols-[minmax(620px,1fr)_380px]">
+        <div className="grid min-h-0 flex-1 gap-0 xl:grid-cols-[minmax(0,1fr)_340px]">
           <form onSubmit={onSave} className="min-h-0 overflow-auto p-4">
             {readOnly ? <div className="mb-3 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-600">Posted, paid, part-paid, allocated and archived customer ledger records are view only. Corrections should be entered as a customer credit note or receipt allocation flow.</div> : null}
-            {existingLedgerRecord && !readOnly ? <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">Editing existing Accounts Receivable records is unavailable until backend update endpoints are added. Available workflow actions remain enabled.</div> : null}
+            {existingLedgerRecord && !readOnly && !editMode ? <div className="mb-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">This document is open in read-only view mode. Select Edit to update its header or line items.</div> : null}
             {errors.customer ? <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{errors.customer}</div> : null}
             <div className="grid gap-4">
               <Section title="Coding / accounting fields">
@@ -1193,6 +1343,17 @@ function ManualSalesDocumentDrawer({ draft, setDraft, errors, customer, customer
                     </FieldControl>
                   </div>
                 ) : null}
+                {!isReceipt ? (
+                  <div className="mt-3">
+                    <div className="grid gap-3 md:grid-cols-4">
+                      <FieldControl label="Net amount"><Input type="number" step="0.01" value={draft.net_amount || ""} readOnly={formReadOnly} onChange={(e) => set("net_amount", e.target.value)} className="h-9" /></FieldControl>
+                      <FieldControl label="VAT amount"><Input type="number" step="0.01" value={draft.vat_amount || ""} readOnly={formReadOnly} onChange={(e) => set("vat_amount", e.target.value)} className="h-9" /></FieldControl>
+                      <FieldControl label="Gross amount"><Input type="number" step="0.01" value={draft.gross_amount || ""} readOnly={formReadOnly} onChange={(e) => set("gross_amount", e.target.value)} className="h-9" /></FieldControl>
+                      <div className="rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-600"><div className="text-xs font-semibold uppercase tracking-wide text-stone-500">Lines gross</div><div className="mt-1 font-display text-lg font-semibold text-stone-900">{formatMoney(totals.gross)}</div></div>
+                    </div>
+                    {totalsDiffer ? <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">Header totals differ from line totals: net {formatMoney(totalsDifference.net)}, VAT {formatMoney(totalsDifference.vat)}, gross {formatMoney(totalsDifference.gross)}.</div> : null}
+                  </div>
+                ) : null}
               </Section>
               {!isReceipt ? (
                 <Section title="Line items">
@@ -1200,13 +1361,13 @@ function ManualSalesDocumentDrawer({ draft, setDraft, errors, customer, customer
                     {errors.lines ? <div className="text-xs font-medium text-red-600">{errors.lines}</div> : <span />}
                     {!formReadOnly ? <Button type="button" variant="outline" size="sm" onClick={() => setDraft((current) => ({ ...current, lines: [...current.lines, { ...emptyArLine, nominal_account_code: draft.sales_nominal, vat_code: draft.vat_code }] }))}>Add line item</Button> : null}
                   </div>
-                  <div className="overflow-x-auto">
-                  <table className="w-full min-w-[1080px] text-xs">
+                  <div className="w-full overflow-hidden">
+                  <table className="w-full table-fixed text-xs">
                     <thead className="border-b border-stone-200 text-left text-[10px] uppercase tracking-wider text-stone-500">
                       <tr>
-                          <th className="w-56 py-1 pr-1.5">Description</th>
-                          <th className="w-52 py-1 pr-1.5">Sales nominal/account code</th>
-                          <th className="w-56 py-1 pr-1.5">VAT code</th>
+                          <th className="w-[22%] py-1 pr-1.5">Description</th>
+                          <th className="w-[17%] py-1 pr-1.5">Sales nominal</th>
+                          <th className="w-[14%] py-1 pr-1.5">VAT code</th>
                           <th className="py-1 pr-1.5">Quantity</th>
                           <th className="py-1 pr-1.5">Unit price</th>
                           <th className="py-1 pr-1.5">Net</th>
@@ -1218,19 +1379,19 @@ function ManualSalesDocumentDrawer({ draft, setDraft, errors, customer, customer
                       <tbody>
                         {(draft.lines || []).map((line, index) => (
                           <tr key={index}>
-                            <td className="py-0.5 pr-1.5"><Input value={line.description || ""} readOnly={formReadOnly} onChange={(e) => setLine(index, "description", e.target.value)} className="h-8 min-w-52 px-1.5 text-xs" /></td>
+                            <td className="py-0.5 pr-1.5"><Input value={line.description || ""} readOnly={formReadOnly} onChange={(e) => setLine(index, "description", e.target.value)} className="h-8 w-full px-1.5 text-xs" /></td>
                             <td className="py-0.5 pr-1.5">
-                              <select value={line.nominal_account_code || ""} disabled={formReadOnly} onChange={(e) => setLine(index, "nominal_account_code", e.target.value)} className="h-8 min-w-48 rounded-md border border-stone-200 bg-white px-1.5 text-xs disabled:bg-stone-50">
+                              <select value={line.nominal_account_code || ""} disabled={formReadOnly} onChange={(e) => setLine(index, "nominal_account_code", e.target.value)} className="h-8 w-full rounded-md border border-stone-200 bg-white px-1.5 text-xs disabled:bg-stone-50">
                                 <option value="">Select</option>
                                 {incomeAccounts.map((account) => <option key={account.code} value={account.code}>{account.code} - {account.name}</option>)}
                               </select>
                             </td>
                             <td className="py-0.5 pr-1.5"><VatCodeSelect label="" value={line.vat_code || ""} options={vatCodes} disabled={formReadOnly} compact onChange={(value) => setLine(index, "vat_code", value)} /></td>
-                            <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.quantity || ""} readOnly={formReadOnly} onChange={(e) => setLine(index, "quantity", e.target.value)} className="h-7 min-w-20 px-1.5 text-xs" /></td>
-                            <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.unit_price || ""} readOnly={formReadOnly} onChange={(e) => setLine(index, "unit_price", e.target.value)} className="h-7 min-w-20 px-1.5 text-xs" /></td>
-                            <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.net_amount || ""} readOnly={formReadOnly} onChange={(e) => setLine(index, "net_amount", e.target.value)} className="h-7 min-w-20 px-1.5 text-xs" /></td>
-                            <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.vat_amount || ""} readOnly={formReadOnly} onChange={(e) => setLine(index, "vat_amount", e.target.value)} className="h-7 min-w-20 px-1.5 text-xs" /></td>
-                            <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.gross_amount || ""} readOnly={formReadOnly} onChange={(e) => setLine(index, "gross_amount", e.target.value)} className="h-7 min-w-20 px-1.5 text-xs" /></td>
+                            <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.quantity || ""} readOnly={formReadOnly} onChange={(e) => setLine(index, "quantity", e.target.value)} className="h-7 w-full px-1 text-xs" /></td>
+                            <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.unit_price || ""} readOnly={formReadOnly} onChange={(e) => setLine(index, "unit_price", e.target.value)} className="h-7 w-full px-1 text-xs" /></td>
+                            <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.net_amount || ""} readOnly={formReadOnly} onChange={(e) => setLine(index, "net_amount", e.target.value)} className="h-7 w-full px-1 text-xs" /></td>
+                            <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.vat_amount || ""} readOnly={formReadOnly} onChange={(e) => setLine(index, "vat_amount", e.target.value)} className="h-7 w-full px-1 text-xs" /></td>
+                            <td className="py-0.5 pr-1.5"><Input type="number" step="0.01" value={line.gross_amount || ""} readOnly={formReadOnly} onChange={(e) => setLine(index, "gross_amount", e.target.value)} className="h-7 w-full px-1 text-xs" /></td>
                             <td className="py-0.5 pl-1.5">
                               {!formReadOnly ? <Button type="button" variant="ghost" size="icon" onClick={() => setDraft((current) => ({ ...current, lines: current.lines.length > 1 ? current.lines.filter((_, lineIndex) => lineIndex !== index) : current.lines }))} className="h-7 w-7 text-stone-500 hover:text-red-600"><X className="h-3.5 w-3.5" /></Button> : null}
                             </td>
@@ -1252,7 +1413,9 @@ function ManualSalesDocumentDrawer({ draft, setDraft, errors, customer, customer
                     <div className="max-w-full break-words text-stone-700">
                       {draft.attachment_name || sourceUrl || draft.source_submission_id}
                     </div>
-                    {canOpenSourceUrl ? (
+                    {draft.source_document_missing || draft.source_document_status === "missing" ? (
+                      <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-amber-800">The original source document is no longer available. The accounting record remains accessible.</div>
+                    ) : canOpenSourceUrl ? (
                       <div className="flex flex-wrap justify-center gap-2">
                         <Button type="button" size="sm" onClick={() => setPreviewOpen(true)} style={{ background: "var(--brand)" }}>
                           <FileText className="mr-2 h-4 w-4" /> View document
@@ -1316,7 +1479,7 @@ function ManualSalesDocumentDrawer({ draft, setDraft, errors, customer, customer
             <Section title="Allocation summary">
               <p className="text-sm text-stone-600">{isReceipt ? (draft.allocation_target === "on_account" ? "Receipt will remain as payment on account." : draft.allocation_target === "selected" ? "Receipt will allocate to the selected invoice." : "Receipt will allocate against oldest invoices automatically.") : "Allocations appear here once receipts or credit notes are matched."}</p>
             </Section>
-            {draft.showAudit ? <Section title="Audit trail"><div className="mt-2 space-y-1 text-sm text-stone-600"><div>Opened from customer ledger</div><div>Status: {draft.status || "Draft"}</div><div>Source: {draft.source === "frontend" ? "Manual AR entry" : "Accounts Receivable ledger"}</div></div></Section> : null}
+            {draft.showAudit ? <Section title="Audit trail"><div className="mt-2 space-y-2 text-sm text-stone-600">{Array.isArray(draft.audit_trail) && draft.audit_trail.length ? draft.audit_trail.map((event) => <div key={event.id || `${event.created_at}-${event.action}`} className="rounded-md border border-stone-200 bg-white px-3 py-2"><div className="font-semibold text-stone-800">{displayStatus(event.action || "Updated")}</div><div className="text-xs text-stone-500">{formatDateTime(event.created_at)} · {event.user_name || event.user || "System"}</div></div>) : <div>No audit events recorded for this document.</div>}</div></Section> : null}
           </aside>
         </div>
       </div>

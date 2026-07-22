@@ -19,11 +19,15 @@ import {
 import { toast } from "sonner";
 import {
   AccountCodeSelect,
+  DEFAULT_PAGE_SIZE,
   Panel,
+  PaginationFooter,
   SummaryCard,
   formatDate,
   formatDateTime,
   formatMoney,
+  normalisePaginatedResponse,
+  normalisePageSize,
   statusBadgeClass,
 } from "./shared";
 
@@ -158,6 +162,23 @@ function invoiceBalance(row = {}) {
   if (supplied !== undefined && supplied !== null && supplied !== "") return asNumber(supplied);
   if (isPaymentDocument(row.type) || isCreditDocument(row.type)) return 0;
   return invoiceValue(row) - allocatedValue(row);
+}
+
+function normaliseApLedgerType(type = "") {
+  const value = String(type || "").toLowerCase();
+  if (value.includes("credit")) return "Supplier Credit Note";
+  if (value.includes("payment") && !value.includes("account")) return "Supplier Payment";
+  if (value.includes("account")) return "Payment on Account";
+  if (value.includes("expense")) return "Expense";
+  return "Purchase Invoice";
+}
+
+function normaliseLedgerSource(type = "") {
+  const value = String(type || "").toLowerCase();
+  if (value.includes("credit")) return "credit_note";
+  if (value.includes("payment")) return "payment";
+  if (value.includes("expense")) return "expense";
+  return "invoice";
 }
 
 function attachmentUrl(row = {}) {
@@ -387,17 +408,9 @@ function EditableField({
 function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, busy }) {
   const ap = workspace.accounts_payable || {};
   const clientId = workspace.client?.id;
-  const suppliers = useMemo(() => (Array.isArray(ap.suppliers) ? ap.suppliers : []), [ap.suppliers]);
-  const invoices = useMemo(() => (Array.isArray(ap.invoices) ? ap.invoices : []), [ap.invoices]);
-  const creditNotes = useMemo(() => (Array.isArray(ap.credit_notes) ? ap.credit_notes : []), [ap.credit_notes]);
-  const payments = useMemo(() => (Array.isArray(ap.payments) ? ap.payments : []), [ap.payments]);
-  const expenses = useMemo(() => (Array.isArray(ap.expenses) ? ap.expenses : []), [ap.expenses]);
+  const [supplierSummaries, setSupplierSummaries] = useState(() => (Array.isArray(ap.suppliers) ? ap.suppliers : []));
+  const suppliers = supplierSummaries;
   const accounts = useMemo(() => (Array.isArray(workspace.accounts) ? workspace.accounts : []), [workspace.accounts]);
-  const auditTrail = useMemo(() => {
-    if (Array.isArray(ap.audit_trail)) return ap.audit_trail;
-    if (Array.isArray(workspace.audit_trail)) return workspace.audit_trail;
-    return [];
-  }, [ap.audit_trail, workspace.audit_trail]);
   const bankAccounts = useMemo(() => accounts.filter((account) => account.purpose === "Bank Account" || account.account_type === "Bank"), [accounts]);
   const expenseAccounts = useMemo(() => accounts.filter((account) => account.category === "Expense" || account.account_type === "Purchases" || account.account_type === "Overheads"), [accounts]);
   const vatCodes = useMemo(() => {
@@ -436,15 +449,58 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
   const [ledgerStatusFilter, setLedgerStatusFilter] = useState("All");
   const [ledgerDateFrom, setLedgerDateFrom] = useState("");
   const [ledgerDateTo, setLedgerDateTo] = useState("");
+  const [ledgerPage, setLedgerPage] = useState(1);
+  const [ledgerPageSize, setLedgerPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [ledgerData, setLedgerData] = useState(() => normalisePaginatedResponse({ rows: [], page_size: DEFAULT_PAGE_SIZE }));
+  const [ledgerLoading, setLedgerLoading] = useState(false);
+  const [ledgerError, setLedgerError] = useState("");
   const [ledgerDraftRows, setLedgerDraftRows] = useState([]);
   const [transactionDraft, setTransactionDraft] = useState(null);
   const [transactionErrors, setTransactionErrors] = useState({});
   const [auditSearch, setAuditSearch] = useState("");
   const [auditActionFilter, setAuditActionFilter] = useState("All");
+  const [auditPage, setAuditPage] = useState(1);
+  const [auditPageSize, setAuditPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [auditData, setAuditData] = useState(() => normalisePaginatedResponse({ page_size: DEFAULT_PAGE_SIZE }));
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditError, setAuditError] = useState("");
+  const auditTrail = auditData.rows;
+
+  useEffect(() => { setAuditPage(1); }, [selectedSupplierId, auditSearch, auditActionFilter, auditPageSize]);
+  useEffect(() => {
+    if (supplierRecordTab !== "Audit Trail" || !clientId || !selectedSupplierId) return;
+    let cancelled = false;
+    const params = new URLSearchParams({ page: String(auditPage), page_size: String(auditPageSize) });
+    if (auditSearch) params.set("search", auditSearch);
+    if (auditActionFilter !== "All") params.set("action", auditActionFilter);
+    setAuditLoading(true); setAuditError("");
+    api.get(`/admin/accounting/clients/${clientId}/ap/suppliers/${selectedSupplierId}/audit-trail?${params.toString()}`)
+      .then(({ data }) => { if (!cancelled) setAuditData(normalisePaginatedResponse(data, auditPageSize)); })
+      .catch((error) => { if (!cancelled) setAuditError(formatApiError(error)); })
+      .finally(() => { if (!cancelled) setAuditLoading(false); });
+    return () => { cancelled = true; };
+  }, [supplierRecordTab, clientId, selectedSupplierId, auditPage, auditPageSize, auditSearch, auditActionFilter]);
+
+  useEffect(() => {
+    if (!clientId) return;
+    let cancelled = false;
+    api.get(`/admin/accounting/clients/${clientId}/ap/suppliers`)
+      .then(({ data }) => {
+        if (!cancelled) setSupplierSummaries(Array.isArray(data?.rows) ? data.rows : []);
+      })
+      .catch((error) => {
+        if (!cancelled) toast.error(`Unable to load supplier summaries: ${formatApiError(error)}`);
+      });
+    return () => { cancelled = true; };
+  }, [clientId, workspace]);
 
   useEffect(() => {
     setSettingsForm(ap.settings || {});
   }, [ap.settings]);
+
+  useEffect(() => {
+    setLedgerPage(1);
+  }, [selectedSupplierId, ledgerSearch, ledgerTypeFilter, ledgerStatusFilter, ledgerDateFrom, ledgerDateTo]);
 
   useEffect(() => {
     if (activeTab === "Create supplier") setCreateSupplierOpen(true);
@@ -481,6 +537,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
       await action();
       toast.success(success);
       await reloadWorkspace();
+      if (selectedSupplierId) await refreshSupplierLedger();
       return true;
     } catch (e) {
       toast.error(formatApiError(e));
@@ -492,6 +549,39 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
 
   const postJson = (url, payload) => api.post(`/admin/accounting/clients/${clientId}${url}`, payload);
   const putJson = (url, payload) => api.put(`/admin/accounting/clients/${clientId}${url}`, payload);
+
+  const refreshSupplierLedger = useCallback(async () => {
+    if (!clientId || !selectedSupplierId) {
+      setLedgerData(normalisePaginatedResponse({ rows: [], page_size: ledgerPageSize }));
+      return;
+    }
+    const params = new URLSearchParams({
+      page: String(ledgerPage),
+      page_size: String(ledgerPageSize),
+      supplier_id: selectedSupplierId,
+    });
+    if (ledgerSearch.trim()) params.set("search", ledgerSearch.trim());
+    if (ledgerTypeFilter !== "All") params.set("type", ledgerTypeFilter);
+    if (ledgerStatusFilter !== "All") params.set("status", ledgerStatusFilter);
+    if (ledgerDateFrom) params.set("date_from", ledgerDateFrom);
+    if (ledgerDateTo) params.set("date_to", ledgerDateTo);
+    setLedgerLoading(true);
+    setLedgerError("");
+    try {
+      const { data } = await api.get(`/admin/accounting/clients/${clientId}/ap/suppliers/${selectedSupplierId}/ledger?${params.toString()}`);
+      setLedgerData(normalisePaginatedResponse(data, ledgerPageSize));
+    } catch (error) {
+      setLedgerData(normalisePaginatedResponse({ rows: [], page: ledgerPage, page_size: ledgerPageSize }));
+      setLedgerError(formatApiError(error));
+    } finally {
+      setLedgerLoading(false);
+    }
+  }, [clientId, ledgerDateFrom, ledgerDateTo, ledgerPage, ledgerPageSize, ledgerSearch, ledgerStatusFilter, ledgerTypeFilter, selectedSupplierId]);
+
+  useEffect(() => {
+    if (!selectedSupplierId) return;
+    refreshSupplierLedger();
+  }, [refreshSupplierLedger, selectedSupplierId]);
 
   async function createSupplier(e) {
     e.preventDefault();
@@ -510,91 +600,22 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
     setSupplierRecordTab("General");
   }
 
-  function supplierPaymentOnAccount(supplierId) {
-    return payments
-      .filter((payment) => payment.supplier_id === supplierId && !payment.invoice_id)
-      .reduce((sum, payment) => sum + asNumber(payment.amount || payment.gross_amount), 0);
-  }
-
   const supplierLedgerRows = useCallback((supplierId) => {
-    const baseRows = [
-      ...invoices
-        .filter((invoice) => invoice.supplier_id === supplierId)
-        .map((invoice) => ({
-          ...invoice,
-          id: invoice.id,
-          ledgerKey: `invoice-${invoice.id}`,
-          supplier_id: supplierId,
-          source: "invoice",
-          date: invoice.invoice_date || invoice.date || invoice.created_at,
-          type: "Purchase Invoice",
-          reference: invoice.invoice_number || invoice.reference || "-",
-          description: invoice.description || invoice.supplier_name || "Purchase invoice",
-          debit: 0,
-          credit: asNumber(invoice.gross_amount || invoice.total || invoice.amount),
-          invoice_value: invoiceValue(invoice),
-          paid_allocated: allocatedValue(invoice),
-          invoice_balance: invoiceBalance(invoice),
-          status: invoice.status || "Posted",
-        })),
-      ...creditNotes
-        .filter((note) => note.supplier_id === supplierId)
-        .map((note) => ({
-          ...note,
-          id: note.id,
-          ledgerKey: `credit-note-${note.id}`,
-          supplier_id: supplierId,
-          source: "credit_note",
-          date: note.credit_note_date || note.date || note.created_at,
-          type: "Supplier Credit Note",
-          reference: note.credit_note_number || note.reference || "-",
-          description: note.description || "Supplier credit note",
-          debit: asNumber(note.gross_amount || note.total || note.amount),
-          credit: 0,
-          invoice_value: 0,
-          paid_allocated: asNumber(note.gross_amount || note.total || note.amount),
-          invoice_balance: 0,
-          status: note.status || "Posted",
-        })),
-      ...payments
-        .filter((payment) => payment.supplier_id === supplierId)
-        .map((payment) => ({
-          ...payment,
-          id: payment.id,
-          ledgerKey: `payment-${payment.id}`,
-          supplier_id: supplierId,
-          source: "payment",
-          date: payment.payment_date || payment.date || payment.created_at,
-          type: payment.invoice_id ? "Supplier Payment" : "Payment on Account",
-          reference: payment.reference || payment.payment_reference || "-",
-          description: payment.description || "Supplier payment",
-          debit: asNumber(payment.amount || payment.gross_amount),
-          credit: 0,
-          invoice_value: 0,
-          paid_allocated: asNumber(payment.amount || payment.gross_amount),
-          invoice_balance: 0,
-          status: payment.status || (payment.invoice_id ? "Allocated" : "Open"),
-        })),
-      ...expenses
-        .filter((expense) => expense.supplier_id === supplierId)
-        .map((expense) => ({
-          ...expense,
-          id: expense.id,
-          ledgerKey: `expense-${expense.id}`,
-          supplier_id: supplierId,
-          source: "expense",
-          date: expense.expense_date || expense.date || expense.created_at,
-          type: "Expense",
-          reference: expense.reference || "-",
-          description: expense.description || "Supplier expense",
-          debit: 0,
-          credit: asNumber(expense.gross_amount || expense.total || expense.amount),
-          invoice_value: invoiceValue(expense),
-          paid_allocated: allocatedValue(expense),
-          invoice_balance: invoiceBalance(expense),
-          status: expense.status || "Posted",
-        })),
-    ];
+    const baseRows = (ledgerData.rows || []).map((row) => ({
+      ...row,
+      id: row.id,
+      ledgerKey: row.ledgerKey || row.ledger_key || `${row.source || row.type || "ledger"}-${row.id || row.reference || row.date}`,
+      supplier_id: row.supplier_id || supplierId,
+      source: row.source || row.record_type || normaliseLedgerSource(row.type),
+      date: row.invoice_date || row.credit_note_date || row.payment_date || row.expense_date || row.date || row.created_at,
+      type: normaliseApLedgerType(row.type || row.record_type || row.document_type),
+      reference: row.invoice_number || row.credit_note_number || row.payment_reference || row.reference || "-",
+      description: row.description || row.supplier_name || "Supplier ledger item",
+      invoice_value: invoiceValue(row),
+      paid_allocated: allocatedValue(row),
+      invoice_balance: invoiceBalance(row),
+      status: row.status || "Open",
+    }));
 
     const supplierDraftRows = ledgerDraftRows.filter((row) => row.supplier_id === supplierId);
     const draftOverrides = new Map(
@@ -611,11 +632,11 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
       runningBalance += asNumber(row.credit) - asNumber(row.debit);
       return { ...row, runningBalance };
     });
-  }, [creditNotes, expenses, invoices, ledgerDraftRows, payments]);
+  }, [ledgerData.rows, ledgerDraftRows]);
 
   function supplierLastActivity(supplierId) {
-    const rows = supplierLedgerRows(supplierId);
-    return rows.length ? rows[rows.length - 1].date : null;
+    const supplier = supplierById(supplierId);
+    return supplier?.last_transaction_date || supplier?.last_activity_date || supplier?.last_transaction_at || null;
   }
 
   function buildTransactionDraft(type, row = {}) {
@@ -754,6 +775,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
       await putJson(`/ap/invoices/${transactionDraft.id}`, transactionPayload(nextStatus));
       toast.success("AP invoice updated");
       await reloadWorkspace();
+      await refreshSupplierLedger();
       setTransactionDraft(null);
     } catch (error) {
       const status = error?.response?.status;
@@ -847,24 +869,17 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
   const selectedLedgerRows = useMemo(() => (
     selectedSupplier ? supplierLedgerRows(selectedSupplier.id) : []
   ), [selectedSupplier, supplierLedgerRows]);
-  const visibleLedgerRows = useMemo(() => selectedLedgerRows.filter((row) => {
-    const typeOk = ledgerTypeFilter === "All" || row.type === ledgerTypeFilter;
-    const statusOk = ledgerStatusFilter === "All" || row.status === ledgerStatusFilter;
-    const rowDate = toInputDate(row.date);
-    const fromOk = !ledgerDateFrom || rowDate >= ledgerDateFrom;
-    const toOk = !ledgerDateTo || rowDate <= ledgerDateTo;
-    const needle = ledgerSearch.trim().toLowerCase();
-    const searchOk = !needle || `${row.type} ${row.reference} ${row.description} ${row.status}`.toLowerCase().includes(needle);
-    return typeOk && statusOk && fromOk && toOk && searchOk;
-  }), [ledgerDateFrom, ledgerDateTo, ledgerSearch, ledgerStatusFilter, ledgerTypeFilter, selectedLedgerRows]);
+  const visibleLedgerRows = selectedLedgerRows;
   const ledgerStatuses = useMemo(() => (
     ["All", ...Array.from(new Set(selectedLedgerRows.map((row) => row.status).filter(Boolean)))]
   ), [selectedLedgerRows]);
-  const ledgerTotals = useMemo(() => visibleLedgerRows.reduce((totals, row) => ({
-    invoiceValue: totals.invoiceValue + invoiceValue(row),
-    allocated: totals.allocated + allocatedValue(row),
-    balance: totals.balance + invoiceBalance(row),
-  }), { invoiceValue: 0, allocated: 0, balance: 0 }), [visibleLedgerRows]);
+  const ledgerTotals = {
+    invoiceValue: asNumber(ledgerData.summary.invoice_value ?? ledgerData.summary.total_invoice_value ?? ledgerData.summary.visible_invoice_value),
+    allocated: asNumber(ledgerData.summary.paid_allocated ?? ledgerData.summary.payments_credits_allocated ?? ledgerData.summary.allocated),
+    balance: asNumber(ledgerData.summary.invoice_balance ?? ledgerData.summary.outstanding ?? ledgerData.summary.outstanding_balance),
+  };
+  const ledgerVisibleCount = Number(ledgerData.summary.visible_transaction_count ?? ledgerData.total_rows ?? visibleLedgerRows.length) || 0;
+  const pagedLedgerRows = visibleLedgerRows;
 
   function exportLedgerRows() {
     const header = "Date,Type,Reference,Description,Invoice value,Paid / allocated,Invoice balance,Status,Attachment";
@@ -902,15 +917,8 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
         description: row.description || row.new_value || row.module || "Supplier activity",
       }));
 
-    if (realRows.length) return realRows;
-    return selectedLedgerRows.map((row) => ({
-      id: `${row.source}-${row.id}`,
-      date: row.date,
-      user: "System",
-      action: `${row.type} recorded`,
-      description: `${row.reference} - ${row.description}`,
-    }));
-  }, [auditTrail, selectedLedgerRows, selectedSupplier]);
+    return realRows;
+  }, [auditTrail, selectedSupplier]);
 
   const auditActions = useMemo(() => (
     ["All", ...Array.from(new Set(supplierAuditRows.map((row) => row.action).filter(Boolean)))]
@@ -1049,7 +1057,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
           {supplierRecordTab === "Ledger" ? (
             <Panel title="Supplier ledger">
               <div className="mb-3 grid gap-3 md:grid-cols-4">
-                <SummaryCard label="Visible transactions" value={visibleLedgerRows.length} />
+                <SummaryCard label="Visible transactions" value={ledgerVisibleCount} />
                 <SummaryCard label="Invoice value" value={formatMoney(ledgerTotals.invoiceValue)} />
                 <SummaryCard label="Invoice balance / outstanding" value={formatMoney(ledgerTotals.balance)} />
                 <SummaryCard label="Payments / credits allocated" value={formatMoney(ledgerTotals.allocated)} />
@@ -1086,6 +1094,8 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
                   </Button>
                 </div>
               </div>
+              {ledgerError ? <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{ledgerError}</div> : null}
+              {ledgerLoading ? <div className="mb-3 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-600">Loading supplier ledger...</div> : null}
               <div className="overflow-hidden rounded-md border border-stone-200">
                 <table className="w-full text-sm">
                   <thead className="bg-stone-50 text-left text-xs uppercase tracking-wide text-stone-500">
@@ -1102,7 +1112,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
                     </tr>
                   </thead>
                   <tbody>
-                    {visibleLedgerRows.length ? visibleLedgerRows.map((row) => (
+                    {visibleLedgerRows.length ? pagedLedgerRows.map((row) => (
                       <tr key={row.ledgerKey || `${row.source}-${row.id}`} className="cursor-pointer border-t border-stone-100 hover:bg-emerald-50/50" onClick={() => openTransactionForm(row.type, row)}>
                         <td className="px-3 py-2">{formatDate(row.date)}</td>
                         <td className="px-3 py-2 font-medium">
@@ -1138,6 +1148,20 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
                     </tfoot>
                   ) : null}
                 </table>
+                {ledgerVisibleCount ? (
+                  <PaginationFooter
+                    page={ledgerPage}
+                    pageSize={ledgerPageSize}
+                    totalRows={ledgerVisibleCount}
+                    totalPages={ledgerData.total_pages}
+                    disabled={ledgerLoading}
+                    onPageChange={setLedgerPage}
+                    onPageSizeChange={(size) => {
+                      setLedgerPageSize(normalisePageSize(size));
+                      setLedgerPage(1);
+                    }}
+                  />
+                ) : null}
               </div>
             </Panel>
           ) : null}
@@ -1156,6 +1180,8 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
                   <Download className="mr-2 h-4 w-4" /> Export
                 </Button>
               </div>
+              {auditError ? <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{auditError}</div> : null}
+              {auditLoading && !visibleAuditRows.length ? <div className="py-8 text-center text-sm text-stone-500">Loading supplier audit trail...</div> : null}
               <div className="overflow-hidden rounded-md border border-stone-200">
                 <table className="w-full text-sm">
                   <thead className="bg-stone-50 text-left text-xs uppercase tracking-wide text-stone-500">
@@ -1181,6 +1207,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
                     )}
                   </tbody>
                 </table>
+                <PaginationFooter page={auditData.page} pageSize={auditData.page_size} totalRows={auditData.total_rows} totalPages={auditData.total_pages} onPageChange={setAuditPage} onPageSizeChange={setAuditPageSize} disabled={auditLoading} />
               </div>
             </Panel>
           ) : null}
@@ -1218,7 +1245,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
                 key={supplier.id}
                 supplier={supplier}
                 outstanding={supplier.current_balance ?? supplier.outstanding_balance ?? 0}
-                paymentOnAccount={supplierPaymentOnAccount(supplier.id)}
+                paymentOnAccount={supplier.on_account_balance ?? supplier.payment_on_account_balance ?? 0}
                 lastActivity={supplierLastActivity(supplier.id)}
                 onOpen={() => openSupplier(supplier.id)}
               />

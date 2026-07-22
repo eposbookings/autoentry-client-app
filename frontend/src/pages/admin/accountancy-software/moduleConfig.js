@@ -125,7 +125,7 @@ export const MODULE_DETAILS = {
     title: "Audit Trail",
     manage: ["User actions", "Record changes", "Posting history"],
     statLabel: "Audit events",
-    stat: (workspace) => workspace?.audit_log?.length || 0,
+    stat: (workspace) => workspace?.audit_summary?.count ?? workspace?.audit_log?.length ?? 0,
     tabs: ["Audit Trail"],
   },
   reports: {
