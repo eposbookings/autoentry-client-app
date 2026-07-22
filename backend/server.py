@@ -6266,7 +6266,7 @@ async def reconcilable_account_transactions(session: AsyncSession, client_id: st
     for invoice in ap.get("invoices", []):
         existing_allocations = await many(session, select(accounting_ap_payment_allocations).where(accounting_ap_payment_allocations.c.client_id == client_id, accounting_ap_payment_allocations.c.invoice_id == invoice["id"]))
         outstanding = max(money(invoice.get("gross_amount")) - sum((money(row.get("amount")) for row in existing_allocations), Decimal("0.00")), Decimal("0.00"))
-        if outstanding <= 0 or invoice.get("status") in {"draft", "void", "archived"}:
+        if outstanding <= 0 or str(invoice.get("status") or "").lower() not in {"posted", "part_paid"}:
             continue
         row = {
             "id": f"ap_invoice:{invoice.get('id')}",
@@ -6274,8 +6274,16 @@ async def reconcilable_account_transactions(session: AsyncSession, client_id: st
             "type": "ap_invoice",
             "contact_name": invoice.get("supplier_name") or "Supplier",
             "account_name": invoice.get("supplier_name") or "Supplier",
+            "account_id": invoice.get("supplier_id"),
+            "account_code": invoice.get("supplier_code") or invoice.get("account_code") or "",
             "reference": invoice.get("invoice_number") or invoice.get("reference") or "",
-            "date": invoice.get("due_date") or invoice.get("invoice_date") or "",
+            "invoice_number": invoice.get("invoice_number") or "",
+            "transaction_date": invoice.get("invoice_date") or "",
+            "due_date": invoice.get("due_date") or "",
+            "date": invoice.get("invoice_date") or "",
+            "description": invoice.get("description") or "",
+            "currency": invoice.get("currency") or "GBP",
+            "status": invoice.get("status") or "posted",
             "amount": money_str(money(invoice.get("gross_amount"))),
             "outstanding_amount": money_str(outstanding),
             "unallocated_amount": "0.00",
@@ -6333,7 +6341,7 @@ async def reconcilable_account_transactions(session: AsyncSession, client_id: st
     for invoice in ar.get("invoices", []):
         existing_allocations = await many(session, select(accounting_ar_receipt_allocations).where(accounting_ar_receipt_allocations.c.client_id == client_id, accounting_ar_receipt_allocations.c.invoice_id == invoice["id"]))
         outstanding = max(money(invoice.get("gross_amount")) - sum((money(row.get("amount")) for row in existing_allocations), Decimal("0.00")), Decimal("0.00"))
-        if outstanding <= 0 or invoice.get("status") in {"draft", "void", "archived"}:
+        if outstanding <= 0 or str(invoice.get("status") or "").lower() not in {"posted", "part_paid"}:
             continue
         row = {
             "id": f"ar_invoice:{invoice.get('id')}",
@@ -6341,8 +6349,16 @@ async def reconcilable_account_transactions(session: AsyncSession, client_id: st
             "type": "ar_invoice",
             "contact_name": invoice.get("customer_name") or "Customer",
             "account_name": invoice.get("customer_name") or "Customer",
+            "account_id": invoice.get("customer_id"),
+            "account_code": invoice.get("customer_code") or invoice.get("account_code") or "",
             "reference": invoice.get("invoice_number") or invoice.get("reference") or "",
-            "date": invoice.get("due_date") or invoice.get("invoice_date") or "",
+            "invoice_number": invoice.get("invoice_number") or "",
+            "transaction_date": invoice.get("invoice_date") or "",
+            "due_date": invoice.get("due_date") or "",
+            "date": invoice.get("invoice_date") or "",
+            "description": invoice.get("description") or "",
+            "currency": invoice.get("currency") or "GBP",
+            "status": invoice.get("status") or "posted",
             "amount": money_str(money(invoice.get("gross_amount"))),
             "outstanding_amount": money_str(outstanding),
             "unallocated_amount": "0.00",
@@ -9585,21 +9601,33 @@ async def get_gl_journals(
         "line_count": count_by_id.get(str(row.get("id")), 0), "debit_total": row.get("total_debit") or "0.00",
         "credit_total": row.get("total_credit") or "0.00", "status": row.get("status"),
     } for row in records]
-    payload = gl_response(rows, safe_page, safe_size, total_rows, {"journal_count": total_rows})
+    draft_count = int((await session.execute(select(func.count()).select_from(accounting_journal_entries).where(accounting_journal_entries.c.client_id == client_id, accounting_journal_entries.c.status == "draft"))).scalar() or 0)
+    next_reference = f"JRN-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+    payload = gl_response(rows, safe_page, safe_size, total_rows, {"journal_count": total_rows, "draft_count": draft_count, "next_reference": next_reference})
     log_gl_response("journals", client_id, started, payload)
     return payload
 
 
-MANUAL_JOURNAL_SOURCES = {"manual", "manual_journal", "journal_copy"}
+MANUAL_JOURNAL_SOURCES = {"manual", "manual_journal", "journal_copy", "general_ledger", "gl", "journal"}
+
+
+def is_general_ledger_owned_journal(journal: dict) -> bool:
+    source = str(journal.get("source_type") or "").strip().lower()
+    source_key = re.sub(r"[^a-z0-9]+", "_", source).strip("_")
+    if source_key in MANUAL_JOURNAL_SOURCES or source_key == "journal_entry":
+        return True
+    if source_key.startswith("manual_") or source_key.startswith("general_ledger"):
+        return True
+    # Older native manual journals did not always persist a source label. Their
+    # source record points back to the journal itself, unlike module-owned entries.
+    return not source_key and str(journal.get("source_id") or "") == str(journal.get("id") or "")
 
 
 async def journal_safety(session: AsyncSession, client_id: str, journal: dict) -> dict:
     source = str(journal.get("source_type") or "").lower()
     blockers = []
-    if source not in MANUAL_JOURNAL_SOURCES:
+    if not is_general_ledger_owned_journal(journal):
         blockers.append(f"This journal cannot be changed because it was created by {vat_source_module(source)}.")
-    if str(journal.get("status") or "").lower() == "posted":
-        blockers.append("Posted journals are read-only. Copy this journal to create a correction.")
     entry_date = str(journal.get("entry_date") or "")
     period = await one(session, select(accounting_periods).where(accounting_periods.c.client_id == client_id, accounting_periods.c.period_start <= entry_date, accounting_periods.c.period_end >= entry_date, accounting_periods.c.status.in_(["locked", "closed"])))
     if period:
@@ -9607,7 +9635,14 @@ async def journal_safety(session: AsyncSession, client_id: str, journal: dict) -
     reconciled = await one(session, select(accounting_bank_transactions.c.id).where(accounting_bank_transactions.c.client_id == client_id, accounting_bank_transactions.c.journal_entry_id == journal.get("id"), accounting_bank_transactions.c.status == "reconciled"))
     if reconciled:
         blockers.append("This journal cannot be changed because it has reconciled bank activity.")
-    return {"editable": not blockers and str(journal.get("status") or "").lower() in {"draft", "awaiting_approval"}, "deletable": not blockers and str(journal.get("status") or "").lower() in {"draft", "awaiting_approval"}, "delete_blockers": blockers, "copyable": True}
+    lock_reason = blockers[0] if blockers else ""
+    status = str(journal.get("status") or "").lower()
+    editable = not blockers and status in {"draft", "awaiting_approval", "posted"}
+    deletable = not blockers and status in {"draft", "awaiting_approval"}
+    delete_blockers = list(blockers)
+    if status == "posted":
+        delete_blockers.append("Posted journals cannot be deleted.")
+    return {"editable": editable, "deletable": deletable, "delete_blockers": delete_blockers, "lock_reason": lock_reason, "copyable": True}
 
 
 def validate_manual_journal_payload(payload: dict, accounts: list[dict]) -> tuple[list[dict], Decimal, Decimal]:
@@ -9636,6 +9671,70 @@ def validate_manual_journal_payload(payload: dict, accounts: list[dict]) -> tupl
     return lines, debit_total, credit_total
 
 
+@api.get("/admin/accounting/clients/{client_id}/general-ledger/journals/import-template")
+async def download_gl_journal_import_template(client_id: str, user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    await get_client_or_404(session, client_id)
+    content = "journal_date,reference,description,line_description,nominal_code,vat_code,debit,credit\n2026-01-31,JRN-EXAMPLE,Month end adjustment,Debit line,5000,T20,100.00,\n2026-01-31,JRN-EXAMPLE,Month end adjustment,Credit line,1200,,0.00,100.00\n"
+    return Response(content=content, media_type="text/csv", headers={"Content-Disposition": "attachment; filename=journal-import-template.csv"})
+
+
+@api.post("/admin/accounting/clients/{client_id}/general-ledger/journals/import")
+async def import_gl_journals(
+    client_id: str, file: UploadFile = File(...), user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db),
+):
+    started = time.perf_counter()
+    await get_client_or_404(session, client_id)
+    raw = await file.read()
+    if len(raw) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Journal import files must be 5MB or smaller.")
+    suffix = Path(file.filename or "").suffix.lower()
+    try:
+        if suffix == ".xlsx":
+            from openpyxl import load_workbook
+            sheet = load_workbook(io.BytesIO(raw), read_only=True, data_only=True).active
+            values = list(sheet.iter_rows(values_only=True))
+            headers = [str(value or "").strip() for value in (values[0] if values else [])]
+            imported_rows = [dict(zip(headers, row)) for row in values[1:]]
+        elif suffix == ".csv":
+            imported_rows = list(csv.DictReader(io.StringIO(raw.decode("utf-8-sig"))))
+        else:
+            raise HTTPException(status_code=400, detail="Upload a CSV or XLSX journal file.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"The journal import file could not be read: {exc}")
+    required = {"journal_date", "reference", "description", "line_description", "nominal_code", "vat_code", "debit", "credit"}
+    available = {str(key or "").strip() for row in imported_rows[:1] for key in row.keys()}
+    missing = sorted(required - available)
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Missing required import columns: {', '.join(missing)}")
+    groups: dict[tuple[str, str, str], list[dict]] = {}
+    row_numbers: dict[tuple[str, str, str], list[int]] = {}
+    failed_rows = []
+    for row_number, row in enumerate(imported_rows, start=2):
+        journal_date = str(row.get("journal_date") or "").strip()
+        reference = str(row.get("reference") or "").strip()
+        description = str(row.get("description") or "").strip()
+        if not journal_date or not reference:
+            failed_rows.append({"row": row_number, "reference": reference, "message": "journal_date and reference are required."})
+            continue
+        key = (journal_date, reference, description)
+        groups.setdefault(key, []).append({"account_code": str(row.get("nominal_code") or "").strip(), "description": str(row.get("line_description") or "").strip(), "vat_code": str(row.get("vat_code") or "").strip(), "debit": row.get("debit") or "0.00", "credit": row.get("credit") or "0.00"})
+        row_numbers.setdefault(key, []).append(row_number)
+    imported_count = 0
+    for (journal_date, reference, description), lines in groups.items():
+        try:
+            await create_manual_gl_journal(session, client_id, {"entry_date": journal_date, "reference": reference, "description": description, "status": "draft", "lines": lines}, user.get("id"), "manual_journal_imported")
+            imported_count += 1
+        except HTTPException as exc:
+            for row_number in row_numbers[(journal_date, reference, description)]:
+                failed_rows.append({"row": row_number, "reference": reference, "message": str(exc.detail)})
+    await session.commit()
+    payload = {"ok": not failed_rows, "imported_count": imported_count, "failed_count": len(failed_rows), "failed_rows": sorted(failed_rows, key=lambda row: row.get("row") or 0)}
+    logger.info("Native accounting GL journal-import client_id=%s elapsed_ms=%s payload_bytes=%s", client_id, int((time.perf_counter() - started) * 1000), approximate_payload_size(payload))
+    return payload
+
+
 @api.get("/admin/accounting/clients/{client_id}/general-ledger/journals/{journal_id}")
 @api.get("/admin/accounting/clients/{client_id}/gl/journals/{journal_id}")
 async def get_gl_journal_detail(client_id: str, journal_id: str, user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
@@ -9646,7 +9745,9 @@ async def get_gl_journal_detail(client_id: str, journal_id: str, user: dict = De
         raise HTTPException(status_code=404, detail="Journal not found.")
     safety = await journal_safety(session, client_id, journal)
     audit = await many(session, select(accounting_audit_log).where(accounting_audit_log.c.client_id == client_id, accounting_audit_log.c.record_id == journal_id).order_by(accounting_audit_log.c.created_at.desc()))
-    payload = {"journal": {key: value for key, value in journal.items() if key != "lines"}, "lines": journal.get("lines") or [], "audit_trail": audit, **safety, "source_document": {}}
+    debit = money(journal.get("total_debit"))
+    credit = money(journal.get("total_credit"))
+    payload = {"journal": {key: value for key, value in journal.items() if key != "lines"}, "lines": journal.get("lines") or [], "totals": {"debit": money_str(debit), "credit": money_str(credit), "difference": money_str(debit - credit), "balanced": debit == credit and debit > 0}, "audit_trail": audit, **safety, "source_document": {}}
     logger.info("Native accounting GL journal-detail client_id=%s journal_id=%s elapsed_ms=%s payload_bytes=%s", client_id, journal_id, int((time.perf_counter() - started) * 1000), approximate_payload_size(payload))
     return payload
 
@@ -9654,6 +9755,11 @@ async def get_gl_journal_detail(client_id: str, journal_id: str, user: dict = De
 async def create_manual_gl_journal(session: AsyncSession, client_id: str, payload: dict, actor_id: Optional[str], action: str = "manual_journal_created") -> str:
     accounts = await ensure_native_accounting_client(session, client_id)
     lines, debit_total, credit_total = validate_manual_journal_payload(payload, accounts)
+    active_vat_codes = {str(row.get("code") or "").strip().lower() for row in await ensure_vat_codes(session, client_id) if bool(row.get("active", True))}
+    for line in lines:
+        vat_code = str(line.get("vat_code") or "").strip()
+        if vat_code and vat_code.lower() not in active_vat_codes:
+            raise HTTPException(status_code=400, detail=f"VAT code '{vat_code}' is not an active native VAT code.")
     status = str(payload.get("status") or "draft").lower()
     if status not in {"draft", "posted"}:
         raise HTTPException(status_code=400, detail="Manual journal status must be draft or posted.")
@@ -9698,18 +9804,28 @@ async def update_gl_journal(client_id: str, journal_id: str, payload: dict, user
         raise HTTPException(status_code=400, detail=(safety["delete_blockers"] or ["This journal is read-only."])[0])
     accounts = await ensure_native_accounting_client(session, client_id)
     lines, debit_total, credit_total = validate_manual_journal_payload(payload, accounts)
+    next_status = str(payload.get("status") or journal.get("status") or "draft").lower()
+    active_vat_codes = {str(row.get("code") or "").strip().lower() for row in await ensure_vat_codes(session, client_id) if bool(row.get("active", True))}
+    for line in lines:
+        vat_code = str(line.get("vat_code") or "").strip()
+        if vat_code and vat_code.lower() not in active_vat_codes:
+            raise HTTPException(status_code=400, detail=f"VAT code '{vat_code}' is not an active native VAT code.")
+    if next_status not in {"draft", "posted"}:
+        raise HTTPException(status_code=400, detail="Manual journal status must be draft or posted.")
     await session.execute(update(accounting_journal_entries).where(accounting_journal_entries.c.id == journal_id).values(
         entry_date=parse_date_or_today(payload.get("entry_date") or payload.get("date") or journal.get("entry_date")).isoformat(),
         reference=str(payload.get("reference") or journal.get("reference") or "").strip(),
         description=str(payload.get("description") or journal.get("description") or "").strip(),
-        total_debit=money_str(debit_total), total_credit=money_str(credit_total),
+        total_debit=money_str(debit_total), total_credit=money_str(credit_total), status=next_status,
+        posted_at=utc_now_iso() if next_status == "posted" else journal.get("posted_at"),
     ))
     await session.execute(delete(accounting_journal_lines).where(accounting_journal_lines.c.entry_id == journal_id))
     now = utc_now_iso()
     for line in lines:
         account = line.pop("account")
         await session.execute(insert(accounting_journal_lines).values(id=new_id(), entry_id=journal_id, client_id=client_id, account_id=account.get("id"), account_code=account.get("code"), account_name=account.get("name"), debit=money_str(money(line.get("debit"))), credit=money_str(money(line.get("credit"))), vat_code=str(line.get("vat_code") or "").strip(), description=str(line.get("description") or "").strip(), created_at=now))
-    await add_accounting_audit(session, client_id, user.get("id"), "manual_journal_updated", "journal", journal_id, {"previous": journal})
+    audit_action = "manual_journal_posted" if next_status == "posted" and str(journal.get("status") or "").lower() != "posted" else "manual_journal_updated"
+    await add_accounting_audit(session, client_id, user.get("id"), audit_action, "journal", journal_id, {"previous": journal, "status": next_status})
     await session.commit()
     return await get_gl_journal_detail(client_id, journal_id, user, session)
 
@@ -13738,6 +13854,7 @@ async def get_bank_account_transactions(
     type: Optional[str] = None,
     contact: Optional[str] = None,
     account: Optional[str] = None,
+    direction: Optional[str] = "all",
     status: Optional[str] = None,
     reconciliation_status: Optional[str] = None,
     search: Optional[str] = None,
@@ -13765,11 +13882,15 @@ async def get_bank_account_transactions(
     if contact_filter:
         needle = contact_filter.lower()
         rows = [row for row in rows if needle in str(row.get("contact_name") or row.get("account_name") or "").lower()]
-    status_filter = status or reconciliation_status
     if reconciliation_status:
         rows = [row for row in rows if str(row.get("reconciliation_status") or "").lower() == reconciliation_status.lower()]
-    elif status_filter:
-        rows = [row for row in rows if str(row.get("reconciliation_status") or "").lower() == status_filter.lower()]
+    if status:
+        rows = [row for row in rows if str(row.get("status") or "").lower() == status.lower()]
+    direction_filter = str(direction or "all").strip().lower()
+    if direction_filter not in {"all", "money_out", "money_in"}:
+        raise HTTPException(status_code=400, detail="Direction must be money_out, money_in, or all.")
+    if direction_filter != "all":
+        rows = [row for row in rows if ("money_in" if str(row.get("type") or "") == "ap_credit_note" else "money_out" if str(row.get("type") or "") == "ar_credit_note" else "money_out" if str(row.get("module") or "").upper() == "AP" else "money_in" if str(row.get("module") or "").upper() == "AR" else str(row.get("direction") or "")) == direction_filter]
     if search:
         needle = search.lower()
         rows = [
@@ -13781,26 +13902,44 @@ async def get_bank_account_transactions(
     page_rows = rows[(page - 1) * page_size : page * page_size]
     normalized = []
     for row in page_rows:
-        module = str(row.get("module") or "").upper()
+        module_key = str(row.get("module") or "").upper()
         amount = money(row.get("outstanding_amount")) or money(row.get("unallocated_amount")) or money(row.get("amount"))
-        direction = "money_out" if module == "AP" else "money_in" if module == "AR" else str(row.get("direction") or "")
+        type_key = str(row.get("type") or "")
+        row_direction = "money_in" if type_key == "ap_credit_note" else "money_out" if type_key == "ar_credit_note" else "money_out" if module_key == "AP" else "money_in" if module_key == "AR" else str(row.get("direction") or "")
+        transaction_types = {"ap_invoice": "purchase_invoice", "ar_invoice": "sales_invoice", "ap_credit_note": "supplier_credit_note", "ar_credit_note": "customer_credit_note", "ap_payment": "payment_on_account", "ar_receipt": "receipt_on_account"}
+        gross = money(row.get("amount"))
+        allocated = max(gross - amount, Decimal("0.00")) if type_key in {"ap_invoice", "ar_invoice"} else Decimal("0.00")
         normalized.append(
             {
                 **row,
-                "source_module": module,
-                "transaction_type": row.get("type"),
+                "source_module": "accounts_payable" if module_key == "AP" else "accounts_receivable" if module_key == "AR" else "banking",
+                "transaction_type": transaction_types.get(type_key, type_key),
                 "record_id": row.get("linked_record_id"),
                 "account_transaction_id": row.get("id"),
                 "supplier_customer": row.get("contact_name") or row.get("account_name") or "",
+                "account_id": row.get("account_id") or "",
+                "account_code": row.get("account_code") or "",
+                "account_name": row.get("account_name") or row.get("contact_name") or "",
+                "invoice_number": row.get("invoice_number") or "",
+                "transaction_date": row.get("transaction_date") or row.get("date") or "",
+                "due_date": row.get("due_date") or "",
+                "description": row.get("description") or "",
+                "currency": row.get("currency") or "GBP",
                 "original_value": row.get("amount"),
+                "gross_amount": money_str(gross),
+                "allocated_amount": money_str(allocated),
+                "outstanding_amount": money_str(amount),
                 "outstanding_balance": money_str(amount),
-                "direction": direction,
-                "match_eligible": amount > 0,
+                "direction": row_direction,
+                "source_document": None,
+                "attachment_url": None,
+                "status": row.get("status") or "posted",
+                "match_eligible": amount > 0 and type_key in {"ap_invoice", "ap_payment", "ar_invoice", "ar_receipt"},
             }
         )
-    payload = paginated_payload(normalized, page, page_size, total, {"outstanding_count": total})
+    payload = paginated_payload(normalized, page, page_size, total, {"outstanding_count": total, "money_out_count": sum(1 for row in rows if str(row.get("module") or "").upper() == "AP"), "money_in_count": sum(1 for row in rows if str(row.get("module") or "").upper() == "AR")})
     logger.info("Bank account-transactions payload client_id=%s rows=%s total=%s elapsed_ms=%s payload_bytes=%s", client_id, len(normalized), total, int((time.perf_counter() - started) * 1000), approximate_payload_size(payload))
-    return {**payload, "ok": True, "account_transactions": normalized, "count": total}
+    return payload
 
 
 @api.post("/admin/accounting/clients/{client_id}/bank-transactions/bulk-delete")

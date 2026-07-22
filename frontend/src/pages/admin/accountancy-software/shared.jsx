@@ -137,11 +137,11 @@ export function ContactCount({ icon: Icon, label, value }) {
   );
 }
 
-export function Field({ label, value, onChange, type = "text" }) {
+export function Field({ label, value, onChange, type = "text", disabled = false }) {
   return (
     <div>
       <Label className="text-xs font-semibold text-stone-600">{label}</Label>
-      <Input type={type} value={value || ""} onChange={(e) => onChange(e.target.value)} className="mt-1 h-9" />
+      <Input type={type} value={value || ""} disabled={disabled} onChange={(e) => onChange(e.target.value)} className={`mt-1 h-9 ${disabled ? "cursor-not-allowed bg-stone-100 text-stone-500" : ""}`} />
     </div>
   );
 }
