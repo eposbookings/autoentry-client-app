@@ -246,11 +246,12 @@ function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy,
   }, [bankingRefreshKey, baseUrl, bankTab, selectedBankId, selectedImportId, statementPage, statementPageSize, statementStatusFilter]);
 
   useEffect(() => {
-    if (bankTab !== "Account Transactions") return;
+    if (!selectedBankId || !["Account Transactions", "Reconciliation"].includes(bankTab)) return;
     let cancelled = false;
     const params = new URLSearchParams({
-      page: String(accountTxPage),
-      page_size: String(accountTxPageSize),
+      page: String(bankTab === "Reconciliation" ? 1 : accountTxPage),
+      page_size: String(bankTab === "Reconciliation" ? 250 : accountTxPageSize),
+      direction: "all",
     });
     Object.entries(filters).forEach(([key, value]) => {
       if (value) params.set(key, value);
@@ -273,7 +274,7 @@ function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy,
     return () => {
       cancelled = true;
     };
-  }, [accountTxPage, accountTxPageSize, bankTab, bankingRefreshKey, baseUrl, filters]);
+  }, [accountTxPage, accountTxPageSize, bankTab, bankingRefreshKey, baseUrl, filters, selectedBankId]);
 
   useEffect(() => { setAuditPage(1); }, [selectedBankId, auditSearch, auditPageSize]);
   useEffect(() => {
@@ -363,8 +364,9 @@ function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy,
   }
 
   async function matchSuggestion(transaction, suggestion) {
+    const suggestions = Array.isArray(suggestion) ? suggestion : null;
     await run(
-      async () => api.post(`${baseUrl}/bank-transactions/${transaction.id}/match`, { match_type: suggestion.type || suggestion.record_type, record_id: suggestion.record_id || suggestion.id, confidence: suggestion.confidence }),
+      async () => api.post(`${baseUrl}/bank-transactions/${transaction.id}/match`, suggestions ? { selected_transactions: suggestions } : { match_type: suggestion.type || suggestion.record_type, record_id: suggestion.record_id || suggestion.id, account_transaction_id: suggestion.account_transaction_id, confidence: suggestion.confidence }),
       "Suggested match posted"
     );
     setSelectedTransaction(null);
@@ -821,7 +823,7 @@ function MatchWorkflow({ transaction, rows, matchSuggestion, saving }) {
     setSelectedIds((current) => current.filter((item) => item !== id));
   }
 
-  if (!rows.length) return <InlineBackendMessage message="Backend endpoint required: outstanding account transactions for reconciliation." />;
+  if (!rows.length) return <InlineBackendMessage message="No outstanding AP/AR transactions available for reconciliation." />;
 
   return (
     <div className="grid gap-3 rounded-md border border-stone-200 bg-white p-3 xl:grid-cols-[1fr_320px]">
@@ -862,7 +864,7 @@ function MatchWorkflow({ transaction, rows, matchSuggestion, saving }) {
           </div>
         ) : <p className="rounded-md border border-dashed border-stone-300 p-3 text-sm text-stone-500">No transactions selected.</p>}
         <WorkflowSummary title="Match total" rows={[["Selected total", formatMoney(selectedTotal)], ["Bank amount", formatMoney(bankAmount)], ["Difference", formatMoney(difference)]]} />
-        <Button type="button" className="mt-3 w-full" disabled={saving || !validMatch} onClick={() => selectedRows.forEach((row) => matchSuggestion(transaction, accountTransactionSuggestion(row)))} style={{ background: "var(--brand)" }}>Confirm match</Button>
+        <Button type="button" className="mt-3 w-full" disabled={saving || !validMatch} onClick={() => matchSuggestion(transaction, selectedRows.map(accountTransactionSuggestion))} style={{ background: "var(--brand)" }}>Confirm match</Button>
       </div>
     </div>
   );
@@ -1425,15 +1427,18 @@ function isArOutstandingTransaction(transaction) {
 
 function outstandingRowsForBankLine(transaction, outstandingRows) {
   const moneyIn = Number(transaction?.money_in || 0) > 0;
-  return outstandingRows.filter((item) => moneyIn ? isArOutstandingTransaction(item) : isApOutstandingTransaction(item));
+  const direction = moneyIn ? "money_in" : "money_out";
+  return outstandingRows.filter((item) => item?.match_eligible !== false && (item?.direction ? item.direction === direction : moneyIn ? isArOutstandingTransaction(item) : isApOutstandingTransaction(item)));
 }
 
 function accountTransactionSuggestion(transaction) {
   return {
     id: transaction.id,
-    record_id: transaction.id || transaction.record_id,
-    record_type: accountTransactionType(transaction) || transaction.record_type || transaction.type,
-    type: accountTransactionType(transaction) || transaction.record_type || transaction.type,
+    account_transaction_id: transaction.account_transaction_id || transaction.id,
+    record_id: transaction.linked_record_id || transaction.record_id || transaction.id,
+    record_type: transaction.linked_record_type || transaction.type || accountTransactionType(transaction),
+    match_type: transaction.linked_record_type || transaction.type || accountTransactionType(transaction),
+    type: transaction.linked_record_type || transaction.type || accountTransactionType(transaction),
     label: accountTransactionLabel(transaction),
     contact_name: accountTransactionContact(transaction),
     reference: transaction.reference || transaction.document_number || transaction.invoice_number,
@@ -1445,6 +1450,13 @@ function accountTransactionLabel(transaction) {
   return [accountTransactionContact(transaction), transaction.reference || transaction.document_number || transaction.invoice_number, accountTransactionType(transaction)]
     .filter(Boolean)
     .join(" - ") || "Outstanding transaction";
+}
+
+function suggestedBankMatchLabel(transaction) {
+  const suggestion = transaction?.suggested_bank_match || transaction?.suggested_match;
+  if (!suggestion) return "-";
+  if (typeof suggestion === "string") return suggestion;
+  return suggestion.label || suggestion.description || suggestion.reference || "Suggested match available";
 }
 
 function suggestionRecordId(suggestion) {
@@ -1572,7 +1584,7 @@ function AccountTransactionTable({ transactions = [], selectable = false, select
   if (!transactions.length) {
     return (
       <div className="rounded-md border border-dashed border-stone-300 bg-stone-50 p-8 text-center text-sm text-stone-600">
-        Backend endpoint required: outstanding account transactions for reconciliation.
+        No outstanding AP/AR transactions available for reconciliation.
       </div>
     );
   }
@@ -1607,7 +1619,7 @@ function AccountTransactionTable({ transactions = [], selectable = false, select
               <td className="px-3 py-2 text-stone-600">{transaction.reference || transaction.document_number || transaction.invoice_number || "-"}</td>
               <td className="px-3 py-2 text-right">{accountTransactionAmount(transaction) !== "" ? formatMoney(accountTransactionAmount(transaction)) : "-"}</td>
               <td className="px-3 py-2 text-right">{accountTransactionOutstanding(transaction) !== "" ? formatMoney(accountTransactionOutstanding(transaction)) : "-"}</td>
-              <td className="px-3 py-2 text-stone-600">{transaction.suggested_bank_match || transaction.suggested_match || "-"}</td>
+              <td className="px-3 py-2 text-stone-600">{suggestedBankMatchLabel(transaction)}</td>
               <td className="px-3 py-2"><Badge className={statusBadgeClass(normaliseStatus(transaction.status))}>{displayStatus(transaction.status)}</Badge></td>
               <td className="px-3 py-2">
                 {transaction.view_url || transaction.match_supported ? (

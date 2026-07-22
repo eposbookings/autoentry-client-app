@@ -732,7 +732,7 @@ function ModuleWorkspace(props) {
     }
 
     if (module === "gl") {
-      return <LazyGeneralLedger workspace={workspace} moduleTab={moduleTab} filters={filters} detail={detail} />;
+      return <LazyGeneralLedger workspace={workspace} moduleTab={moduleTab} filters={filters} detail={detail} setHeaderContext={setRecordHeaderContext} />;
     }
 
     if (module === "coa") {
@@ -831,6 +831,14 @@ function ModuleWorkspace(props) {
                 </>
               ) : null}
             </div>
+          ) : recordHeaderContext?.actions?.length ? (
+            <div className="flex flex-wrap gap-2">
+              {recordHeaderContext.actions.map((action) => (
+                <Button key={action.label} type="button" variant="outline" className="gap-2" onClick={action.onClick}>
+                  {action.icon === false ? null : <Plus className="h-4 w-4" />} {action.label}
+                </Button>
+              ))}
+            </div>
           ) : null}
         </div>
         <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
@@ -897,6 +905,14 @@ function ModuleWorkspace(props) {
                 </Button>
               ))}
             </div>
+          ) : recordHeaderContext?.actions?.length ? (
+            <div className="flex flex-wrap gap-2">
+              {recordHeaderContext.actions.map((action) => (
+                <Button key={action.label} type="button" variant="outline" className="gap-2" onClick={action.onClick}>
+                  {action.icon === false ? null : <Plus className="h-4 w-4" />} {action.label}
+                </Button>
+              ))}
+            </div>
           ) : null}
         </div>
       </header>
@@ -925,9 +941,9 @@ function LazyModuleWorkspace({ workspace, endpoint, field, children }) {
   return children({ ...workspace, [field]: data, ...(field === "vat_engine" ? { vat: data } : {}) });
 }
 
-function LazyGeneralLedger({ workspace, moduleTab, filters, detail }) {
+function LazyGeneralLedger({ workspace, moduleTab, filters, detail, setHeaderContext }) {
   if (moduleTab === "Transactions") return <PaginatedGlTransactions workspace={workspace} filters={filters} />;
-  if (moduleTab === "Journals") return <PaginatedGlJournals workspace={workspace} filters={filters} />;
+  if (moduleTab === "Journals") return <PaginatedGlJournals workspace={workspace} filters={filters} setHeaderContext={setHeaderContext} />;
   if (moduleTab === "Account Activity") return <PaginatedGlAccountActivity workspace={workspace} filters={filters} />;
   if (moduleTab === "Trial Balance") {
     return <LazyModuleWorkspace workspace={workspace} endpoint="gl/trial-balance" field="reports">{(loaded) => <TrialBalanceReport workspace={loaded} />}</LazyModuleWorkspace>;
@@ -1027,7 +1043,7 @@ function PaginatedGlTransactions({ workspace, filters }) {
   return <Panel title="Transactions">{error ? <p className="py-8 text-center text-sm text-red-700">{error}</p> : loading && !data.rows.length ? <p className="py-8 text-center text-sm text-stone-500">Loading transactions...</p> : <GlActivityTable rows={data.rows} />}<GlPagination data={data} loading={loading} setPage={setPage} setPageSize={setPageSize} /></Panel>;
 }
 
-function PaginatedGlJournals({ workspace, filters }) {
+function PaginatedGlJournals({ workspace, filters, setHeaderContext }) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -1037,11 +1053,22 @@ function PaginatedGlJournals({ workspace, filters }) {
   const [editMode, setEditMode] = useState(false);
   const [modalDraft, setModalDraft] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [journalTab, setJournalTab] = useState("posted");
+  const [importOpen, setImportOpen] = useState(false);
   const clientId = workspace?.client?.id;
   const accounts = (workspace?.accounts || []).filter((account) => account.active !== false);
-  useEffect(() => { setPage(1); }, [filters?.date_from, filters?.date_to, filters?.financial_year_id, filters?.period_id, filters?.search, pageSize]);
-  const { data, loading, error } = useGlPage(workspace, "journals", filters, page, pageSize, { _refresh: refreshKey });
+  useEffect(() => { setPage(1); setSelectedIds([]); setOpenId(""); setDetail(null); }, [journalTab, filters?.date_from, filters?.date_to, filters?.financial_year_id, filters?.period_id, filters?.search, pageSize]);
+  const { data, loading, error } = useGlPage(workspace, "journals", filters, page, pageSize, { status: journalTab, _refresh: refreshKey });
   const refresh = () => setRefreshKey((value) => value + 1);
+  const openAddJournal = useCallback(() => setModalDraft(emptyJournalDraft(data.summary?.next_reference)), [data.summary?.next_reference]);
+  const openImportJournal = useCallback(() => setImportOpen(true), []);
+  const changeJournalTab = useCallback((tab) => setJournalTab(String(tab).startsWith("Drafts") ? "draft" : "posted"), []);
+  useEffect(() => {
+    const postedLabel = "Posted Journals";
+    const draftsLabel = `Drafts (${data.summary?.draft_count || 0})`;
+    setHeaderContext?.({ tabs: [postedLabel, draftsLabel], activeTab: journalTab === "draft" ? draftsLabel : postedLabel, onTabChange: changeJournalTab, actions: [{ label: "Add Journal", onClick: openAddJournal }, { label: "Import Journal", onClick: openImportJournal, icon: false }] });
+    return () => setHeaderContext?.(null);
+  }, [changeJournalTab, data.summary?.draft_count, journalTab, openAddJournal, openImportJournal, setHeaderContext]);
   async function loadJournalDetail(journalId) {
     const { data: response } = await api.get(`/admin/accounting/clients/${clientId}/general-ledger/journals/${journalId}`);
     setDetail(response);
@@ -1066,7 +1093,7 @@ function PaginatedGlJournals({ workspace, filters }) {
   }
   function copyToModal(sourceDetail) {
     if (!sourceDetail) return;
-    setModalDraft({ entry_date: new Date().toISOString().slice(0, 10), reference: "", description: `Copy of ${sourceDetail.journal?.description || sourceDetail.journal?.reference || "journal"}`, status: "draft", lines: (sourceDetail.lines || []).map((line) => ({ account_code: line.account_code, description: line.description || "", debit: line.debit || "0.00", credit: line.credit || "0.00", vat_code: line.vat_code || "" })) });
+    setModalDraft({ entry_date: new Date().toISOString().slice(0, 10), reference: data.summary?.next_reference || "", description: sourceDetail.journal?.description || "", status: "draft", lines: (sourceDetail.lines || []).map((line) => ({ account_code: line.account_code, description: line.description || "", debit: line.debit || "0.00", credit: line.credit || "0.00", vat_code: line.vat_code || "" })) });
   }
   async function copySelected() {
     if (selectedIds.length !== 1) return toast.error("Copy supports one selected journal at a time.");
@@ -1085,20 +1112,22 @@ function PaginatedGlJournals({ workspace, filters }) {
   return (
     <Panel title="Journals">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <Button type="button" onClick={() => setModalDraft(emptyJournalDraft())} style={{ background: "var(--brand)" }}><Plus className="mr-2 h-4 w-4" />Add journal</Button>
-        {selectedIds.length ? <div className="flex items-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-3 py-2"><span className="text-sm font-semibold">{selectedIds.length} selected</span><Button type="button" variant="outline" onClick={copySelected}>Copy</Button><Button type="button" variant="destructive" onClick={() => deleteSelected()}>Delete</Button></div> : null}
+        <div />
+        {selectedIds.length ? <div className="flex items-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-3 py-2"><span className="text-sm font-semibold">{selectedIds.length} selected</span><Button type="button" variant="outline" disabled={selectedIds.length !== 1} onClick={copySelected}>Copy</Button><Button type="button" variant="destructive" disabled={journalTab !== "draft"} title={journalTab !== "draft" ? "Only deletable draft journals can be removed." : ""} onClick={() => deleteSelected()}>Delete</Button></div> : null}
       </div>
+      {data.rows.length ? <label className="mb-2 inline-flex items-center gap-2 text-sm text-stone-600"><input type="checkbox" aria-label="Select all journals on this page" checked={data.rows.every((row) => selectedIds.includes(row.journal_id))} onChange={(event) => setSelectedIds(event.target.checked ? data.rows.map((row) => row.journal_id) : [])} /> Select all on this page</label> : null}
       {error ? <p className="py-8 text-center text-sm text-red-700">{error}</p> : loading && !data.rows.length ? <p className="py-8 text-center text-sm text-stone-500">Loading journals...</p> : data.rows.length ? (
         <div className="overflow-auto"><table className="min-w-full text-left text-sm"><thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500"><tr><th className="px-3 py-2">Select</th><th className="px-3 py-2">Date</th><th className="px-3 py-2">Reference</th><th className="px-3 py-2">Description</th><th className="px-3 py-2">Source</th><th className="px-3 py-2 text-right">Lines</th><th className="px-3 py-2 text-right">Debit</th><th className="px-3 py-2 text-right">Credit</th><th className="px-3 py-2">Status</th></tr></thead><tbody>{data.rows.map((row) => <React.Fragment key={row.journal_id}><tr onClick={() => toggleJournal(row)} className={`cursor-pointer border-t border-stone-100 ${openId === row.journal_id ? "bg-emerald-50" : "hover:bg-stone-50"}`}><td className="px-3 py-2"><input type="checkbox" checked={selectedIds.includes(row.journal_id)} onClick={(event) => event.stopPropagation()} onChange={(event) => setSelectedIds((current) => event.target.checked ? [...current, row.journal_id] : current.filter((id) => id !== row.journal_id))} /></td><td className="px-3 py-2">{formatDate(row.date)}</td><td className="px-3 py-2 font-medium text-stone-900">{row.reference || "-"}</td><td className="px-3 py-2 text-stone-600">{row.description || "-"}</td><td className="px-3 py-2">{row.source_module}</td><td className="px-3 py-2 text-right">{row.line_count}</td><td className="px-3 py-2 text-right">{formatMoney(row.debit_total)}</td><td className="px-3 py-2 text-right">{formatMoney(row.credit_total)}</td><td className="px-3 py-2"><Badge variant="outline">{row.status || "posted"}</Badge></td></tr>{openId === row.journal_id ? <tr className="bg-emerald-50/40"><td colSpan="9" className="p-3">{detail ? <GlJournalEditor detail={detail} accounts={accounts} editMode={editMode} setEditMode={setEditMode} onChange={setDetail} onSave={saveJournal} onCancel={async () => { setEditMode(false); await loadJournalDetail(row.journal_id); }} onCopy={() => copyToModal(detail)} onDelete={() => deleteSelected([row.journal_id])} onClose={() => toggleJournal(row)} saving={saving} /> : <p className="py-6 text-center text-sm text-stone-500">Loading journal detail...</p>}</td></tr> : null}</React.Fragment>)}</tbody></table></div>
-      ) : <p className="py-10 text-center text-sm text-stone-500">No journals match the selected filters.</p>}
+      ) : <p className="py-10 text-center text-sm text-stone-500">{journalTab === "draft" ? "No draft journals found." : "No posted journals match the selected filters."}</p>}
       <GlPagination data={data} loading={loading} setPage={setPage} setPageSize={setPageSize} />
       {modalDraft ? <GlJournalModal draft={modalDraft} setDraft={setModalDraft} accounts={accounts} saving={saving} onSave={saveJournal} onClose={() => setModalDraft(null)} /> : null}
+      {importOpen ? <GlJournalImportModal clientId={clientId} onClose={() => setImportOpen(false)} onImported={() => { setImportOpen(false); setJournalTab("draft"); refresh(); }} /> : null}
     </Panel>
   );
 }
 
-function emptyJournalDraft() {
-  return { entry_date: new Date().toISOString().slice(0, 10), reference: "", description: "", status: "draft", lines: [{ account_code: "", description: "", debit: "", credit: "", vat_code: "" }, { account_code: "", description: "", debit: "", credit: "", vat_code: "" }] };
+function emptyJournalDraft(reference = "") {
+  return { entry_date: new Date().toISOString().slice(0, 10), reference, description: "", status: "draft", lines: [{ account_code: "", description: "", debit: "", credit: "", vat_code: "" }, { account_code: "", description: "", debit: "", credit: "", vat_code: "" }] };
 }
 
 function validateJournalDraft(draft = {}) {
@@ -1116,12 +1145,27 @@ function validateJournalDraft(draft = {}) {
   return "";
 }
 
-function GlJournalFields({ draft, setDraft, accounts, disabled }) {
+function GlJournalFields(props) {
+  const lines = props.draft?.lines || [];
+  const debit = lines.reduce((total, line) => total + Number(line.debit || 0), 0);
+  const credit = lines.reduce((total, line) => total + Number(line.credit || 0), 0);
+  const difference = debit - credit;
+  const balanced = debit > 0 && credit > 0 && Math.abs(difference) <= 0.005;
+  return <div className="space-y-3"><GlJournalFieldsBody {...props} /><div className={`grid gap-3 rounded-md border p-3 sm:grid-cols-4 ${balanced ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50"}`}><div><p className="text-xs uppercase text-stone-500">Total debit</p><p className="font-semibold">{formatMoney(debit)}</p></div><div><p className="text-xs uppercase text-stone-500">Total credit</p><p className="font-semibold">{formatMoney(credit)}</p></div><div><p className="text-xs uppercase text-stone-500">Difference</p><p className="font-semibold">{formatMoney(Math.abs(difference))}</p></div><div className={`self-center font-semibold ${balanced ? "text-emerald-700" : "text-amber-800"}`}>{balanced ? "Balanced" : "Out of balance"}</div></div></div>;
+}
+
+function GlJournalFieldsBody({ draft, setDraft, accounts, disabled }) {
   const setLine = (index, key, value) => setDraft((current) => ({ ...current, lines: current.lines.map((line, lineIndex) => lineIndex === index ? { ...line, [key]: value } : line) }));
   return <div className="space-y-3"><div className="grid gap-3 md:grid-cols-3"><Field label="Journal date" type="date" value={draft.entry_date || draft.date} disabled={disabled} onChange={(value) => setDraft((current) => ({ ...current, entry_date: value }))} /><Field label="Reference" value={draft.reference} disabled={disabled} onChange={(value) => setDraft((current) => ({ ...current, reference: value }))} /><Field label="Description" value={draft.description} disabled={disabled} onChange={(value) => setDraft((current) => ({ ...current, description: value }))} /></div><div className="overflow-auto"><table className="min-w-full text-sm"><thead className="bg-stone-50 text-xs uppercase text-stone-500"><tr><th className="px-2 py-2">Nominal</th><th className="px-2 py-2">Description</th><th className="px-2 py-2">VAT code</th><th className="px-2 py-2 text-right">Debit</th><th className="px-2 py-2 text-right">Credit</th>{!disabled ? <th /> : null}</tr></thead><tbody>{(draft.lines || []).map((line, index) => <tr key={line.id || index} className="border-t border-stone-100"><td className="p-2"><select disabled={disabled} value={line.account_code || ""} onChange={(event) => setLine(index, "account_code", event.target.value)} className="h-9 min-w-48 rounded-md border border-stone-200 px-2"><option value="">Select nominal</option>{accounts.map((account) => <option key={account.id || account.code} value={account.code}>{account.code} - {account.name}</option>)}</select></td><td className="p-2"><Input disabled={disabled} value={line.description || ""} onChange={(event) => setLine(index, "description", event.target.value)} /></td><td className="p-2"><Input disabled={disabled} value={line.vat_code || ""} onChange={(event) => setLine(index, "vat_code", event.target.value)} /></td><td className="p-2"><Input disabled={disabled} type="number" min="0" step="0.01" value={line.debit || ""} onChange={(event) => setLine(index, "debit", event.target.value)} /></td><td className="p-2"><Input disabled={disabled} type="number" min="0" step="0.01" value={line.credit || ""} onChange={(event) => setLine(index, "credit", event.target.value)} /></td>{!disabled ? <td className="p-2"><Button type="button" variant="outline" size="sm" disabled={draft.lines.length <= 2} onClick={() => setDraft((current) => ({ ...current, lines: current.lines.filter((_, lineIndex) => lineIndex !== index) }))}>Remove</Button></td> : null}</tr>)}</tbody></table></div>{!disabled ? <Button type="button" variant="outline" onClick={() => setDraft((current) => ({ ...current, lines: [...current.lines, { account_code: "", description: "", debit: "", credit: "", vat_code: "" }] }))}>Add line</Button> : null}</div>;
 }
 
 function GlJournalEditor({ detail, accounts, editMode, setEditMode, onChange, onSave, onCancel, onCopy, onDelete, onClose, saving }) {
+  const draft = { ...detail.journal, entry_date: detail.journal?.entry_date, lines: detail.lines || [] };
+  const setDraft = (updater) => { const next = typeof updater === "function" ? updater(draft) : updater; onChange((current) => ({ ...current, journal: { ...current.journal, ...next }, lines: next.lines || current.lines })); };
+  return <div className="rounded-md border border-emerald-200 bg-white"><header className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-stone-200 bg-stone-50 p-3"><div><div className="font-semibold">{detail.journal?.reference || "Journal"}</div><div className="text-xs text-stone-500">{formatDate(detail.journal?.entry_date)} · {detail.journal?.source_type || "General Ledger"} · {detail.journal?.status || "posted"}</div></div><div className="flex flex-wrap gap-2">{!editMode ? <><Button type="button" variant="outline" onClick={onCopy}>Copy to new journal</Button><Button type="button" variant="outline" disabled={!detail.editable} title={!detail.editable ? detail.lock_reason || "This journal is read-only." : ""} onClick={() => setEditMode(true)}>Edit</Button><Button type="button" variant="outline" onClick={onClose}>Close</Button></> : <><Button type="button" variant="outline" onClick={onCancel}>Cancel</Button><Button type="button" disabled={saving} onClick={() => onSave(draft)}>Save</Button>{detail.journal?.status === "draft" ? <Button type="button" disabled={saving} onClick={() => onSave({ ...draft, status: "posted" })}>Post</Button> : null}</>}{detail.deletable ? <Button type="button" variant="destructive" onClick={onDelete}>Delete</Button> : null}</div></header>{!detail.editable && detail.lock_reason ? <div className="m-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{detail.lock_reason}</div> : null}<div className="p-3"><GlJournalFields draft={draft} setDraft={setDraft} accounts={accounts} disabled={!editMode} /></div></div>;
+}
+
+function LegacyGlJournalEditor({ detail, accounts, editMode, setEditMode, onChange, onSave, onCancel, onCopy, onDelete, onClose, saving }) {
   const draft = { ...detail.journal, entry_date: detail.journal?.entry_date, lines: detail.lines || [] };
   const setDraft = (updater) => { const next = typeof updater === "function" ? updater(draft) : updater; onChange((current) => ({ ...current, journal: { ...current.journal, ...next }, lines: next.lines || current.lines })); };
   return <div className="rounded-md border border-emerald-200 bg-white"><header className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-stone-200 bg-stone-50 p-3"><div><div className="font-semibold">{detail.journal?.reference || "Journal"}</div><div className="text-xs text-stone-500">{formatDate(detail.journal?.entry_date)} · {detail.journal?.source_type || "General Ledger"} · {detail.journal?.status || "posted"}</div></div><div className="flex flex-wrap gap-2">{!editMode && detail.editable ? <Button type="button" variant="outline" onClick={() => setEditMode(true)}>Edit</Button> : null}{editMode ? <><Button type="button" variant="outline" onClick={onCancel}>Cancel</Button><Button type="button" disabled={saving} onClick={() => onSave(draft)}>Save</Button></> : null}<Button type="button" variant="outline" onClick={onCopy}>Copy to new journal</Button>{detail.deletable ? <Button type="button" variant="destructive" onClick={onDelete}>Delete</Button> : null}<Button type="button" variant="outline" onClick={onClose}>Close</Button></div></header>{!detail.editable && detail.delete_blockers?.length ? <div className="m-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{detail.delete_blockers[0]}</div> : null}<div className="p-3"><GlJournalFields draft={draft} setDraft={setDraft} accounts={accounts} disabled={!editMode} /></div></div>;
@@ -1130,6 +1174,30 @@ function GlJournalEditor({ detail, accounts, editMode, setEditMode, onChange, on
 function GlJournalModal({ draft, setDraft, accounts, saving, onSave, onClose }) {
   useEffect(() => { const previous = document.body.style.overflow; document.body.style.overflow = "hidden"; return () => { document.body.style.overflow = previous; }; }, []);
   return <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true"><div className="flex max-h-[calc(100dvh-2rem)] w-full max-w-6xl flex-col overflow-hidden rounded-lg bg-white shadow-2xl"><header className="sticky top-0 z-10 flex items-center justify-between border-b border-stone-200 bg-white p-4"><div><h3 className="font-display text-lg font-semibold">New journal</h3><p className="text-sm text-stone-500">Manual General Ledger journal</p></div><div className="flex gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="button" variant="outline" disabled={saving} onClick={() => onSave({ ...draft, status: "draft" }, true)}>Save draft</Button><Button type="button" disabled={saving} onClick={() => onSave({ ...draft, status: "posted" }, true)} style={{ background: "var(--brand)" }}>Post journal</Button></div></header><div className="min-h-0 flex-1 overflow-y-auto p-4"><GlJournalFields draft={draft} setDraft={setDraft} accounts={accounts} disabled={false} /></div></div></div>;
+}
+
+function GlJournalImportModal({ clientId, onClose, onImported }) {
+  const [file, setFile] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  useEffect(() => { const previous = document.body.style.overflow; document.body.style.overflow = "hidden"; return () => { document.body.style.overflow = previous; }; }, []);
+  async function downloadTemplate() {
+    try {
+      const response = await api.get(`/admin/accounting/clients/${clientId}/general-ledger/journals/import-template`, { responseType: "blob" });
+      const url = URL.createObjectURL(response.data); const link = document.createElement("a");
+      link.href = url; link.download = "journal-import-template.csv"; link.click(); URL.revokeObjectURL(url);
+    } catch (requestError) { toast.error(formatApiError(requestError)); }
+  }
+  async function importFile() {
+    if (!file) return toast.error("Choose a CSV or XLSX journal file first.");
+    setBusy(true); setResult(null);
+    try {
+      const form = new FormData(); form.append("file", file);
+      const { data } = await api.post(`/admin/accounting/clients/${clientId}/general-ledger/journals/import`, form);
+      setResult(data); if (data.imported_count) toast.success(`${data.imported_count} draft journal${data.imported_count === 1 ? "" : "s"} imported.`);
+    } catch (requestError) { toast.error(formatApiError(requestError)); } finally { setBusy(false); }
+  }
+  return <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true"><div className="flex max-h-[calc(100dvh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-lg bg-white shadow-2xl"><header className="flex items-center justify-between border-b border-stone-200 p-4"><div><h3 className="font-display text-lg font-semibold">Import Journal</h3><p className="text-sm text-stone-500">Imported journals are saved as drafts for review.</p></div><Button type="button" variant="outline" onClick={onClose}>Close</Button></header><div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4"><p className="text-sm text-stone-600">Upload CSV or XLSX with: journal_date, reference, description, line_description, nominal_code, vat_code, debit, credit.</p><Button type="button" variant="outline" onClick={downloadTemplate}><Download className="mr-2 h-4 w-4" />Download sample template</Button><Input type="file" accept=".csv,.xlsx" onChange={(event) => setFile(event.target.files?.[0] || null)} />{result ? <div className="rounded-md border border-stone-200 bg-stone-50 p-3 text-sm"><p className="font-semibold">Imported: {result.imported_count || 0}</p>{(result.failed_rows || []).length ? <ul className="mt-2 space-y-1 text-red-700">{result.failed_rows.map((failure, index) => <li key={`${failure.row || failure.reference}-${index}`}>Row {failure.row || "-"}: {failure.message}</li>)}</ul> : <p className="mt-1 text-emerald-700">All rows passed validation.</p>}</div> : null}</div><footer className="flex justify-end gap-2 border-t border-stone-200 p-4"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="button" disabled={busy || !file} onClick={importFile}>{busy ? "Importing..." : "Import as drafts"}</Button>{result?.imported_count ? <Button type="button" variant="outline" onClick={onImported}>View drafts</Button> : null}</footer></div></div>;
 }
 
 function PaginatedGlAccountActivity({ workspace, filters }) {
