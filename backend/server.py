@@ -214,6 +214,12 @@ submissions = Table(
     Column("ai_client_approved", Boolean, default=False),
     Column("review_status", String(32), default="inbox", index=True),
     Column("document_direction", String(32), index=True),
+    Column("document_type", String(64), index=True),
+    Column("source_origin", String(64), index=True),
+    Column("source_route", String(32), index=True),
+    Column("source_amount_side", String(32)),
+    Column("amount_sign", String(16)),
+    Column("route_locked_by_source", Boolean, default=True),
     Column("accounting_destination", String(64), index=True),
     Column("customer_match_json", Text),
     Column("duplicate_warning_json", Text),
@@ -236,6 +242,8 @@ pending_client_uploads = Table(
     Column("item_id", String(36), index=True),
     Column("type", String(32), index=True),
     Column("description", Text),
+    Column("display_name", String(255)),
+    Column("category", String(64), default="both"),
     Column("date", String(32)),
     Column("amount", String(64)),
     Column("comment", Text),
@@ -406,6 +414,8 @@ accounting_ap_supplier_profiles = Table(
     Column("client_id", String(36), nullable=False, index=True),
     Column("contact_id", String(36), nullable=False, index=True),
     Column("supplier_code", String(64), index=True),
+    Column("is_system_supplier", Boolean, default=False, index=True),
+    Column("supplier_category", String(64), default="Trade", index=True),
     Column("trading_name", String(255)),
     Column("phone", String(64)),
     Column("website", String(255)),
@@ -418,6 +428,7 @@ accounting_ap_supplier_profiles = Table(
     Column("bank_name", String(255)),
     Column("bank_sort_code", String(32)),
     Column("bank_account_number", String(64)),
+    Column("payment_reference", String(255)),
     Column("cis_registered", Boolean, default=False),
     Column("reverse_charge", Boolean, default=False),
     Column("status", String(32), default="active", index=True),
@@ -476,6 +487,11 @@ accounting_ap_invoices = Table(
     Column("gross_amount", String(64), default="0.00"),
     Column("outstanding_amount", String(64), default="0.00"),
     Column("vat_code", String(255)),
+    Column("posting_date", String(32), index=True),
+    Column("vat_effective_date", String(32), index=True),
+    Column("vat_treatment", String(64)),
+    Column("original_vat_period_id", String(36), index=True),
+    Column("reported_vat_period_id", String(36), index=True),
     Column("source_submission_id", String(36), index=True),
     Column("attachment_path", Text),
     Column("original_filename", String(255)),
@@ -585,6 +601,18 @@ accounting_ap_payment_allocations = Table(
     Column("created_at", String(64)),
 )
 
+accounting_ap_credit_allocations = Table(
+    "accounting_ap_credit_allocations",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("supplier_id", String(36), nullable=False, index=True),
+    Column("credit_note_id", String(36), nullable=False, index=True),
+    Column("invoice_id", String(36), nullable=False, index=True),
+    Column("amount", String(64), default="0.00"),
+    Column("created_at", String(64)),
+)
+
 accounting_ar_settings = Table(
     "accounting_ar_settings",
     metadata,
@@ -680,6 +708,11 @@ accounting_ar_invoices = Table(
     Column("gross_amount", String(64), default="0.00"),
     Column("outstanding_amount", String(64), default="0.00"),
     Column("vat_code", String(255)),
+    Column("posting_date", String(32), index=True),
+    Column("vat_effective_date", String(32), index=True),
+    Column("vat_treatment", String(64)),
+    Column("original_vat_period_id", String(36), index=True),
+    Column("reported_vat_period_id", String(36), index=True),
     Column("source_submission_id", String(36), index=True),
     Column("attachment_path", Text),
     Column("original_filename", String(255)),
@@ -786,6 +819,18 @@ accounting_ar_receipt_allocations = Table(
     Column("receipt_id", String(36), nullable=False, index=True),
     Column("invoice_id", String(36), index=True),
     Column("credit_note_id", String(36), index=True),
+    Column("amount", String(64), default="0.00"),
+    Column("created_at", String(64)),
+)
+
+accounting_ar_credit_allocations = Table(
+    "accounting_ar_credit_allocations",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("customer_id", String(36), nullable=False, index=True),
+    Column("credit_note_id", String(36), nullable=False, index=True),
+    Column("invoice_id", String(36), nullable=False, index=True),
     Column("amount", String(64), default="0.00"),
     Column("created_at", String(64)),
 )
@@ -1021,6 +1066,11 @@ accounting_vat_settings = Table(
     Column("vat_scheme", String(64), default="standard"),
     Column("vat_frequency", String(32), default="quarterly"),
     Column("vat_start_date", String(32)),
+    Column("vat_end_date", String(32)),
+    Column("return_due_months_after_period", Integer, default=1),
+    Column("return_due_days_after_month", Integer, default=7),
+    Column("payment_due_months_after_period", Integer, default=1),
+    Column("payment_due_days_after_month", Integer, default=7),
     Column("default_purchase_vat_code", String(255)),
     Column("default_sales_vat_code", String(255)),
     Column("default_bank_vat_code", String(255)),
@@ -1049,6 +1099,8 @@ accounting_vat_codes = Table(
     Column("box_purchase_net", String(16), default="7"),
     Column("active", Boolean, default=True),
     Column("system_code", Boolean, default=False),
+    Column("default_code", Boolean, default=False),
+    Column("custom_code", Boolean, default=False),
     Column("created_at", String(64)),
     Column("updated_at", String(64)),
 )
@@ -1061,6 +1113,7 @@ accounting_vat_periods = Table(
     Column("period_start", String(32), index=True),
     Column("period_end", String(32), index=True),
     Column("due_date", String(32), index=True),
+    Column("payment_due_date", String(32), index=True),
     Column("status", String(32), default="open", index=True),
     Column("output_vat", String(64), default="0.00"),
     Column("input_vat", String(64), default="0.00"),
@@ -1086,6 +1139,10 @@ accounting_vat_adjustments = Table(
     Column("gross_amount", String(64), default="0.00"),
     Column("status", String(32), default="posted", index=True),
     Column("journal_entry_id", String(36)),
+    Column("source_type", String(64), index=True),
+    Column("source_id", String(36), index=True),
+    Column("original_vat_period_id", String(36), index=True),
+    Column("reported_vat_period_id", String(36), index=True),
     Column("created_by", String(36)),
     Column("created_at", String(64)),
     Column("updated_at", String(64)),
@@ -2390,6 +2447,21 @@ def is_bank_compatible_account(row: dict) -> bool:
     )
 
 
+def require_native_bank_account(accounts: list[dict], account_code: Any) -> dict:
+    code = str(account_code or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="Bank account is required.")
+    account = next((row for row in accounts if str(row.get("code") or "").strip() == code), None)
+    is_banking_account = bool(account and (
+        bool(account.get("banking_enabled"))
+        or str(account.get("purpose") or "").strip().lower() == "bank account"
+        or str(account.get("account_type") or "").strip().lower() == "bank"
+    ))
+    if not account or not bool(account.get("active", True)) or not is_banking_account:
+        raise HTTPException(status_code=400, detail=f"Bank account '{code}' is not an active EPOS Native bank account.")
+    return account
+
+
 async def ensure_native_accounting_client(session: AsyncSession, client_id: str) -> list[dict]:
     now = utc_now_iso()
     existing = await many(
@@ -2539,6 +2611,22 @@ async def post_native_journal(
     )
     if locked_period:
         raise HTTPException(status_code=400, detail=f"Accounting period is {locked_period.get('status')}; reopen it before posting.")
+    journal_vat_codes = [vat_code_value(line.get("vat_code")) for line in lines if vat_code_value(line.get("vat_code"))]
+    if journal_vat_codes:
+        vat_context = await native_vat_effective_context(session, client_id, entry_date, "bank" if str(source_type).startswith("bank") else "purchase")
+        if not vat_context["vat_active_for_date"] and any(code.upper() != "NO VAT" for code in journal_vat_codes):
+            raise HTTPException(status_code=400, detail="Outside VAT registration period. Use NO VAT with a zero VAT amount.")
+        locked_vat_period = await one(
+            session,
+            select(accounting_vat_periods).where(
+                accounting_vat_periods.c.client_id == client_id,
+                accounting_vat_periods.c.period_start <= entry_date,
+                accounting_vat_periods.c.period_end >= entry_date,
+                accounting_vat_periods.c.status.in_(["locked", "closed", "submitted"]),
+            ),
+        )
+        if locked_vat_period:
+            raise HTTPException(status_code=400, detail=f"VAT period is {locked_vat_period.get('status')}; reopen it before changing VAT-bearing activity.")
     total_debit = sum((money(line.get("debit")) for line in lines), Decimal("0.00"))
     total_credit = sum((money(line.get("credit")) for line in lines), Decimal("0.00"))
     if total_debit <= Decimal("0.00") or total_credit <= Decimal("0.00"):
@@ -2920,6 +3008,10 @@ def serialize_submission(d: dict) -> dict:
     d["ai_extracted_fields"] = parse_json_object(d.get("ai_extracted_fields")) or {}
     d["coding_fields"] = parse_json_object(d.get("coding_fields")) or {}
     d["document_direction"] = d.get("document_direction") or ("sales" if d.get("type") == "sales" else "purchase" if d.get("type") == "purchase" else "unclassified")
+    d["source_route"] = d.get("source_route") or d["document_direction"]
+    d["route_locked_by_source"] = True if d.get("route_locked_by_source") is None else bool(d.get("route_locked_by_source"))
+    fields = d.get("coding_fields") or d.get("ai_extracted_fields") or {}
+    d["document_type"] = d.get("document_type") or fields.get("document_type") or submission_document_type(d["document_direction"], d.get("amount"), d.get("source_amount_side"))
     d["accounting_destination"] = d.get("accounting_destination") or ("epos_native_ar" if d.get("type") == "sales" else "epos_native_ap" if d.get("type") == "purchase" else "")
     d["customer_match"] = parse_json_object(d.get("customer_match_json")) or {}
     d["duplicate_warning"] = parse_json_object(d.get("duplicate_warning_json")) or {}
@@ -3684,6 +3776,11 @@ def vat_code_value(value: Any) -> str:
         return ""
     if " - " in raw:
         raw = raw.split(" - ", 1)[0].strip()
+    # Older native screens stored labels such as "20% S (20%)". Keep accepting
+    # those values, but persist only the canonical native code.
+    match = re.match(r"^(.*?)\s+\(\s*\d+(?:\.\d+)?%\s*\)$", raw)
+    if match:
+        raw = match.group(1).strip()
     return raw[:255]
 
 
@@ -3866,7 +3963,12 @@ def serialize_native_contact(row: dict) -> dict:
     return row
 
 
-def serialize_ap_supplier(profile: dict, contact: Optional[dict] = None, balance: Decimal = Decimal("0.00")) -> dict:
+def serialize_ap_supplier(
+    profile: dict,
+    contact: Optional[dict] = None,
+    balance: Decimal = Decimal("0.00"),
+    on_account_credit: Decimal = Decimal("0.00"),
+) -> dict:
     row = dict(profile)
     contact = contact or {}
     row["name"] = contact.get("name") or profile.get("trading_name") or profile.get("supplier_code") or "Supplier"
@@ -3877,8 +3979,172 @@ def serialize_ap_supplier(profile: dict, contact: Optional[dict] = None, balance
     row["supplier_name"] = row["name"]
     row["code"] = row.get("supplier_code") or row["account_code"] or ""
     row["active"] = bool(contact.get("active", True)) and str(row.get("status") or "active").lower() == "active"
-    row["balance"] = money_str(balance)
+    row["is_system_supplier"] = bool(row.get("is_system_supplier"))
+    row["isSystemSupplier"] = row["is_system_supplier"]
+    row["supplier_category"] = str(row.get("supplier_category") or "Trade")
+    row["supplierCategory"] = row["supplier_category"]
+    system_definition = SYSTEM_AP_SUPPLIER_BY_CATEGORY.get(row["supplier_category"]) if row["is_system_supplier"] else None
+    row["system_icon"] = (system_definition or {}).get("icon", "")
+    row["system_authority_label"] = (system_definition or {}).get("authority_label", "")
+    row["system_usage"] = list((system_definition or {}).get("used_by", []))
+    row["system_purpose"] = list((system_definition or {}).get("purpose", []))
+    row["protected_fields"] = [
+        "name", "supplier_code", "supplier_category", "status", "trading_name", "email", "phone",
+        "website", "default_currency", "addresses", "contacts", "payment_terms", "tax",
+    ] if row["is_system_supplier"] else []
+    net_balance = balance - on_account_credit
+    row["outstanding_balance"] = money_str(balance)
+    row["on_account_balance"] = money_str(on_account_credit)
+    row["payment_on_account_balance"] = money_str(on_account_credit)
+    row["net_balance"] = money_str(net_balance)
+    row["current_balance"] = money_str(net_balance)
+    row["balance"] = money_str(net_balance)
     return row
+
+
+SYSTEM_AP_SUPPLIER_DEFINITIONS = (
+    {
+        "name": "HMRC – VAT",
+        "code": "SYS-HMRC-VAT",
+        "category": "HMRC_VAT",
+        "icon": "🧾",
+        "authority_label": "Government Authority",
+        "purpose": ["VAT Returns", "VAT Payments", "VAT Interest", "VAT Penalties"],
+        "used_by": ["VAT Returns", "Automatic statutory payment generation"],
+    },
+    {
+        "name": "HMRC – PAYE",
+        "code": "SYS-HMRC-PAYE",
+        "category": "HMRC_PAYE",
+        "icon": "👥",
+        "authority_label": "Government Authority",
+        "purpose": ["PAYE Tax", "Employee National Insurance", "Employer National Insurance", "Student Loans", "Postgraduate Loans", "Apprenticeship Levy"],
+        "used_by": ["Payroll", "Automatic statutory payment generation"],
+    },
+    {
+        "name": "HMRC – Corporation Tax",
+        "code": "SYS-HMRC-CT",
+        "category": "HMRC_CT",
+        "icon": "🏛️",
+        "authority_label": "Government Authority",
+        "purpose": ["Corporation Tax", "Corporation Tax Interest", "Corporation Tax Penalties"],
+        "used_by": ["Corporation Tax", "Automatic statutory payment generation"],
+    },
+    {
+        "name": "HMRC – CIS",
+        "code": "SYS-HMRC-CIS",
+        "category": "HMRC_CIS",
+        "icon": "🏗️",
+        "authority_label": "Government Authority",
+        "purpose": ["CIS Deductions", "CIS Adjustments"],
+        "used_by": ["CIS", "Automatic statutory payment generation"],
+    },
+    {
+        "name": "Companies House",
+        "code": "SYS-CH",
+        "category": "CompaniesHouse",
+        "icon": "🏢",
+        "authority_label": "Statutory Authority",
+        "purpose": ["Confirmation Statement", "Filing Fees", "Penalties"],
+        "used_by": ["Companies House filings", "Automatic statutory payment generation"],
+    },
+    {
+        "name": "Pension Provider",
+        "code": "SYS-PENSION",
+        "category": "Pension",
+        "icon": "🛡️",
+        "authority_label": "System Template",
+        "purpose": ["Template for workplace pension providers"],
+        "used_by": ["Payroll", "Pension contribution payment generation"],
+    },
+)
+SYSTEM_AP_SUPPLIER_BY_CATEGORY = {item["category"]: item for item in SYSTEM_AP_SUPPLIER_DEFINITIONS}
+SYSTEM_AP_SUPPLIER_BY_CODE = {item["code"]: item for item in SYSTEM_AP_SUPPLIER_DEFINITIONS}
+AP_SUPPLIER_CATEGORIES = {"Trade", *SYSTEM_AP_SUPPLIER_BY_CATEGORY.keys()}
+AP_USER_SUPPLIER_CATEGORIES = {"Trade", "Pension"}
+
+
+async def ensure_system_ap_suppliers(session: AsyncSession, client_id: str) -> list[dict]:
+    ap_settings = await ensure_ap_settings(session, client_id)
+    codes = tuple(SYSTEM_AP_SUPPLIER_BY_CODE)
+    profiles = await many(session, select(accounting_ap_supplier_profiles).where(
+        accounting_ap_supplier_profiles.c.client_id == client_id,
+        accounting_ap_supplier_profiles.c.supplier_code.in_(codes),
+    ))
+    profiles_by_code = {str(row.get("supplier_code") or "").upper(): row for row in profiles}
+    contacts = await many(session, select(accounting_contacts).where(
+        accounting_contacts.c.client_id == client_id,
+        accounting_contacts.c.contact_type == "supplier",
+        accounting_contacts.c.account_code.in_(codes),
+    ))
+    contacts_by_code = {str(row.get("account_code") or "").upper(): row for row in contacts}
+    now = utc_now_iso()
+    ensured = []
+    for definition in SYSTEM_AP_SUPPLIER_DEFINITIONS:
+        code = definition["code"]
+        profile = profiles_by_code.get(code)
+        contact = None
+        if profile:
+            contact = next((row for row in contacts if str(row.get("id")) == str(profile.get("contact_id"))), None)
+        contact = contact or contacts_by_code.get(code)
+        contact_values = {
+            "contact_type": "supplier",
+            "name": definition["name"],
+            "account_code": code,
+            "active": True,
+            "updated_at": now,
+        }
+        if contact:
+            await session.execute(update(accounting_contacts).where(accounting_contacts.c.id == contact["id"]).values(**contact_values))
+            contact = {**contact, **contact_values}
+        else:
+            contact = {
+                "id": new_id(),
+                "client_id": client_id,
+                "email": "",
+                "external_id": "",
+                "raw_json": json.dumps({"source": "system_supplier_initialisation", "protected": True}),
+                "created_at": now,
+                **contact_values,
+            }
+            await session.execute(insert(accounting_contacts).values(**contact))
+        protected_values = {
+            "contact_id": contact["id"],
+            "supplier_code": code,
+            "is_system_supplier": True,
+            "supplier_category": definition["category"],
+            "trading_name": definition["name"],
+            "status": "active",
+            "updated_at": now,
+        }
+        if profile:
+            await session.execute(update(accounting_ap_supplier_profiles).where(accounting_ap_supplier_profiles.c.id == profile["id"]).values(**protected_values))
+            profile = {**profile, **protected_values}
+        else:
+            profile = {
+                "id": new_id(),
+                "client_id": client_id,
+                "phone": "",
+                "website": "",
+                "vat_number": "",
+                "company_number": "",
+                "payment_terms_days": int(ap_settings.get("default_payment_terms_days") or 30),
+                "default_currency": str(ap_settings.get("default_currency") or "GBP"),
+                "default_purchase_account": str(ap_settings.get("default_purchase_account") or "5000"),
+                "default_vat_code": "NO VAT",
+                "bank_name": "",
+                "bank_sort_code": "",
+                "bank_account_number": "",
+                "payment_reference": "",
+                "cis_registered": definition["category"] == "HMRC_CIS",
+                "reverse_charge": False,
+                "notes": "",
+                "created_at": now,
+                **protected_values,
+            }
+            await session.execute(insert(accounting_ap_supplier_profiles).values(**profile))
+        ensured.append(serialize_ap_supplier(profile, contact))
+    return ensured
 
 
 def serialize_ap_invoice(row: dict, lines: Optional[list[dict]] = None, supplier: Optional[dict] = None) -> dict:
@@ -3933,6 +4199,8 @@ def accounting_display_status(status: str) -> str:
     labels = {
         "awaiting_approval": "Awaiting Approval",
         "part_paid": "Part Paid",
+        "part_allocated": "Part Paid",
+        "allocated": "Paid",
         "over_allocated": "Over Allocated",
     }
     return labels.get(value, value.replace("_", " ").title())
@@ -4200,6 +4468,7 @@ async def accounting_journal_with_lines(session: AsyncSession, client_id: str, j
 
 async def accounts_payable_workspace(session: AsyncSession, client_id: str) -> dict:
     ap_settings = await ensure_ap_settings(session, client_id)
+    await ensure_system_ap_suppliers(session, client_id)
     contacts = await many(session, select(accounting_contacts).where(accounting_contacts.c.client_id == client_id, accounting_contacts.c.contact_type == "supplier"))
     contact_by_id = {str(contact.get("id")): contact for contact in contacts}
     profiles = await many(
@@ -4216,6 +4485,8 @@ async def accounts_payable_workspace(session: AsyncSession, client_id: str) -> d
             "client_id": client_id,
             "contact_id": contact.get("id"),
             "supplier_code": contact.get("account_code") or "",
+            "is_system_supplier": False,
+            "supplier_category": "Trade",
             "trading_name": contact.get("name"),
             "payment_terms_days": int(ap_settings.get("default_payment_terms_days") or 30),
             "default_currency": "GBP",
@@ -4275,15 +4546,27 @@ async def accounts_payable_workspace(session: AsyncSession, client_id: str) -> d
         allocations_by_payment.setdefault(str(allocation.get("payment_id")), []).append(allocation)
 
     supplier_balances: dict[str, Decimal] = {}
+    supplier_on_account: dict[str, Decimal] = {}
     for invoice in invoices:
         supplier_balances[str(invoice.get("supplier_id"))] = supplier_balances.get(str(invoice.get("supplier_id")), Decimal("0.00")) + money(invoice.get("outstanding_amount"))
     for credit in credit_notes:
         supplier_balances[str(credit.get("supplier_id"))] = supplier_balances.get(str(credit.get("supplier_id")), Decimal("0.00")) - money(credit.get("unallocated_amount"))
+    for payment in payments:
+        supplier_id = str(payment.get("supplier_id"))
+        allocated = sum((money(row.get("amount")) for row in allocations_by_payment.get(str(payment.get("id")), [])), Decimal("0.00"))
+        unallocated = Decimal("0.00") if str(payment.get("status") or "").lower() in {"void", "reversed"} else max(money(payment.get("amount")) - allocated, Decimal("0.00"))
+        supplier_on_account[supplier_id] = supplier_on_account.get(supplier_id, Decimal("0.00")) + unallocated
 
     serialized_suppliers = []
     for profile in profiles:
         contact = contact_by_id.get(str(profile.get("contact_id"))) or {}
-        serialized_suppliers.append(serialize_ap_supplier(profile, contact, supplier_balances.get(str(profile.get("id")), Decimal("0.00"))))
+        supplier_id = str(profile.get("id"))
+        serialized_suppliers.append(serialize_ap_supplier(
+            profile,
+            contact,
+            supplier_balances.get(supplier_id, Decimal("0.00")),
+            supplier_on_account.get(supplier_id, Decimal("0.00")),
+        ))
 
     today = datetime.now(timezone.utc).date()
     aged: dict[str, dict] = {}
@@ -4411,8 +4694,10 @@ def serialize_ar_customer(
     row["active"] = bool(contact.get("active", True)) and str(row.get("status") or "active").lower() == "active"
     row["outstanding_balance"] = money_str(balance)
     row["on_account_credit"] = money_str(on_account_credit)
+    row["on_account_balance"] = money_str(on_account_credit)
+    row["receipts_on_account_balance"] = money_str(on_account_credit)
     row["net_balance"] = money_str(balance - on_account_credit)
-    row["current_balance"] = money_str(balance)
+    row["current_balance"] = money_str(balance - on_account_credit)
     row["last_invoice"] = max([str(invoice.get("invoice_date") or "") for invoice in invoices] or [""])
     row["last_receipt"] = max([str(receipt.get("receipt_date") or "") for receipt in receipts] or [""])
     return row
@@ -4580,7 +4865,7 @@ async def accounts_receivable_workspace(session: AsyncSession, client_id: str) -
     for receipt in receipts:
         customer_id = str(receipt.get("customer_id"))
         receipts_by_customer.setdefault(customer_id, []).append(receipt)
-        unallocated = money(receipt.get("amount")) - allocated_by_receipt.get(str(receipt.get("id")), Decimal("0.00"))
+        unallocated = Decimal("0.00") if str(receipt.get("status") or "").lower() in {"void", "reversed"} else money(receipt.get("amount")) - allocated_by_receipt.get(str(receipt.get("id")), Decimal("0.00"))
         if unallocated > 0:
             on_account_by_customer[customer_id] = on_account_by_customer.get(customer_id, Decimal("0.00")) + unallocated
 
@@ -6706,7 +6991,77 @@ async def validate_native_vat_code(session: AsyncSession, client_id: str, vat_co
     return match
 
 
-async def validate_native_vat_codes_for_document(session: AsyncSession, client_id: str, header_vat_code: Any, lines: list[dict], label: str) -> str:
+async def native_vat_effective_context(
+    session: AsyncSession,
+    client_id: str,
+    transaction_date: Any = None,
+    default_kind: str = "purchase",
+) -> dict:
+    client = await get_user_by_id(session, client_id)
+    settings_row = await ensure_vat_settings(session, client_id)
+    start = str(settings_row.get("vat_start_date") or "")[:10]
+    end = str(settings_row.get("vat_end_date") or "")[:10]
+    date_value = str(transaction_date or "")[:10]
+    registered = bool((client or {}).get("is_vat_client"))
+    configured = registered and bool(start) and bool(settings_row.get("vat_scheme")) and bool(settings_row.get("vat_frequency"))
+    active = bool(configured and date_value and date_value >= start and (not end or date_value <= end))
+    default_key = {
+        "sales": "default_sales_vat_code",
+        "bank": "default_bank_vat_code",
+        "purchase": "default_purchase_vat_code",
+    }.get(default_kind, "default_purchase_vat_code")
+    return {
+        "vat_client": registered,
+        "vat_configured": configured,
+        "vat_active_for_date": active,
+        "vat_start_date": start,
+        "vat_end_date": end,
+        "default_purchase_vat_code": vat_code_value(settings_row.get("default_purchase_vat_code")) or "20% S",
+        "default_sales_vat_code": vat_code_value(settings_row.get("default_sales_vat_code")) or "20% S",
+        "default_bank_vat_code": vat_code_value(settings_row.get("default_bank_vat_code")) or "NO VAT",
+        "default_vat_code": vat_code_value(settings_row.get(default_key)) if active else "NO VAT",
+        "transaction_date": date_value,
+    }
+
+
+def normalize_document_lines_outside_vat_period(lines: list[dict]) -> None:
+    for line in lines:
+        line["vat_code"] = "NO VAT"
+        for key in ("vat", "vat_amount"):
+            if key in line:
+                line[key] = "0.00"
+        net_key = "net_amount" if "net_amount" in line else "net"
+        gross_key = "gross_amount" if "gross_amount" in line else "gross"
+        if net_key in line and gross_key in line:
+            line[gross_key] = money_str(money(line.get(net_key)))
+
+
+def normalize_document_header_outside_vat_period(payload: dict) -> None:
+    payload["vat_code"] = "NO VAT"
+    payload["vat_amount"] = "0.00"
+    payload["vat"] = "0.00"
+    net_value = first_present(payload, "net_amount", "net")
+    if net_value not in (None, ""):
+        payload["gross_amount"] = money_str(money(net_value))
+        payload["gross"] = payload["gross_amount"]
+        payload["total_amount"] = payload["gross_amount"]
+        payload["total"] = payload["gross_amount"]
+
+
+async def validate_native_vat_codes_for_document(
+    session: AsyncSession,
+    client_id: str,
+    header_vat_code: Any,
+    lines: list[dict],
+    label: str,
+    transaction_date: Any = None,
+    default_kind: str = "purchase",
+) -> str:
+    if transaction_date:
+        context = await native_vat_effective_context(session, client_id, transaction_date, default_kind)
+        if not context["vat_active_for_date"]:
+            normalize_document_lines_outside_vat_period(lines)
+            return "NO VAT"
     code = vat_code_value(header_vat_code)
     if code:
         await validate_native_vat_code(session, client_id, code)
@@ -6872,7 +7227,7 @@ DEFAULT_NATIVE_VAT_CODES = [
     {"code": "5% R", "description": "Reduced rate", "percentage": "5.00", "purchase_behavior": "recoverable", "sales_behavior": "output", "box_sales_vat": "1", "box_purchase_vat": "4", "box_sales_net": "6", "box_purchase_net": "7"},
     {"code": "0% Z", "description": "Zero rated", "percentage": "0.00", "purchase_behavior": "zero", "sales_behavior": "zero", "box_sales_vat": "", "box_purchase_vat": "", "box_sales_net": "6", "box_purchase_net": "7"},
     {"code": "EXEMPT", "description": "Exempt from VAT", "percentage": "0.00", "purchase_behavior": "exempt", "sales_behavior": "exempt", "box_sales_vat": "", "box_purchase_vat": "", "box_sales_net": "", "box_purchase_net": ""},
-    {"code": "NO VAT", "description": "Outside scope / no VAT", "percentage": "0.00", "purchase_behavior": "outside_scope", "sales_behavior": "outside_scope", "box_sales_vat": "", "box_purchase_vat": "", "box_sales_net": "", "box_purchase_net": ""},
+    {"code": "NO VAT", "description": "No VAT applicable", "percentage": "0.00", "purchase_behavior": "outside_scope", "sales_behavior": "outside_scope", "box_sales_vat": "", "box_purchase_vat": "", "box_sales_net": "", "box_purchase_net": ""},
     {"code": "RC 20%", "description": "Domestic reverse charge 20%", "percentage": "20.00", "purchase_behavior": "reverse_charge", "sales_behavior": "reverse_charge", "box_sales_vat": "1", "box_purchase_vat": "4", "box_sales_net": "6", "box_purchase_net": "7"},
     {"code": "EC GOODS", "description": "EC goods", "percentage": "0.00", "purchase_behavior": "ec_goods", "sales_behavior": "ec_goods", "box_sales_vat": "", "box_purchase_vat": "", "box_sales_net": "8", "box_purchase_net": "9"},
     {"code": "EC SERVICES", "description": "EC services", "percentage": "0.00", "purchase_behavior": "ec_services", "sales_behavior": "ec_services", "box_sales_vat": "", "box_purchase_vat": "", "box_sales_net": "6", "box_purchase_net": "7"},
@@ -6880,16 +7235,21 @@ DEFAULT_NATIVE_VAT_CODES = [
     {"code": "EXPORT", "description": "Export outside UK", "percentage": "0.00", "purchase_behavior": "outside_scope", "sales_behavior": "export", "box_sales_vat": "", "box_purchase_vat": "", "box_sales_net": "6", "box_purchase_net": ""},
 ]
 
+DEFAULT_NATIVE_VAT_CODE_KEYS = {"20% S", "5% R", "0% Z", "EXEMPT", "NO VAT"}
+
 
 def serialize_vat_code(row: dict) -> dict:
     row = dict(row)
     code = str(row.get("code") or "").strip()
     description = str(row.get("description") or "").strip()
+    if code.upper() == "NO VAT":
+        description = "No VAT applicable"
     percentage = money_str(money(row.get("percentage")))
     net_box = str(row.get("box_purchase_net") or row.get("box_sales_net") or "").strip()
     vat_box = str(row.get("box_purchase_vat") or row.get("box_sales_vat") or "").strip()
     row["code"] = code
     row["description"] = description
+    row["display_name"] = str(row.get("display_name") or description)
     row["percentage"] = percentage
     row["rate"] = percentage
     row["purchase_behaviour"] = row.get("purchase_behavior") or ""
@@ -6897,8 +7257,19 @@ def serialize_vat_code(row: dict) -> dict:
     row["net_box"] = net_box
     row["vat_box"] = vat_box
     row["display_label"] = coding_option_label(code, description)
+    row["category"] = str(row.get("category") or ("both" if row.get("purchase_behavior") and row.get("sales_behavior") else "other"))
+    row["purchase_boxes"] = [box for box in (str(row.get("box_purchase_vat") or ""), str(row.get("box_purchase_net") or "")) if box]
+    row["sales_boxes"] = [box for box in (str(row.get("box_sales_vat") or ""), str(row.get("box_sales_net") or "")) if box]
+    row["return_box_mapping"] = {
+        "purchase_vat": str(row.get("box_purchase_vat") or ""),
+        "purchase_net": str(row.get("box_purchase_net") or ""),
+        "sales_vat": str(row.get("box_sales_vat") or ""),
+        "sales_net": str(row.get("box_sales_net") or ""),
+    }
     row["active"] = bool(row.get("active", True))
     row["system_code"] = bool(row.get("system_code", False))
+    row["default_code"] = bool(row.get("default_code", code in DEFAULT_NATIVE_VAT_CODE_KEYS))
+    row["custom_code"] = bool(row.get("custom_code", not row["system_code"]))
     return row
 
 
@@ -6906,6 +7277,10 @@ def serialize_vat_period(row: dict) -> dict:
     row = dict(row)
     for key in ("output_vat", "input_vat", "net_vat"):
         row[key] = money_str(money(row.get(key)))
+    row["start_date"] = row.get("period_start")
+    row["end_date"] = row.get("period_end")
+    row["payment_due_date"] = row.get("payment_due_date") or row.get("due_date")
+    row["label"] = f"{row.get('period_start') or ''} to {row.get('period_end') or ''}"
     return row
 
 
@@ -6929,7 +7304,12 @@ async def ensure_vat_settings(session: AsyncSession, client_id: str) -> dict:
         "vat_registration_number": "",
         "vat_scheme": "standard",
         "vat_frequency": "quarterly",
-        "vat_start_date": date(today.year, quarter_start_month, 1).isoformat(),
+        "vat_start_date": "",
+        "vat_end_date": "",
+        "return_due_months_after_period": 1,
+        "return_due_days_after_month": 7,
+        "payment_due_months_after_period": 1,
+        "payment_due_days_after_month": 7,
         "default_purchase_vat_code": "20% S",
         "default_sales_vat_code": "20% S",
         "default_bank_vat_code": "NO VAT",
@@ -6947,20 +7327,27 @@ async def ensure_vat_settings(session: AsyncSession, client_id: str) -> dict:
 
 async def ensure_vat_codes(session: AsyncSession, client_id: str) -> list[dict]:
     existing = await many(session, select(accounting_vat_codes).where(accounting_vat_codes.c.client_id == client_id).order_by(accounting_vat_codes.c.code.asc()))
-    if existing:
-        deduped: dict[str, dict] = {}
-        for row in existing:
-            code_key = str(row.get("code") or "").strip().lower()
-            if code_key and code_key not in deduped:
-                deduped[code_key] = row
-        return list(deduped.values())
     now = utc_now_iso()
+    deduped: dict[str, dict] = {}
+    for row in existing:
+        code_key = str(row.get("code") or "").strip().lower()
+        if code_key and code_key not in deduped:
+            deduped[code_key] = row
     rows = []
     for item in DEFAULT_NATIVE_VAT_CODES:
-        row = {"id": new_id(), "client_id": client_id, "active": True, "system_code": True, "created_at": now, "updated_at": now, **item}
+        if item["code"].lower() in deduped:
+            continue
+        row = {
+            "id": new_id(), "client_id": client_id, "active": True,
+            "system_code": True, "default_code": item["code"] in DEFAULT_NATIVE_VAT_CODE_KEYS,
+            "custom_code": False, "display_name": item["description"], "category": "both",
+            "created_at": now, "updated_at": now, **item,
+        }
         rows.append(row)
-    await session.execute(insert(accounting_vat_codes), rows)
-    return rows
+    if rows:
+        await session.execute(insert(accounting_vat_codes), rows)
+        existing.extend(rows)
+    return sorted(existing, key=lambda row: str(row.get("code") or ""))
 
 
 def vat_period_months(frequency: str) -> int:
@@ -6972,8 +7359,11 @@ def vat_period_months(frequency: str) -> int:
     return 3
 
 
-def vat_period_due_date(period_end: date) -> date:
-    return add_months_to_date(period_end, 1) + timedelta(days=7)
+def vat_period_due_date(period_end: date, settings_row: Optional[dict] = None, kind: str = "return") -> date:
+    settings_row = settings_row or {}
+    months = max(0, int(settings_row.get(f"{kind}_due_months_after_period") or 1))
+    days = max(0, int(settings_row.get(f"{kind}_due_days_after_month") or 7))
+    return add_months_to_date(period_end, months) + timedelta(days=days)
 
 
 def find_vat_period_for_date(periods: list[dict], value: str) -> Optional[dict]:
@@ -6989,27 +7379,150 @@ async def ensure_vat_periods(session: AsyncSession, client_id: str, settings_row
     periods = await many(session, select(accounting_vat_periods).where(accounting_vat_periods.c.client_id == client_id).order_by(accounting_vat_periods.c.period_start.asc()))
     today = datetime.now(timezone.utc).date()
     if periods:
+        terminal = [period for period in periods if str(period.get("status") or "") in {"submitted", "locked", "closed"}]
+        terminal_end = max((str(period.get("period_end") or "") for period in terminal), default="")
+        open_rows = [period for period in periods if str(period.get("status") or "") == "open"]
+        eligible_open = [period for period in open_rows if str(period.get("period_start") or "") > terminal_end] if terminal_end else open_rows
+        chosen_open = eligible_open[0] if eligible_open else None
+        now = utc_now_iso()
+        if chosen_open:
+            for period in open_rows:
+                if period["id"] == chosen_open["id"]:
+                    continue
+                await session.execute(update(accounting_vat_periods).where(accounting_vat_periods.c.id == period["id"]).values(status="scheduled", updated_at=now))
+                period["status"] = "scheduled"
+        else:
+            for period in open_rows:
+                await session.execute(update(accounting_vat_periods).where(accounting_vat_periods.c.id == period["id"]).values(status="scheduled", updated_at=now))
+                period["status"] = "scheduled"
+            scheduled = [period for period in periods if str(period.get("status") or "") == "scheduled" and str(period.get("period_start") or "") > terminal_end]
+            if scheduled:
+                chosen_open = scheduled[0]
+                await session.execute(update(accounting_vat_periods).where(accounting_vat_periods.c.id == chosen_open["id"]).values(status="open", updated_at=now))
+                chosen_open["status"] = "open"
+            elif terminal:
+                last_period = max(terminal, key=lambda period: str(period.get("period_end") or ""))
+                next_start = parse_date_or_today(last_period.get("period_end")) + timedelta(days=1)
+                months = vat_period_months(settings_row.get("vat_frequency"))
+                next_end = add_months_to_date(next_start, months) - timedelta(days=1)
+                chosen_open = {
+                    "id": new_id(),
+                    "client_id": client_id,
+                    "period_start": next_start.isoformat(),
+                    "period_end": next_end.isoformat(),
+                    "due_date": vat_period_due_date(next_end, settings_row).isoformat(),
+                    "payment_due_date": vat_period_due_date(next_end, settings_row, "payment").isoformat(),
+                    "status": "open",
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                await session.execute(insert(accounting_vat_periods).values(**chosen_open))
+                periods.append(chosen_open)
         return periods
     start = parse_date_or_today(settings_row.get("vat_start_date") or today.isoformat())
     months = vat_period_months(settings_row.get("vat_frequency"))
     rows = []
     now = utc_now_iso()
     cursor = start
-    while cursor <= add_months_to_date(today, 18):
-        period_end = add_months_to_date(cursor, months) - timedelta(days=1)
-        rows.append({
-            "id": new_id(),
-            "client_id": client_id,
-            "period_start": cursor.isoformat(),
-            "period_end": period_end.isoformat(),
-            "due_date": vat_period_due_date(period_end).isoformat(),
-            "status": "open",
-            "created_at": now,
-            "updated_at": now,
-        })
-        cursor = period_end + timedelta(days=1)
+    while add_months_to_date(cursor, months) - timedelta(days=1) < today:
+        cursor = add_months_to_date(cursor, months)
+    period_end = add_months_to_date(cursor, months) - timedelta(days=1)
+    rows.append({
+        "id": new_id(),
+        "client_id": client_id,
+        "period_start": cursor.isoformat(),
+        "period_end": period_end.isoformat(),
+        "due_date": vat_period_due_date(period_end, settings_row).isoformat(),
+        "payment_due_date": vat_period_due_date(period_end, settings_row, "payment").isoformat(),
+        "status": "open",
+        "created_at": now,
+        "updated_at": now,
+    })
     await session.execute(insert(accounting_vat_periods), rows)
     return rows
+
+
+async def late_invoice_vat_context(session: AsyncSession, client_id: str, document_date: str, vat_amount: Any) -> Optional[dict]:
+    """Describe the explicit treatment required when VAT belongs to a closed return.
+
+    A linked automatic adjustment changes the VAT reporting date only. The
+    invoice journal still records the genuine expense/sale and VAT control
+    amount once, using the current open posting date.
+    """
+    if money(vat_amount) == 0:
+        return None
+    vat_settings = await ensure_vat_settings(session, client_id)
+    if str(vat_settings.get("vat_scheme") or "standard").strip().lower() in {"cash", "cash_accounting", "cash accounting"}:
+        return None
+    periods = await ensure_vat_periods(session, client_id)
+    original = find_vat_period_for_date(periods, str(document_date or ""))
+    if not original or str(original.get("status") or "open") == "open":
+        return None
+    today = datetime.now(timezone.utc).date().isoformat()
+    reported = next((period for period in periods if period.get("status") == "open" and str(period.get("period_start")) <= today <= str(period.get("period_end"))), None)
+    if not reported:
+        reported = next((period for period in periods if period.get("status") == "open" and str(period.get("period_start")) >= today), None)
+    if not reported:
+        raise HTTPException(status_code=409, detail={
+            "code": "no_open_vat_period",
+            "message": "The invoice belongs to a locked or closed VAT period and there is no open VAT period available for an adjustment.",
+            "original_period": serialize_vat_period(original),
+        })
+    return {
+        "requires_confirmation": str(original.get("status")) in {"closed", "submitted"},
+        "requires_reopen": str(original.get("status")) == "locked",
+        "original_period": original,
+        "reported_period": reported,
+        "posting_date": today if str(reported.get("period_start")) <= today <= str(reported.get("period_end")) else str(reported.get("period_start")),
+    }
+
+
+async def apply_confirmed_late_invoice_vat_adjustment(
+    session: AsyncSession,
+    client_id: str,
+    source_type: str,
+    source_id: str,
+    document_number: str,
+    vat_code: str,
+    net_amount: Any,
+    vat_amount: Any,
+    gross_amount: Any,
+    context: dict,
+    actor_id: Optional[str],
+) -> dict:
+    adjustment_id = new_id()
+    now = utc_now_iso()
+    row = {
+        "id": adjustment_id,
+        "client_id": client_id,
+        "vat_period_id": context["reported_period"].get("id"),
+        "adjustment_date": context["posting_date"],
+        "adjustment_type": "prior_period_correction",
+        "vat_code": str(vat_code or ""),
+        "reason": f"Late invoice VAT correction: {document_number}",
+        "notes": "Automatically created after user confirmation. The source invoice retains its document date; VAT is reported in the current open period without a second VAT-control journal.",
+        "net_amount": money_str(money(net_amount)),
+        "vat_amount": money_str(money(vat_amount)),
+        "gross_amount": money_str(money(gross_amount)),
+        "status": "applied_to_source",
+        "journal_entry_id": None,
+        "source_type": source_type,
+        "source_id": source_id,
+        "original_vat_period_id": context["original_period"].get("id"),
+        "reported_vat_period_id": context["reported_period"].get("id"),
+        "created_by": actor_id,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await session.execute(insert(accounting_vat_adjustments).values(**row))
+    await add_accounting_audit(session, client_id, actor_id, "prior_period_vat_adjustment_created", "vat", adjustment_id, {
+        "source_type": source_type,
+        "source_id": source_id,
+        "original_vat_period_id": row["original_vat_period_id"],
+        "reported_vat_period_id": row["reported_vat_period_id"],
+        "vat_amount": row["vat_amount"],
+    })
+    return row
 
 
 def vat_source_module(source_type: str) -> str:
@@ -7044,6 +7557,8 @@ def apply_vat_box(boxes: dict[str, Decimal], box: str, amount: Decimal) -> None:
 async def vat_transactions_for_client(session: AsyncSession, client_id: str) -> list[dict]:
     codes = {str(c.get("code") or "").lower(): c for c in await ensure_vat_codes(session, client_id)}
     periods = await ensure_vat_periods(session, client_id)
+    vat_settings = await ensure_vat_settings(session, client_id)
+    cash_accounting = str(vat_settings.get("vat_scheme") or "standard").strip().lower() in {"cash", "cash_accounting", "cash accounting"}
     transactions: list[dict] = []
 
     def add_transaction(row: dict, line: dict, date_key: str, number_key: str, source_type: str, direction: str, sign: Decimal = Decimal("1")):
@@ -7054,10 +7569,13 @@ async def vat_transactions_for_client(session: AsyncSession, client_id: str) -> 
         if not code and vat == 0 and net == 0:
             return
         code_row = codes.get(code.lower(), {})
-        period = find_vat_period_for_date(periods, str(row.get(date_key) or ""))
+        vat_date = str(row.get("vat_effective_date") or row.get(date_key) or "")
+        period = find_vat_period_for_date(periods, vat_date)
         transactions.append({
             "id": str(line.get("id") or new_id()),
-            "date": str(row.get(date_key) or ""),
+            "date": vat_date,
+            "document_date": str(row.get(date_key) or ""),
+            "vat_treatment": str(row.get("vat_treatment") or "normal"),
             "source_module": vat_source_module(source_type),
             "source_type": source_type,
             "document_type": vat_document_type(source_type),
@@ -7083,8 +7601,27 @@ async def vat_transactions_for_client(session: AsyncSession, client_id: str) -> 
     if ap_invoices:
         rows = await many(session, select(accounting_ap_invoice_lines).where(accounting_ap_invoice_lines.c.invoice_id.in_([r["id"] for r in ap_invoices])))
         by_id = {str(r["id"]): r for r in ap_invoices}
-        for line in rows:
-            add_transaction(by_id.get(str(line.get("invoice_id")), {}), line, "invoice_date", "invoice_number", "ap_invoice", "purchase")
+        if cash_accounting:
+            allocations = await many(session, select(accounting_ap_payment_allocations).where(accounting_ap_payment_allocations.c.client_id == client_id, accounting_ap_payment_allocations.c.invoice_id.in_(list(by_id))))
+            payment_ids = [str(row.get("payment_id")) for row in allocations if row.get("payment_id")]
+            payments = {str(row["id"]): row for row in await many(session, select(accounting_ap_payments).where(accounting_ap_payments.c.id.in_(payment_ids)))} if payment_ids else {}
+            lines_by_invoice: dict[str, list[dict]] = {}
+            for line in rows:
+                lines_by_invoice.setdefault(str(line.get("invoice_id")), []).append(line)
+            for allocation in allocations:
+                invoice = by_id.get(str(allocation.get("invoice_id")), {})
+                gross = money(invoice.get("gross_amount"))
+                ratio = min(money(allocation.get("amount")) / gross, Decimal("1")) if gross > 0 else Decimal("0")
+                payment = payments.get(str(allocation.get("payment_id")), {})
+                for line in lines_by_invoice.get(str(invoice.get("id")), []):
+                    add_transaction(
+                        {**invoice, "vat_effective_date": payment.get("payment_date") or str(allocation.get("created_at") or "")[:10]},
+                        {**line, "net_amount": money_str(money(line.get("net_amount")) * ratio), "vat_amount": money_str(money(line.get("vat_amount")) * ratio), "gross_amount": money_str(money(line.get("gross_amount")) * ratio)},
+                        "invoice_date", "invoice_number", "ap_invoice", "purchase",
+                    )
+        else:
+            for line in rows:
+                add_transaction(by_id.get(str(line.get("invoice_id")), {}), line, "invoice_date", "invoice_number", "ap_invoice", "purchase")
 
     ap_credits = await many(session, select(accounting_ap_credit_notes).where(accounting_ap_credit_notes.c.client_id == client_id, accounting_ap_credit_notes.c.posted_journal_id.isnot(None)))
     if ap_credits:
@@ -7097,8 +7634,27 @@ async def vat_transactions_for_client(session: AsyncSession, client_id: str) -> 
     if ar_invoices:
         rows = await many(session, select(accounting_ar_invoice_lines).where(accounting_ar_invoice_lines.c.invoice_id.in_([r["id"] for r in ar_invoices])))
         by_id = {str(r["id"]): r for r in ar_invoices}
-        for line in rows:
-            add_transaction(by_id.get(str(line.get("invoice_id")), {}), line, "invoice_date", "invoice_number", "ar_invoice", "sales")
+        if cash_accounting:
+            allocations = await many(session, select(accounting_ar_receipt_allocations).where(accounting_ar_receipt_allocations.c.client_id == client_id, accounting_ar_receipt_allocations.c.invoice_id.in_(list(by_id))))
+            receipt_ids = [str(row.get("receipt_id")) for row in allocations if row.get("receipt_id")]
+            receipts = {str(row["id"]): row for row in await many(session, select(accounting_ar_receipts).where(accounting_ar_receipts.c.id.in_(receipt_ids)))} if receipt_ids else {}
+            lines_by_invoice: dict[str, list[dict]] = {}
+            for line in rows:
+                lines_by_invoice.setdefault(str(line.get("invoice_id")), []).append(line)
+            for allocation in allocations:
+                invoice = by_id.get(str(allocation.get("invoice_id")), {})
+                gross = money(invoice.get("gross_amount"))
+                ratio = min(money(allocation.get("amount")) / gross, Decimal("1")) if gross > 0 else Decimal("0")
+                receipt = receipts.get(str(allocation.get("receipt_id")), {})
+                for line in lines_by_invoice.get(str(invoice.get("id")), []):
+                    add_transaction(
+                        {**invoice, "vat_effective_date": receipt.get("receipt_date") or str(allocation.get("created_at") or "")[:10]},
+                        {**line, "net_amount": money_str(money(line.get("net_amount")) * ratio), "vat_amount": money_str(money(line.get("vat_amount")) * ratio), "gross_amount": money_str(money(line.get("gross_amount")) * ratio)},
+                        "invoice_date", "invoice_number", "ar_invoice", "sales",
+                    )
+        else:
+            for line in rows:
+                add_transaction(by_id.get(str(line.get("invoice_id")), {}), line, "invoice_date", "invoice_number", "ar_invoice", "sales")
 
     ar_credits = await many(session, select(accounting_ar_credit_notes).where(accounting_ar_credit_notes.c.client_id == client_id, accounting_ar_credit_notes.c.posted_journal_id.isnot(None)))
     if ar_credits:
@@ -7107,7 +7663,54 @@ async def vat_transactions_for_client(session: AsyncSession, client_id: str) -> 
         for line in rows:
             add_transaction(by_id.get(str(line.get("credit_note_id")), {}), line, "credit_note_date", "credit_note_number", "ar_credit_note", "sales", Decimal("-1"))
 
-    adjustments = await many(session, select(accounting_vat_adjustments).where(accounting_vat_adjustments.c.client_id == client_id).order_by(accounting_vat_adjustments.c.adjustment_date.desc()))
+    # Banking and manual GL VAT postings are journal-native. AP/AR journals are
+    # deliberately excluded here because their exact reviewed net/VAT/gross
+    # lines were added above.
+    generic_entries = await many(
+        session,
+        select(accounting_journal_entries).where(
+            accounting_journal_entries.c.client_id == client_id,
+            accounting_journal_entries.c.status == "posted",
+            ~accounting_journal_entries.c.source_type.in_(["ap_invoice", "ap_credit_note", "ar_invoice", "ar_credit_note", "vat_adjustment"]),
+        ),
+    )
+    if generic_entries:
+        generic_by_id = {str(entry["id"]): entry for entry in generic_entries}
+        generic_lines = await many(
+            session,
+            select(accounting_journal_lines).where(
+                accounting_journal_lines.c.client_id == client_id,
+                accounting_journal_lines.c.entry_id.in_(list(generic_by_id)),
+                accounting_journal_lines.c.vat_code.isnot(None),
+                accounting_journal_lines.c.vat_code != "",
+            ),
+        )
+        for line in generic_lines:
+            entry = generic_by_id.get(str(line.get("entry_id")), {})
+            code = vat_code_value(line.get("vat_code"))
+            code_row = codes.get(code.lower(), {})
+            amount = (money(line.get("debit")) - money(line.get("credit")))
+            rate = money(code_row.get("percentage"))
+            net = amount.copy_abs()
+            vat = (net * rate / Decimal("100")).quantize(Decimal("0.01")) if rate else Decimal("0.00")
+            direction = "purchase" if amount >= 0 else "sales"
+            add_transaction(
+                entry,
+                {
+                    **line,
+                    "net_amount": money_str(net),
+                    "vat_amount": money_str(vat),
+                    "gross_amount": money_str(net + vat),
+                    "nominal_account_code": line.get("account_code"),
+                    "vat_code": code,
+                },
+                "entry_date",
+                "reference",
+                str(entry.get("source_type") or "general_ledger"),
+                direction,
+            )
+
+    adjustments = await many(session, select(accounting_vat_adjustments).where(accounting_vat_adjustments.c.client_id == client_id, accounting_vat_adjustments.c.status == "posted").order_by(accounting_vat_adjustments.c.adjustment_date.desc()))
     for adjustment in adjustments:
         period = find_vat_period_for_date(periods, str(adjustment.get("adjustment_date") or ""))
         code = str(adjustment.get("vat_code") or "").strip()
@@ -7136,6 +7739,18 @@ async def vat_transactions_for_client(session: AsyncSession, client_id: str) -> 
             "box_purchase_net": "",
         })
 
+    client = await get_user_by_id(session, client_id)
+    start = str(vat_settings.get("vat_start_date") or "")[:10]
+    end = str(vat_settings.get("vat_end_date") or "")[:10]
+    if not bool((client or {}).get("is_vat_client")) or not start:
+        transactions = []
+    else:
+        transactions = [
+            item for item in transactions
+            if str(item.get("date") or "")[:10] >= start
+            and (not end or str(item.get("date") or "")[:10] <= end)
+            and str(item.get("vat_code") or "").upper() != "NO VAT"
+        ]
     return sorted(transactions, key=lambda item: (str(item.get("date") or ""), str(item.get("document_number") or "")), reverse=True)
 
 
@@ -7159,16 +7774,113 @@ def calculate_vat_boxes(transactions: list[dict]) -> dict[str, Decimal]:
     return boxes
 
 
+VAT_RETURN_BOX_LABELS = {
+    1: "VAT due on sales and other outputs",
+    2: "VAT due on acquisitions of goods made in Northern Ireland from EU Member States",
+    3: "Total output tax due",
+    4: "VAT reclaimed in the period on purchases and other inputs",
+    5: "Net VAT to pay (or reclaim)",
+    6: "Net value of sales",
+    7: "Net value of purchases",
+    8: "Total value of dispatches of goods and related costs from Northern Ireland to EU Member States",
+    9: "Total value of acquisitions of goods and related costs made in Northern Ireland from EU Member States",
+}
+
+
+def vat_transaction_box_contributions(item: dict) -> dict[int, Decimal]:
+    direction = str(item.get("direction") or "")
+    net = money(item.get("net")).copy_abs()
+    vat = money(item.get("vat")).copy_abs()
+    sign = Decimal("-1") if money(item.get("net")) < 0 or money(item.get("vat")) < 0 else Decimal("1")
+    contributions: dict[int, Decimal] = {}
+
+    def add(box_value: Any, amount: Decimal) -> None:
+        try:
+            box_number = int(str(box_value or ""))
+        except (TypeError, ValueError):
+            return
+        if 1 <= box_number <= 9:
+            contributions[box_number] = contributions.get(box_number, Decimal("0.00")) + amount
+
+    if direction == "sales":
+        add(item.get("box_sales_vat"), vat * sign)
+        add(item.get("box_sales_net"), net * sign)
+    elif direction == "purchase":
+        add(item.get("box_purchase_vat"), vat * sign)
+        add(item.get("box_purchase_net"), net * sign)
+    else:
+        add(item.get("box_sales_vat") or "1", money(item.get("vat")))
+    if 1 in contributions or 2 in contributions:
+        contributions[3] = contributions.get(1, Decimal("0.00")) + contributions.get(2, Decimal("0.00"))
+        contributions[5] = contributions.get(3, Decimal("0.00"))
+    if 4 in contributions:
+        contributions[5] = contributions.get(5, Decimal("0.00")) - contributions[4]
+    return contributions
+
+
+async def vat_period_transactions(session: AsyncSession, client_id: str, period: dict) -> list[dict]:
+    start = str(period.get("period_start") or "")
+    end = str(period.get("period_end") or "")
+    return [
+        item for item in await vat_transactions_for_client(session, client_id)
+        if start <= str(item.get("date") or "") <= end
+    ]
+
+
+def vat_period_display_status(period: dict, vat_return: Optional[dict] = None) -> str:
+    if str((vat_return or {}).get("status") or "").lower() == "submitted":
+        return "submitted"
+    if str(period.get("status") or "").lower() in {"submitted", "locked", "closed"}:
+        return "submitted"
+    return "open"
+
+
+def vat_return_values(period: dict, transactions: list[dict], status: str, now: str) -> dict:
+    boxes = calculate_vat_boxes(transactions)
+    return {
+        "period_start": str(period.get("period_start") or ""),
+        "period_end": str(period.get("period_end") or ""),
+        "status": status,
+        "vat_due_sales": money_str(boxes["box1"] + boxes["box2"]),
+        "vat_reclaimed_purchases": money_str(boxes["box4"]),
+        "net_vat_due": money_str(boxes["box5"]),
+        "sales_net": money_str(boxes["box6"] + boxes["box8"]),
+        "purchase_net": money_str(boxes["box7"] + boxes["box9"]),
+        **{f"box{number}": money_str(boxes[f"box{number}"]) for number in range(1, 10)},
+        "prepared_json": json.dumps({"transaction_count": len(transactions), "source": "vat_engine"}),
+        "updated_at": now,
+    }
+
+
 async def vat_engine_workspace(session: AsyncSession, client_id: str) -> dict:
     settings_row = await ensure_vat_settings(session, client_id)
     codes = await ensure_vat_codes(session, client_id)
     periods = await ensure_vat_periods(session, client_id, settings_row)
-    serialized_periods = [serialize_vat_period(period) for period in periods]
+    return_rows = await many(session, select(accounting_vat_returns).where(accounting_vat_returns.c.client_id == client_id).order_by(accounting_vat_returns.c.period_end.desc(), accounting_vat_returns.c.created_at.desc()).limit(50))
+    returns_by_dates = {
+        (str(row.get("period_start") or ""), str(row.get("period_end") or "")): row
+        for row in return_rows
+    }
+    submitted_periods = []
+    open_period = None
+    for period in periods:
+        vat_return = returns_by_dates.get((str(period.get("period_start") or ""), str(period.get("period_end") or "")))
+        display_status = vat_period_display_status(period, vat_return)
+        payload = serialize_vat_period({**period, "status": display_status})
+        payload["return_id"] = (vat_return or {}).get("id")
+        payload["submitted_at"] = (vat_return or {}).get("submitted_at")
+        if display_status == "submitted":
+            submitted_periods.append(payload)
+        elif open_period is None:
+            open_period = payload
+    serialized_periods = sorted(submitted_periods, key=lambda item: str(item.get("period_start") or ""), reverse=True)
+    if open_period:
+        serialized_periods.insert(0, open_period)
     today = datetime.now(timezone.utc).date().isoformat()
-    current_period = next((p for p in serialized_periods if str(p.get("period_start")) <= today <= str(p.get("period_end"))), serialized_periods[0] if serialized_periods else None)
-    latest_return = await one(session, select(accounting_vat_returns).where(accounting_vat_returns.c.client_id == client_id).order_by(accounting_vat_returns.c.period_end.desc(), accounting_vat_returns.c.created_at.desc()).limit(1))
+    current_period = next((p for p in serialized_periods if p.get("status") == "open"), serialized_periods[0] if serialized_periods else None)
+    latest_return = return_rows[0] if return_rows else None
     boxes = {f"box{i}": money((latest_return or {}).get(f"box{i}")) for i in range(1, 10)}
-    returns = [serialize_vat_return(r) for r in await many(session, select(accounting_vat_returns).where(accounting_vat_returns.c.client_id == client_id).order_by(accounting_vat_returns.c.period_end.desc(), accounting_vat_returns.c.created_at.desc()).limit(50))]
+    returns = [serialize_vat_return(r) for r in return_rows]
     dashboard = {
         "current_vat_liability": money_str(boxes["box5"]),
         "vat_due_to_hmrc": money_str(max(boxes["box5"], Decimal("0.00"))),
@@ -9201,6 +9913,7 @@ async def get_native_accounting_workspace(
     if not is_native_accounting_client(client):
         raise HTTPException(status_code=400, detail="EPOS native accounting is not enabled for this client.")
     await ensure_native_accounting_client(session, client_id)
+    await ensure_system_ap_suppliers(session, client_id)
     await session.commit()
     accounts = await many(
         session,
@@ -9245,6 +9958,11 @@ async def get_native_accounting_workspace(
     ar_settings = await ensure_ar_settings(session, client_id)
     bank_settings = await ensure_bank_settings(session, client_id)
     vat_settings = await ensure_vat_settings(session, client_id)
+    vat_status = await native_vat_effective_context(
+        session,
+        client_id,
+        datetime.now(timezone.utc).date().isoformat(),
+    )
     ap_summary_row = await one(
         session,
         select(
@@ -9348,6 +10066,7 @@ async def get_native_accounting_workspace(
         "vat_returns": [],
         "vat_codes": vat_code_options,
         "vat": {"codes": vat_code_options, "vat_codes": vat_code_options},
+        "vat_status": {**vat_status, "vat_codes": vat_code_options},
         "vat_engine": vat_engine_data,
         "periods": [serialize_period(p) for p in periods],
         "audit_log": [serialize_audit_event(e) for e in audit_events],
@@ -9458,6 +10177,7 @@ def paginated_contract(rows: list[dict], page: int, page_size: int, summary: Opt
 async def get_ap_supplier_summaries(client_id: str, page: int = 1, page_size: int = 200, user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
     await get_client_or_404(session, client_id)
     data = await accounts_payable_workspace(session, client_id)
+    await session.commit()
     return paginated_contract(data.get("suppliers", []), page, page_size, data.get("dashboard", {}), settings=data.get("settings", {}))
 
 
@@ -10200,7 +10920,118 @@ async def get_report_aged_creditors(client_id: str, page: int = 1, page_size: in
 @api.get("/admin/accounting/clients/{client_id}/vat/workspace")
 async def get_vat_workspace(client_id: str, user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
     await get_client_or_404(session, client_id)
-    return await vat_engine_workspace(session, client_id)
+    payload = await vat_engine_workspace(session, client_id)
+    # Persist non-destructive VAT-code/period backfills performed for existing
+    # native clients when they first open the rebuilt VAT module.
+    await session.commit()
+    return payload
+
+
+async def get_vat_period_or_404(session: AsyncSession, client_id: str, period_id: str) -> dict:
+    period = await one(session, select(accounting_vat_periods).where(
+        accounting_vat_periods.c.client_id == client_id,
+        accounting_vat_periods.c.id == period_id,
+    ))
+    if not period:
+        raise HTTPException(status_code=404, detail="VAT period not found.")
+    return period
+
+
+@api.get("/admin/accounting/clients/{client_id}/vat/periods/{period_id}")
+async def get_vat_period_detail(
+    client_id: str,
+    period_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    started = time.perf_counter()
+    await get_client_or_404(session, client_id)
+    period = await get_vat_period_or_404(session, client_id, period_id)
+    vat_return = await one(session, select(accounting_vat_returns).where(
+        accounting_vat_returns.c.client_id == client_id,
+        accounting_vat_returns.c.period_start == period.get("period_start"),
+        accounting_vat_returns.c.period_end == period.get("period_end"),
+    ).order_by(accounting_vat_returns.c.created_at.desc()).limit(1))
+    status = vat_period_display_status(period, vat_return)
+    transactions = await vat_period_transactions(session, client_id, period)
+    calculated = calculate_vat_boxes(transactions)
+    boxes = {
+        f"box{number}": money_str(
+            money((vat_return or {}).get(f"box{number}"))
+            if status == "submitted" and vat_return
+            else calculated[f"box{number}"]
+        )
+        for number in range(1, 10)
+    }
+    counts = {number: 0 for number in range(1, 10)}
+    for transaction in transactions:
+        for number in vat_transaction_box_contributions(transaction):
+            counts[number] += 1
+    settings_row = await ensure_vat_settings(session, client_id)
+    client = await get_client_or_404(session, client_id)
+    payload = {
+        "period": serialize_vat_period({**period, "status": status}),
+        "return": serialize_vat_return(vat_return) if vat_return else None,
+        "boxes": [
+            {
+                "number": number,
+                "label": VAT_RETURN_BOX_LABELS[number],
+                "value": boxes[f"box{number}"],
+                "transaction_count": counts[number],
+            }
+            for number in range(1, 10)
+        ],
+        "settings": {
+            "vat_registration_number": settings_row.get("vat_registration_number") or "",
+            "vat_scheme": settings_row.get("vat_scheme") or "standard",
+        },
+        "client": {"business_name": client.get("business_name") or client.get("name") or ""},
+        "read_only": status == "submitted",
+    }
+    log_report_response("vat-period-detail", client_id, started, payload)
+    return payload
+
+
+@api.get("/admin/accounting/clients/{client_id}/vat/periods/{period_id}/boxes/{box_number}")
+async def get_vat_period_box_rows(
+    client_id: str,
+    period_id: str,
+    box_number: int,
+    page: int = 1,
+    page_size: int = 50,
+    search: str = "",
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    started = time.perf_counter()
+    if box_number not in VAT_RETURN_BOX_LABELS:
+        raise HTTPException(status_code=404, detail="VAT return box not found.")
+    period = await get_vat_period_or_404(session, client_id, period_id)
+    transactions = await vat_period_transactions(session, client_id, period)
+    query = str(search or "").strip().lower()
+    rows = []
+    for transaction in transactions:
+        contribution = vat_transaction_box_contributions(transaction).get(box_number)
+        if contribution is None:
+            continue
+        if query and query not in " ".join(str(transaction.get(key) or "") for key in ("document_number", "document_type", "source_module", "account", "vat_code")).lower():
+            continue
+        rows.append({**transaction, "box_number": box_number, "box_amount": money_str(contribution)})
+    page_value, page_size_value = pagination_params(page, page_size)
+    start_index = (page_value - 1) * page_size_value
+    payload = paginated_payload(
+        rows[start_index:start_index + page_size_value],
+        page_value,
+        page_size_value,
+        len(rows),
+        {
+            "box_number": box_number,
+            "label": VAT_RETURN_BOX_LABELS[box_number],
+            "total": money_str(sum((money(row.get("box_amount")) for row in rows), Decimal("0.00"))),
+        },
+    )
+    log_report_response(f"vat-period-box-{box_number}", client_id, started, payload)
+    return payload
 
 
 @api.get("/admin/accounting/clients/{client_id}/vat/transactions")
@@ -10308,6 +11139,8 @@ async def create_native_account(
         "opening_balance": money_str(money(payload.get("opening_balance"))),
         "active": bool(payload.get("active", True)),
         "description": str(payload.get("description") or "").strip(),
+        "display_name": str(payload.get("display_name") or payload.get("description") or "").strip(),
+        "category": str(payload.get("category") or "both"),
         "created_at": now,
         "updated_at": now,
     }
@@ -10687,6 +11520,8 @@ async def create_native_ap_supplier_profile(
         supplier_code = str(existing_contact.get("account_code") or "").strip()
     if not supplier_code:
         supplier_code = await next_ap_supplier_code(session, client_id, name)
+    if supplier_code.upper() in SYSTEM_AP_SUPPLIER_BY_CODE:
+        raise HTTPException(status_code=400, detail="This supplier code is reserved for a protected system supplier.")
     now = utc_now_iso()
     if existing_contact:
         contact_updates = {
@@ -10725,6 +11560,8 @@ async def create_native_ap_supplier_profile(
         raise HTTPException(status_code=400, detail="Supplier payment terms must be a number.")
     values = {
         "supplier_code": supplier_code,
+        "is_system_supplier": False,
+        "supplier_category": "Trade",
         "trading_name": str(payload.get("trading_name") or name).strip(),
         "phone": str(payload.get("phone") or "").strip(),
         "website": str(payload.get("website") or "").strip(),
@@ -10735,6 +11572,7 @@ async def create_native_ap_supplier_profile(
         "default_purchase_account": nominal_account_code_value(payload.get("default_purchase_account") or payload.get("category"), ap_settings.get("default_purchase_account") or "5000"),
         "default_vat_code": vat_code_value(payload.get("default_vat_code") or payload.get("vat_code") or ap_settings.get("default_vat_code")),
         "status": "active",
+        "payment_reference": str(payload.get("payment_reference") or "").strip(),
         "notes": str(payload.get("notes") or "").strip(),
         "updated_at": now,
     }
@@ -10758,6 +11596,7 @@ async def native_ap_supplier_page(
     search: Optional[str] = None,
     status: Optional[str] = None,
 ) -> dict:
+    await ensure_system_ap_suppliers(session, client_id)
     page, page_size = pagination_params(page, page_size)
     conditions: list[Any] = [accounting_ap_supplier_profiles.c.client_id == client_id]
     if status and str(status).lower() not in {"all", ""}:
@@ -10788,7 +11627,37 @@ async def native_ap_supplier_page(
     row_contact_ids = [str(row.get("contact_id")) for row in rows if row.get("contact_id")]
     contacts = await many(session, select(accounting_contacts).where(accounting_contacts.c.id.in_(row_contact_ids))) if row_contact_ids else []
     contact_by_id = {str(contact.get("id")): contact for contact in contacts}
-    serialized = [serialize_ap_supplier(row, contact_by_id.get(str(row.get("contact_id"))) or {}) for row in rows]
+    supplier_ids = [str(row.get("id")) for row in rows]
+    invoices = await many(session, select(accounting_ap_invoices).where(accounting_ap_invoices.c.client_id == client_id, accounting_ap_invoices.c.supplier_id.in_(supplier_ids))) if supplier_ids else []
+    credits = await many(session, select(accounting_ap_credit_notes).where(accounting_ap_credit_notes.c.client_id == client_id, accounting_ap_credit_notes.c.supplier_id.in_(supplier_ids))) if supplier_ids else []
+    payments = await many(session, select(accounting_ap_payments).where(accounting_ap_payments.c.client_id == client_id, accounting_ap_payments.c.supplier_id.in_(supplier_ids))) if supplier_ids else []
+    payment_ids = [str(row.get("id")) for row in payments]
+    allocations = await many(session, select(accounting_ap_payment_allocations).where(accounting_ap_payment_allocations.c.payment_id.in_(payment_ids))) if payment_ids else []
+    allocated_by_payment: dict[str, Decimal] = {}
+    for allocation in allocations:
+        payment_id = str(allocation.get("payment_id") or "")
+        allocated_by_payment[payment_id] = allocated_by_payment.get(payment_id, Decimal("0.00")) + money(allocation.get("amount"))
+    balance_by_supplier: dict[str, Decimal] = {}
+    on_account_by_supplier: dict[str, Decimal] = {}
+    for invoice in invoices:
+        supplier_id = str(invoice.get("supplier_id"))
+        balance_by_supplier[supplier_id] = balance_by_supplier.get(supplier_id, Decimal("0.00")) + money(invoice.get("outstanding_amount"))
+    for credit in credits:
+        supplier_id = str(credit.get("supplier_id"))
+        balance_by_supplier[supplier_id] = balance_by_supplier.get(supplier_id, Decimal("0.00")) - money(credit.get("unallocated_amount"))
+    for payment in payments:
+        supplier_id = str(payment.get("supplier_id"))
+        unallocated = Decimal("0.00") if str(payment.get("status") or "").lower() in {"void", "reversed"} else max(money(payment.get("amount")) - allocated_by_payment.get(str(payment.get("id")), Decimal("0.00")), Decimal("0.00"))
+        on_account_by_supplier[supplier_id] = on_account_by_supplier.get(supplier_id, Decimal("0.00")) + unallocated
+    serialized = [
+        serialize_ap_supplier(
+            row,
+            contact_by_id.get(str(row.get("contact_id"))) or {},
+            balance_by_supplier.get(str(row.get("id")), Decimal("0.00")),
+            on_account_by_supplier.get(str(row.get("id")), Decimal("0.00")),
+        )
+        for row in rows
+    ]
     return paginated_payload(serialized, page, page_size, total, {"supplier_count": total})
 
 
@@ -10866,6 +11735,8 @@ async def create_ap_invoice_record(
                 "client_id": client_id,
                 "contact_id": contact["id"],
                 "supplier_code": contact.get("account_code") or "",
+                "is_system_supplier": False,
+                "supplier_category": "Trade",
                 "trading_name": contact.get("name"),
                 "payment_terms_days": int(ap_settings.get("default_payment_terms_days") or 30),
                 "default_currency": str(payload.get("currency") or "GBP")[:8],
@@ -10921,7 +11792,9 @@ async def create_ap_invoice_record(
                 default_purchase_account,
             )
         ]
-    header_vat_code = await validate_native_vat_codes_for_document(session, client_id, header_vat_code, lines, "Purchase invoice")
+    header_vat_code = await validate_native_vat_codes_for_document(session, client_id, header_vat_code, lines, "Purchase invoice", invoice_date, "purchase")
+    if header_vat_code == "NO VAT":
+        normalize_document_header_outside_vat_period(payload)
     totals = validate_ap_document_totals(payload, lines, "Purchase invoice")
     now = utc_now_iso()
     status = "awaiting_approval" if bool(ap_settings.get("approval_required", True)) else "approved"
@@ -11104,7 +11977,9 @@ async def create_ar_invoice_record(session: AsyncSession, client_id: str, payloa
     lines = [ar_line_values(line, default_account) for line in (payload.get("lines") or [])]
     if not lines:
         lines = [ar_line_values({"description": payload.get("description") or invoice_number, "net_amount": payload.get("net_amount"), "vat_amount": payload.get("vat_amount"), "gross_amount": payload.get("gross_amount"), "vat_code": payload.get("vat_code")}, default_account)]
-    header_vat_code = await validate_native_vat_codes_for_document(session, client_id, payload.get("vat_code"), lines, "Sales invoice")
+    header_vat_code = await validate_native_vat_codes_for_document(session, client_id, payload.get("vat_code"), lines, "Sales invoice", invoice_date, "sales")
+    if header_vat_code == "NO VAT":
+        normalize_document_header_outside_vat_period(payload)
     totals = validate_ar_document_totals(payload, lines, "Sales invoice")
     now = utc_now_iso()
     status = "awaiting_approval" if bool(ar_settings.get("approval_required", True)) else "approved"
@@ -11158,8 +12033,8 @@ def sales_submission_fields(submission: dict, reviewed_fields: Optional[dict] = 
                 "vat_code": str(line.get("vat_code") or source.get("vat_code") or "").strip(),
                 "vat_amount": str(line.get("vat_amount") or line.get("vat") or "").strip(),
                 "gross_amount": str(line.get("gross_amount") or line.get("gross") or line.get("total") or "").strip(),
-                "nominal_account_code": str(line.get("nominal_account_code") or line.get("sales_account_code") or line.get("account_code") or line.get("category") or source.get("sales_account_code") or source.get("category") or "").strip(),
-                "sales_account_code": str(line.get("sales_account_code") or line.get("nominal_account_code") or line.get("account_code") or line.get("category") or source.get("sales_account_code") or source.get("category") or "").strip(),
+                "nominal_account_code": str(line.get("nominal_account_code") or line.get("sales_nominal_code") or line.get("sales_nominal") or line.get("sales_account_code") or line.get("account_code") or line.get("category") or source.get("sales_nominal_code") or source.get("sales_nominal") or source.get("sales_account_code") or source.get("category") or "").strip(),
+                "sales_account_code": str(line.get("sales_account_code") or line.get("sales_nominal_code") or line.get("sales_nominal") or line.get("nominal_account_code") or line.get("account_code") or line.get("category") or source.get("sales_nominal_code") or source.get("sales_nominal") or source.get("sales_account_code") or source.get("category") or "").strip(),
             }
         )
     if not normalized_lines and (source.get("net_amount") or source.get("net") or source.get("gross_amount") or source.get("total") or submission.get("amount")):
@@ -11172,17 +12047,23 @@ def sales_submission_fields(submission: dict, reviewed_fields: Optional[dict] = 
                 "vat_code": str(source.get("vat_code") or "").strip(),
                 "vat_amount": str(source.get("vat_amount") or source.get("vat") or "").strip(),
                 "gross_amount": str(source.get("gross_amount") or source.get("gross") or source.get("total") or submission.get("amount") or "").strip(),
-                "nominal_account_code": str(source.get("nominal_account_code") or source.get("sales_account_code") or source.get("category") or "").strip(),
-                "sales_account_code": str(source.get("sales_account_code") or source.get("nominal_account_code") or source.get("category") or "").strip(),
+                "nominal_account_code": str(source.get("nominal_account_code") or source.get("sales_nominal_code") or source.get("sales_nominal") or source.get("sales_account_code") or source.get("category") or "").strip(),
+                "sales_account_code": str(source.get("sales_account_code") or source.get("sales_nominal_code") or source.get("sales_nominal") or source.get("nominal_account_code") or source.get("category") or "").strip(),
             }
         )
     try:
         payment_terms_days = int(source.get("payment_terms_days") or 30)
     except (TypeError, ValueError):
         payment_terms_days = 30
+    wording = " ".join(str(source.get(key) or "") for key in ("document_type", "description", "invoice_number", "reference", "ocr_text", "raw_text")).lower()
+    wording += " " + " ".join(str(line.get("description") or "") for line in normalized_lines).lower()
+    negative_document = any(money(source.get(key)) < 0 for key in ("gross_amount", "gross", "total", "net_amount", "net", "vat_amount", "vat")) or any(any(money(line.get(key)) < 0 for key in ("gross_amount", "net_amount", "vat_amount")) for line in normalized_lines)
+    credit_wording = any(term in wording for term in ("refund", "credit note", "credit memo", "reversal", "returned goods"))
+    explicit_type = str(source.get("document_type") or submission.get("ai_document_type") or "").strip().lower()
+    document_type = "customer_credit_note" if negative_document or credit_wording or explicit_type in {"customer_credit_note", "customer_credit", "sales_credit_note"} else "sales_invoice"
     fields = {
         "customer_id": str(source.get("customer_id") or "").strip(),
-        "customer_name": str(source.get("customer_name") or source.get("customer_business_name") or source.get("buyer_name") or source.get("bill_to_name") or source.get("invoice_to_name") or source.get("sold_to_name") or source.get("business_name") or "").strip(),
+        "customer_name": str(source.get("customer_name") or source.get("customer_business_name") or source.get("buyer_name") or source.get("bill_to_name") or source.get("invoice_to_name") or source.get("sold_to_name") or source.get("business_name") or source.get("vendor_name") or source.get("supplier_name") or "").strip(),
         "customer_email": str(source.get("customer_email") or source.get("email") or "").strip(),
         "customer_vat_number": str(source.get("customer_vat_number") or source.get("vat_number") or "").strip(),
         "customer_address": source.get("customer_address") or source.get("address") or "",
@@ -11198,7 +12079,7 @@ def sales_submission_fields(submission: dict, reviewed_fields: Optional[dict] = 
         "vat_amount": str(source.get("vat_amount") or source.get("vat") or "").strip(),
         "gross_amount": str(source.get("gross_amount") or source.get("gross") or source.get("total") or submission.get("amount") or "").strip(),
         "vat_code": str(source.get("vat_code") or "").strip(),
-        "sales_account_code": str(source.get("sales_account_code") or source.get("nominal_account_code") or source.get("category") or "").strip(),
+        "sales_account_code": str(source.get("sales_account_code") or source.get("sales_nominal_code") or source.get("sales_nominal") or source.get("nominal_account_code") or source.get("category") or "").strip(),
         "description": str(source.get("description") or submission.get("description") or "").strip(),
         "lines": normalized_lines,
         "line_items": normalized_lines,
@@ -11208,10 +12089,25 @@ def sales_submission_fields(submission: dict, reviewed_fields: Optional[dict] = 
         "correction_history": source.get("correction_history") if isinstance(source.get("correction_history"), list) else [],
         "low_confidence_warnings": source.get("low_confidence_warnings") if isinstance(source.get("low_confidence_warnings"), list) else [],
         "reviewer_notes": str(source.get("reviewer_notes") or "").strip(),
-        "document_type": "customer_credit_note" if str(source.get("document_type") or "").strip().lower() in {"customer_credit_note", "customer_credit", "sales_credit_note"} else "sales_invoice",
+        "document_type": document_type,
         "document_direction": "sales",
         "accounting_destination": "epos_native_ar",
     }
+    fields["customer_code"] = fields["customer_reference"]
+    fields["reference"] = str(source.get("reference") or fields["invoice_number"] or "").strip()
+    fields["sales_nominal_code"] = fields["sales_account_code"]
+    for line in normalized_lines:
+        line["net"] = line["net_amount"]
+        line["vat"] = line["vat_amount"]
+        line["total"] = line["gross_amount"]
+        line["sales_nominal_code"] = line["sales_account_code"]
+    if explicit_type and explicit_type not in {document_type, "sales", "customer_credit", "sales_credit_note"}:
+        fields["low_confidence_warnings"].append("Document type indicators conflict; review the suggested sales document type.")
+        try:
+            existing_type_confidence = float(fields["field_confidence_scores"].get("document_type") or 1)
+        except (TypeError, ValueError):
+            existing_type_confidence = 1
+        fields["field_confidence_scores"]["document_type"] = min(existing_type_confidence, 0.55)
     return fields
 
 
@@ -11394,8 +12290,26 @@ def append_submission_route_event(existing_value: Optional[str], event: dict) ->
     return json.dumps(history)
 
 
+def submission_document_type(route: str, amount: Any = None, amount_side: Optional[str] = None) -> str:
+    route = str(route or "").strip().lower()
+    side = str(amount_side or "").strip().lower()
+    negative = money(amount) < Decimal("0.00")
+    if route == "sales":
+        is_credit = negative or side in {"credit", "refund", "outgoing", "money_out", "negative"}
+    else:
+        is_credit = negative or side in {"credit", "refund", "incoming", "money_in", "negative"}
+    if route == "sales":
+        return "customer_credit_note" if is_credit else "sales_invoice"
+    if route == "purchase":
+        return "supplier_credit_note" if is_credit else "purchase_invoice"
+    return "unknown"
+
+
 def submission_route(submission: dict, coding_fields: Optional[dict] = None) -> str:
     fields = coding_fields or {}
+    source_route = str(submission.get("source_route") or "").strip().lower()
+    if source_route in {"purchase", "sales"}:
+        return source_route
     stored_type = str(submission.get("type") or "").strip().lower()
     stored_direction = str(submission.get("document_direction") or "").strip().lower()
     if stored_type == "sales" or stored_direction == "sales":
@@ -11441,7 +12355,7 @@ def accounting_publish_contract(accounting_publish: Optional[dict]) -> dict:
     entity = accounting_publish.get("entity")
     destination = accounting_publish.get("destination")
     if not destination:
-        destination = "accounts_receivable" if entity == "SalesInvoice" else "accounts_payable" if entity == "PurchaseInvoice" else ""
+        destination = "accounts_receivable" if entity in {"SalesInvoice", "CustomerCreditNote"} else "accounts_payable" if entity == "PurchaseInvoice" else ""
     return {
         **accounting_publish,
         "provider": accounting_publish.get("provider") or "epos_native",
@@ -11456,7 +12370,7 @@ def accounting_publish_contract(accounting_publish: Optional[dict]) -> dict:
 def submitted_item_publish_response(accounting_publish: dict, invoice: Optional[dict] = None, already_published: bool = False) -> dict:
     contract = accounting_publish_contract(accounting_publish)
     entity = contract.get("entity")
-    route = "sales" if entity == "SalesInvoice" else "purchase"
+    route = "sales" if entity in {"SalesInvoice", "CustomerCreditNote"} else "purchase"
     destination = "accounts_receivable" if route == "sales" else "accounts_payable"
     publish_status = "published_to_ar" if route == "sales" else "published_to_ap"
     invoice_id_key = "ar_invoice_id" if route == "sales" else "ap_invoice_id"
@@ -11486,6 +12400,12 @@ async def create_ap_supplier(
     name = str(payload.get("name") or payload.get("trading_name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Supplier name is required.")
+    requested_code = str(payload.get("supplier_code") or "").strip()
+    if requested_code.upper() in SYSTEM_AP_SUPPLIER_BY_CODE:
+        raise HTTPException(status_code=400, detail="This supplier code is reserved for a protected system supplier.")
+    supplier_category = str(payload.get("supplier_category") or payload.get("supplierCategory") or "Trade").strip()
+    if supplier_category not in AP_USER_SUPPLIER_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Choose a valid supplier category.")
     existing_contact = await one(
         session,
         select(accounting_contacts).where(
@@ -11528,6 +12448,8 @@ async def create_ap_supplier(
         "client_id": client_id,
         "contact_id": contact["id"],
         "supplier_code": str(payload.get("supplier_code") or contact.get("account_code") or "").strip(),
+        "is_system_supplier": False,
+        "supplier_category": supplier_category,
         "trading_name": str(payload.get("trading_name") or name).strip(),
         "phone": str(payload.get("phone") or "").strip(),
         "website": str(payload.get("website") or "").strip(),
@@ -11540,6 +12462,7 @@ async def create_ap_supplier(
         "bank_name": str(payload.get("bank_name") or "").strip(),
         "bank_sort_code": str(payload.get("bank_sort_code") or "").strip(),
         "bank_account_number": str(payload.get("bank_account_number") or "").strip(),
+        "payment_reference": str(payload.get("payment_reference") or "").strip(),
         "cis_registered": bool(payload.get("cis_registered", False)),
         "reverse_charge": bool(payload.get("reverse_charge", False)),
         "status": "active" if bool(payload.get("active", True)) else "inactive",
@@ -11568,7 +12491,9 @@ async def list_ap_suppliers(
     client = await get_client_or_404(session, client_id)
     if not is_native_accounting_client(client):
         raise HTTPException(status_code=400, detail="Enable EPOS native accounting before viewing suppliers.")
-    return await native_ap_supplier_page(session, client_id, page, page_size, search, status)
+    payload = await native_ap_supplier_page(session, client_id, page, page_size, search, status)
+    await session.commit()
+    return payload
 
 
 @api.put("/admin/accounting/clients/{client_id}/ap/suppliers/{supplier_id}")
@@ -11581,6 +12506,36 @@ async def update_ap_supplier(
 ):
     await get_client_or_404(session, client_id)
     supplier = await get_ap_supplier_or_404(session, client_id, supplier_id)
+    if bool(supplier.get("is_system_supplier")):
+        allowed_fields = {"bank_name", "bank_sort_code", "bank_account_number", "payment_reference", "notes"}
+        protected_fields = sorted(set(payload) - allowed_fields)
+        if protected_fields:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Protected system supplier fields cannot be changed: {', '.join(protected_fields)}.",
+            )
+        values = {
+            "bank_name": str(payload.get("bank_name", supplier.get("bank_name") or "") or "").strip(),
+            "bank_sort_code": str(payload.get("bank_sort_code", supplier.get("bank_sort_code") or "") or "").strip(),
+            "bank_account_number": str(payload.get("bank_account_number", supplier.get("bank_account_number") or "") or "").strip(),
+            "payment_reference": str(payload.get("payment_reference", supplier.get("payment_reference") or "") or "").strip(),
+            "notes": str(payload.get("notes", supplier.get("notes") or "") or "").strip(),
+            "status": "active",
+            "updated_at": utc_now_iso(),
+        }
+        await session.execute(update(accounting_ap_supplier_profiles).where(accounting_ap_supplier_profiles.c.id == supplier_id).values(**values))
+        await session.execute(update(accounting_contacts).where(accounting_contacts.c.id == supplier["contact_id"]).values(active=True, updated_at=values["updated_at"]))
+        await add_accounting_audit(session, client_id, user.get("id"), "system_supplier_payment_details_updated", "accounts_payable", supplier_id, {"new": values})
+        await session.commit()
+        return {"ok": True, "protected": True}
+    if payload.get("is_system_supplier") or payload.get("isSystemSupplier"):
+        raise HTTPException(status_code=400, detail="Only application initialisation can create protected system suppliers.")
+    requested_code = str(payload.get("supplier_code", supplier.get("supplier_code") or "") or "").strip()
+    if requested_code.upper() in SYSTEM_AP_SUPPLIER_BY_CODE:
+        raise HTTPException(status_code=400, detail="This supplier code is reserved for a protected system supplier.")
+    requested_category = str(payload.get("supplier_category", supplier.get("supplier_category") or "Trade") or "Trade")
+    if requested_category not in AP_USER_SUPPLIER_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Choose a valid supplier category.")
     contact_values = {}
     if "name" in payload or "trading_name" in payload:
         contact_values["name"] = str(payload.get("name") or payload.get("trading_name") or "").strip()
@@ -11607,9 +12562,11 @@ async def update_ap_supplier(
         "bank_name": str(payload.get("bank_name", supplier.get("bank_name") or "") or "").strip(),
         "bank_sort_code": str(payload.get("bank_sort_code", supplier.get("bank_sort_code") or "") or "").strip(),
         "bank_account_number": str(payload.get("bank_account_number", supplier.get("bank_account_number") or "") or "").strip(),
+        "payment_reference": str(payload.get("payment_reference", supplier.get("payment_reference") or "") or "").strip(),
         "cis_registered": bool(payload.get("cis_registered", supplier.get("cis_registered", False))),
         "reverse_charge": bool(payload.get("reverse_charge", supplier.get("reverse_charge", False))),
         "status": str(payload.get("status") or ("active" if bool(payload.get("active", supplier.get("status") == "active")) else "inactive")),
+        "supplier_category": str(payload.get("supplier_category", supplier.get("supplier_category") or "Trade") or "Trade"),
         "notes": str(payload.get("notes", supplier.get("notes") or "") or "").strip(),
         "updated_at": utc_now_iso(),
     }
@@ -11639,6 +12596,19 @@ def filter_ledger_rows(rows: list[dict], search: Optional[str], status: Optional
     return filtered
 
 
+def apply_subledger_line_balances(rows: list[dict]) -> Decimal:
+    """Expose each document's outstanding amount and aggregate open items."""
+    account_balance = Decimal("0.00")
+    for row in rows:
+        line_balance = Decimal("0.00") if str(row.get("status") or "").strip().lower() in {"void", "reversed", "cancelled"} else money(row.get("invoice_balance"))
+        row["line_balance"] = money_str(line_balance)
+        # Retain the response alias for older consumers while the ledger UI
+        # presents this value explicitly as a line balance.
+        row["account_balance"] = money_str(line_balance)
+        account_balance += line_balance
+    return money(account_balance)
+
+
 @api.get("/admin/accounting/clients/{client_id}/ap/suppliers/{supplier_id}/ledger")
 async def get_ap_supplier_ledger(
     client_id: str,
@@ -11657,11 +12627,16 @@ async def get_ap_supplier_ledger(
     await get_client_or_404(session, client_id)
     supplier = await get_ap_supplier_or_404(session, client_id, supplier_id)
     page, page_size = pagination_params(page, page_size)
+    conn = await session.connection()
+    await conn.run_sync(metadata.create_all)
     invoices = await many(session, select(accounting_ap_invoices).where(accounting_ap_invoices.c.client_id == client_id, accounting_ap_invoices.c.supplier_id == supplier_id))
     invoice_ids = [str(row.get("id")) for row in invoices]
     allocations = await many(session, select(accounting_ap_payment_allocations).where(accounting_ap_payment_allocations.c.invoice_id.in_(invoice_ids))) if invoice_ids else []
+    credit_allocations = await many(session, select(accounting_ap_credit_allocations).where(accounting_ap_credit_allocations.c.invoice_id.in_(invoice_ids))) if invoice_ids else []
+    credit_allocations = [{**row, "allocation_kind": "credit_note"} for row in credit_allocations]
+    all_invoice_allocations = [*allocations, *credit_allocations]
     allocated_by_invoice: dict[str, Decimal] = {}
-    for allocation in allocations:
+    for allocation in all_invoice_allocations:
         invoice_id = str(allocation.get("invoice_id") or "")
         allocated_by_invoice[invoice_id] = allocated_by_invoice.get(invoice_id, Decimal("0.00")) + money(allocation.get("amount"))
     payments = await many(session, select(accounting_ap_payments).where(accounting_ap_payments.c.client_id == client_id, accounting_ap_payments.c.supplier_id == supplier_id))
@@ -11672,10 +12647,21 @@ async def get_ap_supplier_ledger(
         payment_id = str(allocation.get("payment_id") or "")
         allocated_by_payment[payment_id] = allocated_by_payment.get(payment_id, Decimal("0.00")) + money(allocation.get("amount"))
     credits = await many(session, select(accounting_ap_credit_notes).where(accounting_ap_credit_notes.c.client_id == client_id, accounting_ap_credit_notes.c.supplier_id == supplier_id))
+    invoice_by_id = {str(row.get("id")): row for row in invoices}
+    payment_by_id = {str(row.get("id")): row for row in payments}
+    credit_by_id = {str(row.get("id")): row for row in credits}
+    all_invoice_allocations = [{
+        **row,
+        "allocation_kind": row.get("allocation_kind") or "payment",
+        "source_type": "credit_note" if row.get("allocation_kind") == "credit_note" else "payment",
+        "source_reference": (credit_by_id.get(str(row.get("credit_note_id"))) or {}).get("credit_note_number") if row.get("allocation_kind") == "credit_note" else (payment_by_id.get(str(row.get("payment_id"))) or {}).get("reference"),
+        "source_date": (credit_by_id.get(str(row.get("credit_note_id"))) or {}).get("credit_note_date") if row.get("allocation_kind") == "credit_note" else (payment_by_id.get(str(row.get("payment_id"))) or {}).get("payment_date"),
+        "target_reference": (invoice_by_id.get(str(row.get("invoice_id"))) or {}).get("invoice_number"),
+    } for row in all_invoice_allocations]
     rows: list[dict] = []
     for invoice in invoices:
         item = serialize_ap_invoice(invoice, [], supplier)
-        invoice_allocations = [row for row in allocations if str(row.get("invoice_id") or "") == str(invoice.get("id"))]
+        invoice_allocations = [row for row in all_invoice_allocations if str(row.get("invoice_id") or "") == str(invoice.get("id"))]
         values = invoice_allocation_values(invoice, allocated_by_invoice.get(str(invoice.get("id")), Decimal("0.00")))
         rows.append(
             {
@@ -11688,6 +12674,7 @@ async def get_ap_supplier_ledger(
                 "reference": invoice.get("invoice_number") or invoice.get("reference") or "",
                 "description": invoice.get("description") or invoice.get("reference") or "",
                 **values,
+                "payment_value": money_str(-money(values["paid_allocated"])),
                 "attachment_status": item.get("source_document_status"),
                 "can_edit": bool(item.get("editable")),
                 "can_approve": values["status"] == "awaiting_approval",
@@ -11705,24 +12692,36 @@ async def get_ap_supplier_ledger(
     for payment in payments:
         allocated = allocated_by_payment.get(str(payment.get("id")), Decimal("0.00"))
         payment_amount = money(payment.get("amount"))
-        unallocated = payment_amount - allocated
+        unallocated = Decimal("0.00") if str(payment.get("status") or "").lower() in {"void", "reversed"} else max(abs(payment_amount) - allocated, Decimal("0.00"))
         payment_status = "awaiting_approval" if str(payment.get("status") or "").lower() == "draft" else str(payment.get("status") or "")
-        payment_allocation_rows = [row for row in payment_allocations if str(row.get("payment_id") or "") == str(payment.get("id"))]
+        payment_allocation_rows = [{
+            **row,
+            "allocation_kind": "payment",
+            "source_type": "payment",
+            "source_reference": payment.get("reference"),
+            "source_date": payment.get("payment_date"),
+            "target_reference": (invoice_by_id.get(str(row.get("invoice_id"))) or {}).get("invoice_number") or (credit_by_id.get(str(row.get("credit_note_id"))) or {}).get("credit_note_number"),
+            "target_date": (invoice_by_id.get(str(row.get("invoice_id"))) or {}).get("invoice_date") or (credit_by_id.get(str(row.get("credit_note_id"))) or {}).get("credit_note_date"),
+        } for row in payment_allocations if str(row.get("payment_id") or "") == str(payment.get("id"))]
         rows.append(
             {
                 "id": payment.get("id"),
                 "transaction_id": payment.get("id"),
                 "date": payment.get("payment_date") or "",
-                "type": "payment",
-                "transaction_type": "payment",
+                "type": "payment_on_account" if unallocated > 0 and allocated == 0 else "payment",
+                "transaction_type": "payment_on_account" if unallocated > 0 and allocated == 0 else "payment",
                 "transaction_date": payment.get("payment_date") or "",
                 "reference": payment.get("reference") or "",
                 "description": payment.get("description") or payment.get("payment_method") or "",
                 "invoice_value": "0.00",
+                "payment_value": money_str(unallocated if payment_amount < 0 else -unallocated),
                 "paid_allocated": money_str(allocated),
-                "invoice_balance": "0.00",
+                "invoice_balance": money_str(unallocated if payment_amount < 0 else -unallocated),
+                "debit": money_str(abs(payment_amount)) if payment_amount < 0 else "0.00",
+                "credit": money_str(payment_amount) if payment_amount > 0 else "0.00",
                 "payment_amount": money_str(payment_amount),
                 "unallocated_amount": money_str(unallocated),
+                "on_account_amount": money_str(-unallocated if payment_amount < 0 else unallocated),
                 "status": payment_status,
                 "display_status": accounting_display_status(payment_status),
                 "attachment_status": "none",
@@ -11730,7 +12729,7 @@ async def get_ap_supplier_ledger(
                 "can_approve": payment_status == "awaiting_approval",
                 "can_post": False,
                 "can_unallocate": bool(payment_allocation_rows),
-                "is_over_allocated": allocated > payment_amount,
+                "is_over_allocated": allocated > abs(payment_amount),
                 "allocation_summary": {"allocation_count": len(payment_allocation_rows), "allocated_amount": money_str(allocated), "unallocated_amount": money_str(unallocated), "allocations": payment_allocation_rows},
                 "source_document_status": "none",
                 "source_document_missing": False,
@@ -11738,6 +12737,23 @@ async def get_ap_supplier_ledger(
         )
     for credit in credits:
         allocated = money(credit.get("gross_amount")) - money(credit.get("unallocated_amount"))
+        credit_allocation_rows = [{
+            **row,
+            "source_type": "credit_note",
+            "source_reference": credit.get("credit_note_number"),
+            "source_date": credit.get("credit_note_date"),
+            "target_reference": (invoice_by_id.get(str(row.get("invoice_id"))) or {}).get("invoice_number"),
+            "target_date": (invoice_by_id.get(str(row.get("invoice_id"))) or {}).get("invoice_date"),
+        } for row in credit_allocations if str(row.get("credit_note_id") or "") == str(credit.get("id"))]
+        credit_allocation_rows.extend([{
+            **row,
+            "allocation_kind": "payment",
+            "source_type": "payment",
+            "source_reference": (payment_by_id.get(str(row.get("payment_id"))) or {}).get("reference"),
+            "source_date": (payment_by_id.get(str(row.get("payment_id"))) or {}).get("payment_date"),
+            "target_reference": credit.get("credit_note_number"),
+            "target_date": credit.get("credit_note_date"),
+        } for row in payment_allocations if str(row.get("credit_note_id") or "") == str(credit.get("id"))])
         rows.append(
             {
                 "id": credit.get("id"),
@@ -11749,6 +12765,7 @@ async def get_ap_supplier_ledger(
                 "reference": credit.get("credit_note_number") or credit.get("reference") or "",
                 "description": credit.get("description") or credit.get("reference") or "",
                 "invoice_value": money_str(-money(credit.get("gross_amount"))),
+                "payment_value": money_str(allocated),
                 "paid_allocated": money_str(allocated),
                 "invoice_balance": money_str(-money(credit.get("unallocated_amount"))),
                 "status": credit.get("status") or "",
@@ -11757,27 +12774,141 @@ async def get_ap_supplier_ledger(
                 "can_edit": str(credit.get("status") or "") in AP_EDITABLE_STATUSES,
                 "can_approve": str(credit.get("status") or "") == "awaiting_approval",
                 "can_post": str(credit.get("status") or "") == "approved",
-                "can_unallocate": False,
+                "can_unallocate": bool(credit_allocation_rows),
                 "is_over_allocated": allocated > money(credit.get("gross_amount")),
-                "allocation_summary": {"allocated_amount": money_str(allocated), "unallocated_amount": money_str(money(credit.get("unallocated_amount")))},
+                "allocation_summary": {"allocation_count": len(credit_allocation_rows), "allocated_amount": money_str(allocated), "unallocated_amount": money_str(money(credit.get("unallocated_amount"))), "allocations": credit_allocation_rows},
                 "source_document_status": "none",
                 "source_document_missing": False,
             }
         )
+    net_supplier_balance = apply_subledger_line_balances(rows)
     rows = sorted(filter_ledger_rows(rows, search, status, type, date_from, date_to), key=lambda item: (str(item.get("date") or ""), str(item.get("reference") or "")), reverse=True)
     total = len(rows)
     page_rows = rows[(page - 1) * page_size : page * page_size]
     summary = {
         "visible_transaction_count": total,
         "invoice_value": money_str(sum((money(row.get("invoice_value")) for row in rows if row.get("type") == "invoice"), Decimal("0.00"))),
-        "invoice_balance": money_str(sum((money(row.get("invoice_balance")) for row in rows if row.get("type") == "invoice"), Decimal("0.00"))),
+        "invoice_balance": money_str(sum((money(row.get("invoice_balance")) for row in rows), Decimal("0.00"))),
         "outstanding": money_str(sum((money(row.get("invoice_balance")) for row in rows if row.get("type") == "invoice"), Decimal("0.00"))),
+        "on_account_balance": money_str(sum((money(row.get("on_account_amount")) for row in rows if str(row.get("type") or "").startswith("payment")), Decimal("0.00"))),
+        "net_supplier_balance": money_str(net_supplier_balance),
         "payments_credits_allocated": money_str(sum((money(row.get("paid_allocated")) for row in rows if row.get("type") in {"payment", "credit_note"}), Decimal("0.00"))),
         "supplier": supplier,
     }
     payload = paginated_payload(page_rows, page, page_size, total, summary)
     logger.info("AP supplier ledger payload client_id=%s supplier_id=%s rows=%s total=%s elapsed_ms=%s payload_bytes=%s", client_id, supplier_id, len(page_rows), total, int((time.perf_counter() - started) * 1000), approximate_payload_size(payload))
     return payload
+
+
+@api.get("/admin/accounting/clients/{client_id}/ap/suppliers/{supplier_id}/allocation-workspace")
+async def get_ap_supplier_allocation_workspace(client_id: str, supplier_id: str, user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    await get_client_or_404(session, client_id)
+    supplier = await get_ap_supplier_or_404(session, client_id, supplier_id)
+    conn = await session.connection()
+    await conn.run_sync(metadata.create_all)
+    invoices = await many(session, select(accounting_ap_invoices).where(accounting_ap_invoices.c.client_id == client_id, accounting_ap_invoices.c.supplier_id == supplier_id, accounting_ap_invoices.c.status.in_(["posted", "part_paid"]), accounting_ap_invoices.c.outstanding_amount != "0.00").order_by(accounting_ap_invoices.c.invoice_date.asc()))
+    credits = await many(session, select(accounting_ap_credit_notes).where(accounting_ap_credit_notes.c.client_id == client_id, accounting_ap_credit_notes.c.supplier_id == supplier_id, accounting_ap_credit_notes.c.status.in_(["posted", "part_paid"]), accounting_ap_credit_notes.c.unallocated_amount != "0.00").order_by(accounting_ap_credit_notes.c.credit_note_date.asc()))
+    payments = await many(session, select(accounting_ap_payments).where(accounting_ap_payments.c.client_id == client_id, accounting_ap_payments.c.supplier_id == supplier_id, accounting_ap_payments.c.status.in_(["posted", "part_allocated", "allocated"])).order_by(accounting_ap_payments.c.payment_date.asc()))
+    payment_ids = [str(row.get("id")) for row in payments]
+    allocations = await many(session, select(accounting_ap_payment_allocations).where(accounting_ap_payment_allocations.c.payment_id.in_(payment_ids))) if payment_ids else []
+    allocated_by_payment: dict[str, Decimal] = {}
+    for allocation in allocations:
+        key = str(allocation.get("payment_id") or "")
+        allocated_by_payment[key] = allocated_by_payment.get(key, Decimal("0.00")) + money(allocation.get("amount"))
+    credit_rows = [{"id": row.get("id"), "source_type": "credit_note", "reference": row.get("credit_note_number") or row.get("reference"), "date": row.get("credit_note_date"), "description": row.get("description"), "available_amount": money_str(money(row.get("unallocated_amount")))} for row in credits if money(row.get("unallocated_amount")) > 0]
+    for row in payments:
+        amount = money(row.get("amount"))
+        if amount <= 0:
+            continue
+        available = max(amount - allocated_by_payment.get(str(row.get("id")), Decimal("0.00")), Decimal("0.00"))
+        if available > 0:
+            credit_rows.append({"id": row.get("id"), "source_type": "payment", "reference": row.get("reference"), "date": row.get("payment_date"), "description": row.get("payment_method") or "Supplier payment", "available_amount": money_str(available)})
+    debit_rows = [{"id": row.get("id"), "reference": row.get("invoice_number") or row.get("reference"), "date": row.get("invoice_date"), "description": row.get("description"), "outstanding_amount": money_str(money(row.get("outstanding_amount")))} for row in invoices if money(row.get("outstanding_amount")) > 0]
+    return {"supplier": {"id": supplier_id, "name": supplier.get("trading_name")}, "credits": sorted(credit_rows, key=lambda row: (str(row.get("date") or ""), str(row.get("reference") or ""))), "debits": debit_rows, "summary": {"available_credits": money_str(sum((money(row.get("available_amount")) for row in credit_rows), Decimal("0.00"))), "outstanding_debits": money_str(sum((money(row.get("outstanding_amount")) for row in debit_rows), Decimal("0.00")))}}
+
+
+@api.post("/admin/accounting/clients/{client_id}/ap/suppliers/{supplier_id}/allocate-transactions")
+async def allocate_ap_supplier_transactions(client_id: str, supplier_id: str, payload: dict, user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    await get_client_or_404(session, client_id)
+    await get_ap_supplier_or_404(session, client_id, supplier_id)
+    conn = await session.connection()
+    await conn.run_sync(metadata.create_all)
+    requested_credits = [row for row in (payload.get("credits") or []) if money((row or {}).get("amount")) > 0]
+    requested_debits = [row for row in (payload.get("debits") or []) if money((row or {}).get("amount")) > 0]
+    credit_total = sum((money(row.get("amount")) for row in requested_credits), Decimal("0.00"))
+    debit_total = sum((money(row.get("amount")) for row in requested_debits), Decimal("0.00"))
+    if not requested_credits or not requested_debits or abs(credit_total - debit_total) > Decimal("0.01"):
+        raise HTTPException(status_code=400, detail="Selected credit and debit allocation totals must match.")
+    debit_ids = [str(row.get("id") or "") for row in requested_debits]
+    invoices = await many(session, select(accounting_ap_invoices).where(accounting_ap_invoices.c.client_id == client_id, accounting_ap_invoices.c.supplier_id == supplier_id, accounting_ap_invoices.c.id.in_(debit_ids)))
+    invoice_by_id = {str(row.get("id")): row for row in invoices}
+    for requested in requested_debits:
+        invoice = invoice_by_id.get(str(requested.get("id")))
+        if not invoice or money(requested.get("amount")) > money(invoice.get("outstanding_amount")):
+            raise HTTPException(status_code=400, detail=f"Debit allocation exceeds the outstanding balance for {requested.get('reference') or requested.get('id')}.")
+    sources: list[dict] = []
+    for requested in requested_credits:
+        source_id, source_type, requested_amount = str(requested.get("id") or ""), str(requested.get("source_type") or ""), money(requested.get("amount"))
+        if source_type == "payment":
+            source = await one(session, select(accounting_ap_payments).where(accounting_ap_payments.c.client_id == client_id, accounting_ap_payments.c.supplier_id == supplier_id, accounting_ap_payments.c.id == source_id))
+            existing = await many(session, select(accounting_ap_payment_allocations).where(accounting_ap_payment_allocations.c.payment_id == source_id))
+            available = max(money((source or {}).get("amount")) - sum((money(row.get("amount")) for row in existing), Decimal("0.00")), Decimal("0.00"))
+        elif source_type == "credit_note":
+            source = await one(session, select(accounting_ap_credit_notes).where(accounting_ap_credit_notes.c.client_id == client_id, accounting_ap_credit_notes.c.supplier_id == supplier_id, accounting_ap_credit_notes.c.id == source_id))
+            available = money((source or {}).get("unallocated_amount"))
+        else:
+            raise HTTPException(status_code=400, detail="Every selected credit must be a supplier payment or credit note.")
+        if not source or requested_amount > available:
+            raise HTTPException(status_code=400, detail=f"Credit allocation exceeds the available balance for {requested.get('reference') or source_id}.")
+        sources.append({"id": source_id, "source_type": source_type, "remaining": requested_amount, "source": source})
+    now, created = utc_now_iso(), []
+    for requested_debit in requested_debits:
+        invoice_id, debit_remaining = str(requested_debit.get("id")), money(requested_debit.get("amount"))
+        for source in sources:
+            if debit_remaining <= 0:
+                break
+            if source["remaining"] <= 0:
+                continue
+            amount = min(debit_remaining, source["remaining"])
+            if source["source_type"] == "payment":
+                allocation = {"id": new_id(), "client_id": client_id, "payment_id": source["id"], "invoice_id": invoice_id, "credit_note_id": None, "amount": money_str(amount), "created_at": now}
+                await session.execute(insert(accounting_ap_payment_allocations).values(**allocation))
+            else:
+                allocation = {"id": new_id(), "client_id": client_id, "supplier_id": supplier_id, "credit_note_id": source["id"], "invoice_id": invoice_id, "amount": money_str(amount), "created_at": now}
+                await session.execute(insert(accounting_ap_credit_allocations).values(**allocation))
+            created.append({**allocation, "source_type": source["source_type"]})
+            source["remaining"] -= amount
+            debit_remaining -= amount
+        invoice = invoice_by_id[invoice_id]
+        remaining = max(money(invoice.get("outstanding_amount")) - money(requested_debit.get("amount")), Decimal("0.00"))
+        await session.execute(update(accounting_ap_invoices).where(accounting_ap_invoices.c.id == invoice_id).values(outstanding_amount=money_str(remaining), status="paid" if remaining == 0 else "part_paid", updated_at=now))
+    for source in sources:
+        allocated_amount = money(next(row.get("amount") for row in requested_credits if str(row.get("id")) == source["id"])) - source["remaining"]
+        if source["source_type"] == "credit_note":
+            remaining = max(money(source["source"].get("unallocated_amount")) - allocated_amount, Decimal("0.00"))
+            await session.execute(update(accounting_ap_credit_notes).where(accounting_ap_credit_notes.c.id == source["id"]).values(unallocated_amount=money_str(remaining), status="paid" if remaining == 0 else "part_paid", updated_at=now))
+    await add_accounting_audit(session, client_id, user.get("id"), "supplier_transactions_allocated", "accounts_payable", supplier_id, {"allocation_count": len(created), "amount": money_str(credit_total), "allocations": created})
+    await session.commit()
+    return {"ok": True, "allocations": created, "total_allocated": money_str(credit_total)}
+
+
+@api.post("/admin/accounting/clients/{client_id}/ap/suppliers/{supplier_id}/credit-allocations/{allocation_id}/unallocate")
+async def unallocate_ap_supplier_credit(client_id: str, supplier_id: str, allocation_id: str, user: dict = Depends(require_admin), session: AsyncSession = Depends(get_db)):
+    allocation = await one(session, select(accounting_ap_credit_allocations).where(accounting_ap_credit_allocations.c.client_id == client_id, accounting_ap_credit_allocations.c.supplier_id == supplier_id, accounting_ap_credit_allocations.c.id == allocation_id))
+    if not allocation:
+        raise HTTPException(status_code=404, detail="Supplier credit allocation not found.")
+    invoice = await get_ap_invoice_or_404(session, client_id, str(allocation.get("invoice_id")))
+    credit = await one(session, select(accounting_ap_credit_notes).where(accounting_ap_credit_notes.c.client_id == client_id, accounting_ap_credit_notes.c.id == allocation.get("credit_note_id")))
+    amount, now = money(allocation.get("amount")), utc_now_iso()
+    invoice_outstanding = min(money(invoice.get("gross_amount")), money(invoice.get("outstanding_amount")) + amount)
+    await session.execute(update(accounting_ap_invoices).where(accounting_ap_invoices.c.id == invoice.get("id")).values(outstanding_amount=money_str(invoice_outstanding), status="posted" if invoice_outstanding == money(invoice.get("gross_amount")) else "part_paid", updated_at=now))
+    if credit:
+        credit_available = min(money(credit.get("gross_amount")), money(credit.get("unallocated_amount")) + amount)
+        await session.execute(update(accounting_ap_credit_notes).where(accounting_ap_credit_notes.c.id == credit.get("id")).values(unallocated_amount=money_str(credit_available), status="posted" if credit_available == money(credit.get("gross_amount")) else "part_paid", updated_at=now))
+    await session.execute(delete(accounting_ap_credit_allocations).where(accounting_ap_credit_allocations.c.id == allocation_id))
+    await add_accounting_audit(session, client_id, user.get("id"), "supplier_credit_unallocated", "accounts_payable", supplier_id, {"allocation_id": allocation_id, "amount": money_str(amount)})
+    await session.commit()
+    return {"ok": True}
 
 
 @api.post("/admin/accounting/clients/{client_id}/ap/invoices")
@@ -11898,9 +13029,11 @@ async def update_ap_invoice(
     default_purchase_account = supplier.get("default_purchase_account") or settings_row.get("default_purchase_account") or "5000"
     header_vat_code = vat_code_value(first_present(payload, "vat_code", "tax_code", "tax_rate_code") or invoice.get("vat_code"))
     lines = [ap_line_values(line, default_purchase_account) for line in raw_lines]
-    header_vat_code = await validate_native_vat_codes_for_document(session, client_id, header_vat_code, lines, "Purchase invoice")
-    totals = validate_ap_document_totals({**invoice, **payload}, lines, "Purchase invoice")
     invoice_date = parse_date_or_today(payload.get("invoice_date") or payload.get("date") or invoice.get("invoice_date")).isoformat()
+    header_vat_code = await validate_native_vat_codes_for_document(session, client_id, header_vat_code, lines, "Purchase invoice", invoice_date, "purchase")
+    if header_vat_code == "NO VAT":
+        normalize_document_header_outside_vat_period(payload)
+    totals = validate_ap_document_totals({**invoice, **payload}, lines, "Purchase invoice")
     due_date = parse_date_or_today(payload.get("due_date") or invoice.get("due_date")).isoformat()
     try:
         payment_terms_days = int(payload.get("payment_terms_days", invoice.get("payment_terms_days") or supplier.get("payment_terms_days") or 30) or 30)
@@ -12029,16 +13162,18 @@ async def create_ap_payment_record(
         raise HTTPException(status_code=400, detail="Enable EPOS native accounting before adding supplier payments.")
     supplier = await get_ap_supplier_or_404(session, client_id, str(payload.get("supplier_id") or ""))
     amount = money(payload.get("amount") or payload.get("amount_paid") or payload.get("payment_amount"))
-    if amount <= 0:
-        raise HTTPException(status_code=400, detail="Payment amount must be greater than zero.")
+    if amount == 0:
+        raise HTTPException(status_code=400, detail="Payment amount must not be zero. Use a negative amount for a supplier refund.")
+    posting_amount = abs(amount)
+    is_refund = amount < 0
     settings_row = await ensure_accounting_settings(session, client_id)
     ap_settings = await ensure_ap_settings(session, client_id)
     accounts = await ensure_native_accounting_client(session, client_id)
     contact = await one(session, select(accounting_contacts).where(accounting_contacts.c.id == supplier.get("contact_id")))
-    bank_account_code = str(payload.get("bank_account_code") or settings_row.get("default_bank_account") or "").strip()
+    bank_account_code = str(payload.get("bank_account_code") or "").strip()
     if not bank_account_code:
         raise HTTPException(status_code=400, detail="Bank account is required before posting a supplier payment.")
-    bank = find_native_account(accounts, bank_account_code, "1200")
+    bank = require_native_bank_account(accounts, bank_account_code)
     creditors = find_native_account(accounts, settings_row.get("default_creditors_control_account"), "2000")
     payment_date = parse_date_or_today(payload.get("payment_date")).isoformat()
     reference = str(payload.get("reference") or f"Payment {payment_date}").strip()
@@ -12052,7 +13187,7 @@ async def create_ap_payment_record(
             allocation = {"id": new_id(), "client_id": client_id, "payment_id": payment_id, "invoice_id": requested.get("invoice_id"), "credit_note_id": requested.get("credit_note_id"), "amount": money_str(money(requested.get("amount"))), "created_at": now}
             await session.execute(insert(accounting_ap_payment_allocations).values(**allocation)); pending_allocations.append(allocation)
         await add_accounting_audit(session, client_id, actor_id, "supplier_payment_created", "accounts_payable", payment_id, {"status": "awaiting_approval", "amount": money_str(amount)})
-        return {"payment": serialize_ap_payment(row, pending_allocations, supplier), "allocations": pending_allocations, "journal": {}, "unallocated_amount": money_str(amount)}
+        return {"payment": serialize_ap_payment(row, pending_allocations, supplier), "allocations": pending_allocations, "journal": {}, "unallocated_amount": money_str(posting_amount)}
     journal = await post_native_journal(
         session,
         client_id=client_id,
@@ -12060,10 +13195,10 @@ async def create_ap_payment_record(
         source_id="pending",
         entry_date=payment_date,
         reference=reference,
-        description=f"Supplier payment {supplier.get('trading_name') or contact.get('name')}",
+        description=f"Supplier {'refund' if is_refund else 'payment'} {supplier.get('trading_name') or contact.get('name')}",
         lines=[
-            {"account": creditors, "contact": contact, "debit": money_str(amount), "credit": "0.00", "description": reference},
-            {"account": bank, "contact": contact, "debit": "0.00", "credit": money_str(amount), "description": reference},
+            {"account": creditors, "contact": contact, "debit": money_str(posting_amount) if not is_refund else "0.00", "credit": money_str(posting_amount) if is_refund else "0.00", "description": reference},
+            {"account": bank, "contact": contact, "debit": money_str(posting_amount) if is_refund else "0.00", "credit": money_str(posting_amount) if not is_refund else "0.00", "description": reference},
         ],
         actor_id=actor_id,
     )
@@ -12084,8 +13219,9 @@ async def create_ap_payment_record(
         "updated_at": now,
     }
     await session.execute(insert(accounting_ap_payments).values(**row))
-    remaining = amount
-    invoice_ids = [str(item.get("invoice_id")) for item in (payload.get("allocations") or []) if item.get("invoice_id")]
+    remaining = posting_amount
+    allocation_target = str(payload.get("allocation_target") or ("selected" if payload.get("allocations") else "on_account")).strip().lower()
+    invoice_ids = [] if is_refund else [str(item.get("invoice_id")) for item in (payload.get("allocations") or []) if item.get("invoice_id")]
     if invoice_ids:
         invoices = await many(
             session,
@@ -12096,13 +13232,15 @@ async def create_ap_payment_record(
                 accounting_ap_invoices.c.status.in_(["posted", "part_paid"]),
             ),
         )
-    else:
+    elif allocation_target == "oldest" and not is_refund:
         invoices = await many(
             session,
             select(accounting_ap_invoices)
             .where(accounting_ap_invoices.c.client_id == client_id, accounting_ap_invoices.c.supplier_id == supplier["id"], accounting_ap_invoices.c.status.in_(["posted", "part_paid"]), accounting_ap_invoices.c.outstanding_amount != "0.00")
             .order_by(accounting_ap_invoices.c.due_date.asc(), accounting_ap_invoices.c.invoice_date.asc()),
         )
+    else:
+        invoices = []
     allocation_by_invoice = {str(item.get("invoice_id")): money(item.get("amount")) for item in (payload.get("allocations") or []) if item.get("invoice_id")}
     allocations = []
     for invoice in invoices:
@@ -12149,8 +13287,23 @@ async def post_ap_invoice(
     supplier = await get_ap_supplier_or_404(session, client_id, str(invoice.get("supplier_id")))
     contact = await one(session, select(accounting_contacts).where(accounting_contacts.c.id == supplier.get("contact_id")))
     lines = await many(session, select(accounting_ap_invoice_lines).where(accounting_ap_invoice_lines.c.invoice_id == invoice_id).order_by(accounting_ap_invoice_lines.c.line_number.asc()))
-    await validate_native_vat_codes_for_document(session, client_id, invoice.get("vat_code"), lines, "Purchase invoice")
+    await validate_native_vat_codes_for_document(session, client_id, invoice.get("vat_code"), lines, "Purchase invoice", invoice.get("invoice_date"), "purchase")
     validate_ap_document_totals(invoice, lines, "Purchase invoice")
+    vat_context = await late_invoice_vat_context(session, client_id, str(invoice.get("invoice_date") or ""), invoice.get("vat_amount"))
+    if vat_context and vat_context.get("requires_reopen"):
+        raise HTTPException(status_code=409, detail={
+            "code": "vat_period_locked",
+            "message": "This invoice belongs to a locked VAT period that has not been closed. Reopen that period before posting.",
+            "original_period": serialize_vat_period(vat_context["original_period"]),
+        })
+    if vat_context and not bool(payload.get("confirm_prior_period_vat_adjustment")):
+        raise HTTPException(status_code=409, detail={
+            "code": "prior_period_vat_adjustment_confirmation",
+            "message": "The invoice date belongs to a closed VAT period. Create the recommended VAT adjustment automatically in the current open period?",
+            "original_period": serialize_vat_period(vat_context["original_period"]),
+            "reported_period": serialize_vat_period(vat_context["reported_period"]),
+            "vat_amount": money_str(money(invoice.get("vat_amount"))),
+        })
     journal_lines = []
     for line in lines:
         amount = money(line.get("net_amount"))
@@ -12169,7 +13322,7 @@ async def post_ap_invoice(
         client_id=client_id,
         source_type="ap_invoice",
         source_id=invoice_id,
-        entry_date=invoice.get("invoice_date"),
+        entry_date=vat_context["posting_date"] if vat_context else invoice.get("invoice_date"),
         reference=invoice.get("invoice_number") or invoice_id,
         description=f"Purchase invoice {invoice.get('invoice_number')}",
         lines=journal_lines,
@@ -12179,8 +13332,28 @@ async def post_ap_invoice(
     await session.execute(
         update(accounting_ap_invoices)
         .where(accounting_ap_invoices.c.id == invoice_id)
-        .values(status="posted", posted_journal_id=journal.get("id"), posted_by=user.get("id"), posted_at=now, approved_by=invoice.get("approved_by") or user.get("id"), approved_at=invoice.get("approved_at") or now, updated_at=now)
+        .values(
+            status="posted",
+            posted_journal_id=journal.get("id"),
+            posting_date=vat_context["posting_date"] if vat_context else invoice.get("invoice_date"),
+            vat_effective_date=vat_context["posting_date"] if vat_context else invoice.get("invoice_date"),
+            vat_treatment="prior_period_correction" if vat_context else "normal",
+            original_vat_period_id=vat_context["original_period"].get("id") if vat_context else None,
+            reported_vat_period_id=vat_context["reported_period"].get("id") if vat_context else None,
+            posted_by=user.get("id"),
+            posted_at=now,
+            approved_by=invoice.get("approved_by") or user.get("id"),
+            approved_at=invoice.get("approved_at") or now,
+            updated_at=now,
+        )
     )
+    vat_adjustment = None
+    if vat_context:
+        vat_adjustment = await apply_confirmed_late_invoice_vat_adjustment(
+            session, client_id, "ap_invoice", invoice_id, str(invoice.get("invoice_number") or invoice_id),
+            str(invoice.get("vat_code") or ""), invoice.get("net_amount"), invoice.get("vat_amount"), invoice.get("gross_amount"),
+            vat_context, user.get("id"),
+        )
     payment_result = None
     if bool(payload.get("mark_as_paid")):
         paid_amount = payload.get("amount_paid") or payload.get("payment_amount") or payload.get("amount")
@@ -12228,6 +13401,7 @@ async def post_ap_invoice(
         "status": "posted",
         "detail": detail,
         "ledger_summary": ledger.get("summary") or {},
+        "vat_adjustment": serialize_vat_adjustment(vat_adjustment) if vat_adjustment else None,
     }
 
 
@@ -12283,7 +13457,9 @@ async def create_ap_credit_note(
     lines = [ap_line_values(line, supplier.get("default_purchase_account") or settings_row.get("default_purchase_account") or "5000") for line in (payload.get("lines") or [])]
     if not lines:
         lines = [ap_line_values({"description": payload.get("description") or number, "net_amount": payload.get("net_amount"), "vat_amount": payload.get("vat_amount"), "gross_amount": payload.get("gross_amount"), "vat_code": payload.get("vat_code")}, supplier.get("default_purchase_account") or "5000")]
-    header_vat_code = await validate_native_vat_codes_for_document(session, client_id, payload.get("vat_code"), lines, "Supplier credit note")
+    header_vat_code = await validate_native_vat_codes_for_document(session, client_id, payload.get("vat_code"), lines, "Supplier credit note", credit_date, "purchase")
+    if header_vat_code == "NO VAT":
+        normalize_document_header_outside_vat_period(payload)
     totals = validate_ap_document_totals(payload, lines, "Supplier credit note")
     now = utc_now_iso()
     row = {
@@ -12374,7 +13550,10 @@ async def update_ap_credit_note(
     existing_lines = await many(session, select(accounting_ap_credit_note_lines).where(accounting_ap_credit_note_lines.c.credit_note_id == credit_note_id).order_by(accounting_ap_credit_note_lines.c.line_number.asc()))
     raw_lines = payload.get("lines") if isinstance(payload.get("lines"), list) else existing_lines
     lines = [ap_line_values(line, supplier.get("default_purchase_account") or settings_row.get("default_purchase_account") or "5000") for line in raw_lines]
-    header_vat_code = await validate_native_vat_codes_for_document(session, client_id, payload.get("vat_code") or credit.get("vat_code"), lines, "Supplier credit note")
+    effective_credit_date = parse_date_or_today(payload.get("credit_note_date") or payload.get("date") or credit.get("credit_note_date")).isoformat()
+    header_vat_code = await validate_native_vat_codes_for_document(session, client_id, payload.get("vat_code") or credit.get("vat_code"), lines, "Supplier credit note", effective_credit_date, "purchase")
+    if header_vat_code == "NO VAT":
+        normalize_document_header_outside_vat_period(payload)
     totals = validate_ap_document_totals({**credit, **payload}, lines, "Supplier credit note")
     now = utc_now_iso()
     values = {
@@ -12422,7 +13601,7 @@ async def post_ap_credit_note(
     supplier = await get_ap_supplier_or_404(session, client_id, str(credit.get("supplier_id")))
     contact = await one(session, select(accounting_contacts).where(accounting_contacts.c.id == supplier.get("contact_id")))
     lines = await many(session, select(accounting_ap_credit_note_lines).where(accounting_ap_credit_note_lines.c.credit_note_id == credit_note_id).order_by(accounting_ap_credit_note_lines.c.line_number.asc()))
-    await validate_native_vat_codes_for_document(session, client_id, credit.get("vat_code"), lines, "Supplier credit note")
+    await validate_native_vat_codes_for_document(session, client_id, credit.get("vat_code"), lines, "Supplier credit note", credit.get("credit_note_date"), "purchase")
     validate_ap_document_totals(credit, lines, "Supplier credit note")
     creditors = find_native_account(accounts, settings_row.get("default_creditors_control_account"), "2000")
     journal_lines = [{"account": creditors, "contact": contact, "debit": money_str(money(credit.get("gross_amount"))), "credit": "0.00", "description": credit.get("credit_note_number")}]
@@ -12550,12 +13729,130 @@ async def unallocate_ap_payment(
     if invoice_id:
         invoice = await get_ap_invoice_or_404(session, client_id, str(invoice_id))
         remaining_allocations = await many(session, select(accounting_ap_payment_allocations).where(accounting_ap_payment_allocations.c.client_id == client_id, accounting_ap_payment_allocations.c.invoice_id == invoice_id, accounting_ap_payment_allocations.c.id != allocation_id))
-        values = invoice_allocation_values(invoice, sum((money(row.get("amount")) for row in remaining_allocations), Decimal("0.00")))
+        remaining_credit_allocations = await many(session, select(accounting_ap_credit_allocations).where(accounting_ap_credit_allocations.c.client_id == client_id, accounting_ap_credit_allocations.c.invoice_id == invoice_id))
+        values = invoice_allocation_values(invoice, sum((money(row.get("amount")) for row in [*remaining_allocations, *remaining_credit_allocations]), Decimal("0.00")))
         await session.execute(update(accounting_ap_invoices).where(accounting_ap_invoices.c.id == invoice_id).values(outstanding_amount=values["invoice_balance"], status=values["status"], updated_at=utc_now_iso()))
+    credit_note_id = allocation.get("credit_note_id")
+    if credit_note_id:
+        credit = await one(session, select(accounting_ap_credit_notes).where(accounting_ap_credit_notes.c.client_id == client_id, accounting_ap_credit_notes.c.id == credit_note_id))
+        if credit:
+            remaining_allocations = await many(session, select(accounting_ap_payment_allocations).where(accounting_ap_payment_allocations.c.client_id == client_id, accounting_ap_payment_allocations.c.credit_note_id == credit_note_id, accounting_ap_payment_allocations.c.id != allocation_id))
+            remaining = max(money(credit.get("gross_amount")) - sum((money(row.get("amount")) for row in remaining_allocations), Decimal("0.00")), Decimal("0.00"))
+            await session.execute(update(accounting_ap_credit_notes).where(accounting_ap_credit_notes.c.id == credit_note_id).values(unallocated_amount=money_str(remaining), status="posted" if remaining == money(credit.get("gross_amount")) else "part_paid" if remaining > 0 else "paid", updated_at=utc_now_iso()))
     await session.execute(delete(accounting_ap_payment_allocations).where(accounting_ap_payment_allocations.c.id == allocation_id))
     await add_accounting_audit(session, client_id, user.get("id"), "supplier_payment_unallocated", "accounts_payable", payment_id, {"allocation_id": allocation_id, "invoice_id": invoice_id, "amount": allocation.get("amount"), "bank_journal_changed": False})
     await session.commit()
     return await get_ap_payment_detail(client_id, payment_id, user, session)
+
+
+@api.post("/admin/accounting/clients/{client_id}/ap/payments/{payment_id}/allocations")
+async def allocate_ap_payment(
+    client_id: str,
+    payment_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    payment = await one(session, select(accounting_ap_payments).where(accounting_ap_payments.c.client_id == client_id, accounting_ap_payments.c.id == payment_id))
+    if not payment or payment.get("status") not in {"posted", "part_allocated", "allocated"}:
+        raise HTTPException(status_code=404, detail="Posted supplier payment not found.")
+    payment_allocations = await many(session, select(accounting_ap_payment_allocations).where(accounting_ap_payment_allocations.c.client_id == client_id, accounting_ap_payment_allocations.c.payment_id == payment_id))
+    is_refund = money(payment.get("amount")) < 0
+    payment_remaining = max(abs(money(payment.get("amount"))) - sum((money(row.get("amount")) for row in payment_allocations), Decimal("0.00")), Decimal("0.00"))
+    requested_rows = payload.get("allocations") if isinstance(payload.get("allocations"), list) else [payload]
+    requested_by_invoice: dict[str, Decimal] = {}
+    for requested in requested_rows:
+        invoice_id = str((requested or {}).get("invoice_id") or "")
+        amount = money((requested or {}).get("amount"))
+        if not invoice_id or amount <= 0:
+            raise HTTPException(status_code=400, detail="Every allocation requires an invoice and an amount greater than zero.")
+        requested_by_invoice[invoice_id] = requested_by_invoice.get(invoice_id, Decimal("0.00")) + amount
+    if sum(requested_by_invoice.values(), Decimal("0.00")) > payment_remaining:
+        raise HTTPException(status_code=400, detail="The requested allocations exceed the unallocated supplier payment balance.")
+    target_table = accounting_ap_credit_notes if is_refund else accounting_ap_invoices
+    invoices = await many(session, select(target_table).where(target_table.c.client_id == client_id, target_table.c.id.in_(list(requested_by_invoice))))
+    invoice_by_id = {str(invoice["id"]): invoice for invoice in invoices}
+    if len(invoice_by_id) != len(requested_by_invoice):
+        raise HTTPException(status_code=404, detail="One or more purchase invoices could not be found.")
+    now = utc_now_iso()
+    created = []
+    for invoice_id, amount in requested_by_invoice.items():
+        invoice = invoice_by_id[invoice_id]
+        if str(invoice.get("supplier_id")) != str(payment.get("supplier_id")):
+            raise HTTPException(status_code=400, detail="Every allocation document must belong to the payment supplier.")
+        target_column = accounting_ap_payment_allocations.c.credit_note_id if is_refund else accounting_ap_payment_allocations.c.invoice_id
+        invoice_allocations = await many(session, select(accounting_ap_payment_allocations).where(accounting_ap_payment_allocations.c.client_id == client_id, target_column == invoice_id))
+        invoice_remaining = max(money(invoice.get("gross_amount")) - sum((money(row.get("amount")) for row in invoice_allocations), Decimal("0.00")), Decimal("0.00"))
+        if amount > invoice_remaining:
+            raise HTTPException(status_code=400, detail=f"Allocation for {invoice.get('invoice_number') or invoice_id} exceeds its outstanding balance.")
+        allocation = {"id": new_id(), "client_id": client_id, "payment_id": payment_id, "invoice_id": None if is_refund else invoice_id, "credit_note_id": invoice_id if is_refund else None, "amount": money_str(amount), "created_at": now}
+        await session.execute(insert(accounting_ap_payment_allocations).values(**allocation))
+        created.append(allocation)
+        new_outstanding = invoice_remaining - amount
+        if is_refund:
+            await session.execute(update(accounting_ap_credit_notes).where(accounting_ap_credit_notes.c.id == invoice_id).values(unallocated_amount=money_str(new_outstanding), status="paid" if new_outstanding == 0 else "part_paid", updated_at=now))
+        else:
+            await session.execute(update(accounting_ap_invoices).where(accounting_ap_invoices.c.id == invoice_id).values(outstanding_amount=money_str(new_outstanding), status="paid" if new_outstanding == 0 else "part_paid", updated_at=now))
+        await add_accounting_audit(session, client_id, user.get("id"), "supplier_payment_allocation_created", "accounts_payable", payment_id, {"invoice_id": invoice_id, "amount": money_str(amount), "bank_journal_changed": False})
+    await session.commit()
+    response = await get_ap_payment_detail(client_id, payment_id, user, session)
+    response["created_allocations"] = created
+    return response
+
+
+@api.get("/admin/accounting/clients/{client_id}/ap/payments/{payment_id}/allocation-options")
+async def get_ap_payment_allocation_options(
+    client_id: str,
+    payment_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    payment = await one(session, select(accounting_ap_payments).where(accounting_ap_payments.c.client_id == client_id, accounting_ap_payments.c.id == payment_id))
+    if not payment:
+        raise HTTPException(status_code=404, detail="Supplier payment not found.")
+    allocations = await many(session, select(accounting_ap_payment_allocations).where(accounting_ap_payment_allocations.c.client_id == client_id, accounting_ap_payment_allocations.c.payment_id == payment_id).order_by(accounting_ap_payment_allocations.c.created_at.asc()))
+    invoice_ids = [str(row.get("invoice_id")) for row in allocations if row.get("invoice_id")]
+    credit_note_ids = [str(row.get("credit_note_id")) for row in allocations if row.get("credit_note_id")]
+    existing_invoices = await many(session, select(accounting_ap_invoices).where(accounting_ap_invoices.c.client_id == client_id, accounting_ap_invoices.c.id.in_(invoice_ids))) if invoice_ids else []
+    existing_credits = await many(session, select(accounting_ap_credit_notes).where(accounting_ap_credit_notes.c.client_id == client_id, accounting_ap_credit_notes.c.id.in_(credit_note_ids))) if credit_note_ids else []
+    existing_by_id = {str(row["id"]): row for row in existing_invoices}
+    existing_by_id.update({str(row["id"]): row for row in existing_credits})
+    is_refund = money(payment.get("amount")) < 0
+    if is_refund:
+        open_invoices = await many(session, select(accounting_ap_credit_notes).where(accounting_ap_credit_notes.c.client_id == client_id, accounting_ap_credit_notes.c.supplier_id == payment.get("supplier_id"), accounting_ap_credit_notes.c.status.in_(["posted", "part_paid"]), accounting_ap_credit_notes.c.unallocated_amount != "0.00").order_by(accounting_ap_credit_notes.c.credit_note_date.asc()))
+    else:
+        open_invoices = await many(session, select(accounting_ap_invoices).where(
+            accounting_ap_invoices.c.client_id == client_id,
+            accounting_ap_invoices.c.supplier_id == payment.get("supplier_id"),
+            accounting_ap_invoices.c.status.in_(["posted", "part_paid"]),
+            accounting_ap_invoices.c.outstanding_amount != "0.00",
+        ).order_by(accounting_ap_invoices.c.invoice_date.asc(), accounting_ap_invoices.c.invoice_number.asc()))
+    allocated = sum((money(row.get("amount")) for row in allocations), Decimal("0.00"))
+    return {
+        "payment": {
+            "id": payment_id,
+            "reference": payment.get("reference"),
+            "date": payment.get("payment_date"),
+            "amount": money_str(abs(money(payment.get("amount")))),
+            "allocated_amount": money_str(allocated),
+            "unallocated_amount": money_str(max(abs(money(payment.get("amount"))) - allocated, Decimal("0.00"))),
+            "is_refund": is_refund,
+        },
+        "existing_allocations": [{
+            **dict(row),
+            "invoice_number": (existing_by_id.get(str(row.get("invoice_id") or row.get("credit_note_id"))) or {}).get("invoice_number") or (existing_by_id.get(str(row.get("invoice_id") or row.get("credit_note_id"))) or {}).get("credit_note_number"),
+            "invoice_date": (existing_by_id.get(str(row.get("invoice_id") or row.get("credit_note_id"))) or {}).get("invoice_date") or (existing_by_id.get(str(row.get("invoice_id") or row.get("credit_note_id"))) or {}).get("credit_note_date"),
+        } for row in allocations],
+        "invoices": [{
+            "id": row.get("id"),
+            "invoice_number": row.get("invoice_number") or row.get("credit_note_number"),
+            "invoice_date": row.get("invoice_date") or row.get("credit_note_date"),
+            "due_date": row.get("due_date"),
+            "gross_amount": money_str(money(row.get("gross_amount"))),
+            "outstanding_amount": money_str(money(row.get("unallocated_amount") if is_refund else row.get("outstanding_amount"))),
+            "status": row.get("status"),
+        } for row in open_invoices],
+    }
 
 
 @api.post("/admin/accounting/clients/{client_id}/ap/payments/{payment_id}/reverse")
@@ -12713,11 +14010,16 @@ async def get_ar_customer_ledger(
     contact = await one(session, select(accounting_contacts).where(accounting_contacts.c.id == customer.get("contact_id")))
     serialized_customer = serialize_ar_customer(customer, contact or {})
     page, page_size = pagination_params(page, page_size)
+    conn = await session.connection()
+    await conn.run_sync(metadata.create_all)
     invoices = await many(session, select(accounting_ar_invoices).where(accounting_ar_invoices.c.client_id == client_id, accounting_ar_invoices.c.customer_id == customer_id))
     invoice_ids = [str(row.get("id")) for row in invoices]
     allocations = await many(session, select(accounting_ar_receipt_allocations).where(accounting_ar_receipt_allocations.c.invoice_id.in_(invoice_ids))) if invoice_ids else []
+    credit_allocations = await many(session, select(accounting_ar_credit_allocations).where(accounting_ar_credit_allocations.c.invoice_id.in_(invoice_ids))) if invoice_ids else []
+    credit_allocations = [{**row, "allocation_kind": "credit_note"} for row in credit_allocations]
+    all_invoice_allocations = [*allocations, *credit_allocations]
     allocated_by_invoice: dict[str, Decimal] = {}
-    for allocation in allocations:
+    for allocation in all_invoice_allocations:
         invoice_id = str(allocation.get("invoice_id") or "")
         allocated_by_invoice[invoice_id] = allocated_by_invoice.get(invoice_id, Decimal("0.00")) + money(allocation.get("amount"))
     receipts = await many(session, select(accounting_ar_receipts).where(accounting_ar_receipts.c.client_id == client_id, accounting_ar_receipts.c.customer_id == customer_id))
@@ -12728,10 +14030,21 @@ async def get_ar_customer_ledger(
         receipt_id = str(allocation.get("receipt_id") or "")
         allocated_by_receipt[receipt_id] = allocated_by_receipt.get(receipt_id, Decimal("0.00")) + money(allocation.get("amount"))
     credits = await many(session, select(accounting_ar_credit_notes).where(accounting_ar_credit_notes.c.client_id == client_id, accounting_ar_credit_notes.c.customer_id == customer_id))
+    invoice_by_id = {str(row.get("id")): row for row in invoices}
+    receipt_by_id = {str(row.get("id")): row for row in receipts}
+    credit_by_id = {str(row.get("id")): row for row in credits}
+    all_invoice_allocations = [{
+        **row,
+        "allocation_kind": row.get("allocation_kind") or "receipt",
+        "source_type": "credit_note" if row.get("allocation_kind") == "credit_note" else "receipt",
+        "source_reference": (credit_by_id.get(str(row.get("credit_note_id"))) or {}).get("credit_note_number") if row.get("allocation_kind") == "credit_note" else (receipt_by_id.get(str(row.get("receipt_id"))) or {}).get("reference"),
+        "source_date": (credit_by_id.get(str(row.get("credit_note_id"))) or {}).get("credit_note_date") if row.get("allocation_kind") == "credit_note" else (receipt_by_id.get(str(row.get("receipt_id"))) or {}).get("receipt_date"),
+        "target_reference": (invoice_by_id.get(str(row.get("invoice_id"))) or {}).get("invoice_number"),
+    } for row in all_invoice_allocations]
     rows: list[dict] = []
     for invoice in invoices:
         item = serialize_ar_invoice(invoice, [], serialized_customer)
-        invoice_allocations = [row for row in allocations if str(row.get("invoice_id") or "") == str(invoice.get("id"))]
+        invoice_allocations = [row for row in all_invoice_allocations if str(row.get("invoice_id") or "") == str(invoice.get("id"))]
         values = invoice_allocation_values(invoice, allocated_by_invoice.get(str(invoice.get("id")), Decimal("0.00")))
         rows.append(
             {
@@ -12744,6 +14057,7 @@ async def get_ar_customer_ledger(
                 "reference": invoice.get("invoice_number") or invoice.get("reference") or "",
                 "description": invoice.get("description") or invoice.get("reference") or "",
                 **values,
+                "payment_value": money_str(-money(values["paid_allocated"])),
                 "attachment_status": item.get("source_document_status"),
                 "can_edit": bool(item.get("editable")),
                 "can_approve": values["status"] == "awaiting_approval",
@@ -12761,24 +14075,36 @@ async def get_ar_customer_ledger(
     for receipt in receipts:
         allocated = allocated_by_receipt.get(str(receipt.get("id")), Decimal("0.00"))
         receipt_amount = money(receipt.get("amount"))
-        unallocated = receipt_amount - allocated
+        unallocated = Decimal("0.00") if str(receipt.get("status") or "").lower() in {"void", "reversed"} else max(abs(receipt_amount) - allocated, Decimal("0.00"))
         receipt_status = "awaiting_approval" if str(receipt.get("status") or "").lower() == "draft" else str(receipt.get("status") or "")
-        receipt_allocation_rows = [row for row in receipt_allocations if str(row.get("receipt_id") or "") == str(receipt.get("id"))]
+        receipt_allocation_rows = [{
+            **row,
+            "allocation_kind": "receipt",
+            "source_type": "receipt",
+            "source_reference": receipt.get("reference"),
+            "source_date": receipt.get("receipt_date"),
+            "target_reference": (invoice_by_id.get(str(row.get("invoice_id"))) or {}).get("invoice_number") or (credit_by_id.get(str(row.get("credit_note_id"))) or {}).get("credit_note_number"),
+            "target_date": (invoice_by_id.get(str(row.get("invoice_id"))) or {}).get("invoice_date") or (credit_by_id.get(str(row.get("credit_note_id"))) or {}).get("credit_note_date"),
+        } for row in receipt_allocations if str(row.get("receipt_id") or "") == str(receipt.get("id"))]
         rows.append(
             {
                 "id": receipt.get("id"),
                 "transaction_id": receipt.get("id"),
                 "date": receipt.get("receipt_date") or "",
-                "type": "receipt",
-                "transaction_type": "receipt",
+                "type": "receipt_on_account" if unallocated > 0 and allocated == 0 else "receipt",
+                "transaction_type": "receipt_on_account" if unallocated > 0 and allocated == 0 else "receipt",
                 "transaction_date": receipt.get("receipt_date") or "",
                 "reference": receipt.get("reference") or "",
                 "description": receipt.get("description") or receipt.get("payment_method") or "",
                 "invoice_value": "0.00",
+                "payment_value": money_str(unallocated if receipt_amount < 0 else -unallocated),
                 "paid_allocated": money_str(allocated),
-                "invoice_balance": "0.00",
+                "invoice_balance": money_str(unallocated if receipt_amount < 0 else -unallocated),
+                "debit": money_str(abs(receipt_amount)) if receipt_amount < 0 else "0.00",
+                "credit": money_str(receipt_amount) if receipt_amount > 0 else "0.00",
                 "receipt_amount": money_str(receipt_amount),
                 "unallocated_amount": money_str(unallocated),
+                "on_account_amount": money_str(-unallocated if receipt_amount < 0 else unallocated),
                 "status": receipt_status,
                 "display_status": accounting_display_status(receipt_status),
                 "attachment_status": "none",
@@ -12786,7 +14112,7 @@ async def get_ar_customer_ledger(
                 "can_approve": receipt_status == "awaiting_approval",
                 "can_post": False,
                 "can_unallocate": bool(receipt_allocation_rows),
-                "is_over_allocated": allocated > receipt_amount,
+                "is_over_allocated": allocated > abs(receipt_amount),
                 "allocation_summary": {"allocation_count": len(receipt_allocation_rows), "allocated_amount": money_str(allocated), "unallocated_amount": money_str(unallocated), "allocations": receipt_allocation_rows},
                 "source_document_status": "none",
                 "source_document_missing": False,
@@ -12794,6 +14120,23 @@ async def get_ar_customer_ledger(
         )
     for credit in credits:
         allocated = money(credit.get("gross_amount")) - money(credit.get("unallocated_amount"))
+        credit_allocation_rows = [{
+            **row,
+            "source_type": "credit_note",
+            "source_reference": credit.get("credit_note_number"),
+            "source_date": credit.get("credit_note_date"),
+            "target_reference": (invoice_by_id.get(str(row.get("invoice_id"))) or {}).get("invoice_number"),
+            "target_date": (invoice_by_id.get(str(row.get("invoice_id"))) or {}).get("invoice_date"),
+        } for row in credit_allocations if str(row.get("credit_note_id") or "") == str(credit.get("id"))]
+        credit_allocation_rows.extend([{
+            **row,
+            "allocation_kind": "receipt",
+            "source_type": "receipt",
+            "source_reference": (receipt_by_id.get(str(row.get("receipt_id"))) or {}).get("reference"),
+            "source_date": (receipt_by_id.get(str(row.get("receipt_id"))) or {}).get("receipt_date"),
+            "target_reference": credit.get("credit_note_number"),
+            "target_date": credit.get("credit_note_date"),
+        } for row in receipt_allocations if str(row.get("credit_note_id") or "") == str(credit.get("id"))])
         rows.append(
             {
                 "id": credit.get("id"),
@@ -12805,6 +14148,7 @@ async def get_ar_customer_ledger(
                 "reference": credit.get("credit_note_number") or credit.get("reference") or "",
                 "description": credit.get("description") or credit.get("reference") or "",
                 "invoice_value": money_str(-money(credit.get("gross_amount"))),
+                "payment_value": money_str(allocated),
                 "paid_allocated": money_str(allocated),
                 "invoice_balance": money_str(-money(credit.get("unallocated_amount"))),
                 "status": credit.get("status") or "",
@@ -12813,27 +14157,210 @@ async def get_ar_customer_ledger(
                 "can_edit": str(credit.get("status") or "") in AR_EDITABLE_STATUSES,
                 "can_approve": str(credit.get("status") or "") == "awaiting_approval",
                 "can_post": str(credit.get("status") or "") == "approved",
-                "can_unallocate": False,
+                "can_unallocate": bool(credit_allocation_rows),
                 "is_over_allocated": allocated > money(credit.get("gross_amount")),
-                "allocation_summary": {"allocated_amount": money_str(allocated), "unallocated_amount": money_str(money(credit.get("unallocated_amount")))},
+                "allocation_summary": {"allocation_count": len(credit_allocation_rows), "allocated_amount": money_str(allocated), "unallocated_amount": money_str(money(credit.get("unallocated_amount"))), "allocations": credit_allocation_rows},
                 "source_document_status": "none",
                 "source_document_missing": False,
             }
         )
+    net_customer_balance = apply_subledger_line_balances(rows)
     rows = sorted(filter_ledger_rows(rows, search, status, type, date_from, date_to), key=lambda item: (str(item.get("date") or ""), str(item.get("reference") or "")), reverse=True)
     total = len(rows)
     page_rows = rows[(page - 1) * page_size : page * page_size]
     summary = {
         "visible_transaction_count": total,
         "invoice_value": money_str(sum((money(row.get("invoice_value")) for row in rows if row.get("type") == "invoice"), Decimal("0.00"))),
-        "invoice_balance": money_str(sum((money(row.get("invoice_balance")) for row in rows if row.get("type") == "invoice"), Decimal("0.00"))),
+        "invoice_balance": money_str(sum((money(row.get("invoice_balance")) for row in rows), Decimal("0.00"))),
         "outstanding": money_str(sum((money(row.get("invoice_balance")) for row in rows if row.get("type") == "invoice"), Decimal("0.00"))),
+        "on_account_balance": money_str(sum((money(row.get("on_account_amount")) for row in rows if str(row.get("type") or "").startswith("receipt")), Decimal("0.00"))),
+        "net_customer_balance": money_str(net_customer_balance),
         "receipts_credits_allocated": money_str(sum((money(row.get("paid_allocated")) for row in rows if row.get("type") in {"receipt", "credit_note"}), Decimal("0.00"))),
         "customer": serialized_customer,
     }
     payload = paginated_payload(page_rows, page, page_size, total, summary)
     logger.info("AR customer ledger payload client_id=%s customer_id=%s rows=%s total=%s elapsed_ms=%s payload_bytes=%s", client_id, customer_id, len(page_rows), total, int((time.perf_counter() - started) * 1000), approximate_payload_size(payload))
     return payload
+
+
+@api.get("/admin/accounting/clients/{client_id}/ar/customers/{customer_id}/allocation-workspace")
+async def get_ar_customer_allocation_workspace(
+    client_id: str,
+    customer_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await get_client_or_404(session, client_id)
+    customer = await get_ar_customer_or_404(session, client_id, customer_id)
+    conn = await session.connection()
+    await conn.run_sync(metadata.create_all)
+    invoices = await many(session, select(accounting_ar_invoices).where(
+        accounting_ar_invoices.c.client_id == client_id,
+        accounting_ar_invoices.c.customer_id == customer_id,
+        accounting_ar_invoices.c.status.in_(["posted", "part_paid"]),
+        accounting_ar_invoices.c.outstanding_amount != "0.00",
+    ).order_by(accounting_ar_invoices.c.invoice_date.asc(), accounting_ar_invoices.c.invoice_number.asc()))
+    credit_notes = await many(session, select(accounting_ar_credit_notes).where(
+        accounting_ar_credit_notes.c.client_id == client_id,
+        accounting_ar_credit_notes.c.customer_id == customer_id,
+        accounting_ar_credit_notes.c.status.in_(["posted", "part_paid"]),
+        accounting_ar_credit_notes.c.unallocated_amount != "0.00",
+    ).order_by(accounting_ar_credit_notes.c.credit_note_date.asc(), accounting_ar_credit_notes.c.credit_note_number.asc()))
+    receipts = await many(session, select(accounting_ar_receipts).where(
+        accounting_ar_receipts.c.client_id == client_id,
+        accounting_ar_receipts.c.customer_id == customer_id,
+        accounting_ar_receipts.c.status.in_(["posted", "part_allocated", "allocated"]),
+    ).order_by(accounting_ar_receipts.c.receipt_date.asc(), accounting_ar_receipts.c.reference.asc()))
+    receipt_ids = [str(row.get("id")) for row in receipts]
+    receipt_allocations = await many(session, select(accounting_ar_receipt_allocations).where(accounting_ar_receipt_allocations.c.receipt_id.in_(receipt_ids))) if receipt_ids else []
+    allocated_by_receipt: dict[str, Decimal] = {}
+    for allocation in receipt_allocations:
+        key = str(allocation.get("receipt_id") or "")
+        allocated_by_receipt[key] = allocated_by_receipt.get(key, Decimal("0.00")) + money(allocation.get("amount"))
+    credit_rows = [{
+        "id": row.get("id"),
+        "source_type": "credit_note",
+        "reference": row.get("credit_note_number") or row.get("reference"),
+        "date": row.get("credit_note_date"),
+        "description": row.get("description"),
+        "available_amount": money_str(money(row.get("unallocated_amount"))),
+    } for row in credit_notes if money(row.get("unallocated_amount")) > 0]
+    for row in receipts:
+        amount = money(row.get("amount"))
+        if amount <= 0:
+            continue
+        available = max(amount - allocated_by_receipt.get(str(row.get("id")), Decimal("0.00")), Decimal("0.00"))
+        if available > 0:
+            credit_rows.append({
+                "id": row.get("id"),
+                "source_type": "receipt",
+                "reference": row.get("reference"),
+                "date": row.get("receipt_date"),
+                "description": row.get("payment_method") or "Customer receipt",
+                "available_amount": money_str(available),
+            })
+    debit_rows = [{
+        "id": row.get("id"),
+        "reference": row.get("invoice_number") or row.get("reference"),
+        "date": row.get("invoice_date"),
+        "description": row.get("description"),
+        "outstanding_amount": money_str(money(row.get("outstanding_amount"))),
+    } for row in invoices if money(row.get("outstanding_amount")) > 0]
+    return {
+        "customer": {"id": customer_id, "name": customer.get("trading_name")},
+        "credits": sorted(credit_rows, key=lambda row: (str(row.get("date") or ""), str(row.get("reference") or ""))),
+        "debits": debit_rows,
+        "summary": {
+            "available_credits": money_str(sum((money(row.get("available_amount")) for row in credit_rows), Decimal("0.00"))),
+            "outstanding_debits": money_str(sum((money(row.get("outstanding_amount")) for row in debit_rows), Decimal("0.00"))),
+        },
+    }
+
+
+@api.post("/admin/accounting/clients/{client_id}/ar/customers/{customer_id}/allocate-transactions")
+async def allocate_ar_customer_transactions(
+    client_id: str,
+    customer_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await get_client_or_404(session, client_id)
+    await get_ar_customer_or_404(session, client_id, customer_id)
+    conn = await session.connection()
+    await conn.run_sync(metadata.create_all)
+    requested_credits = [row for row in (payload.get("credits") or []) if money((row or {}).get("amount")) > 0]
+    requested_debits = [row for row in (payload.get("debits") or []) if money((row or {}).get("amount")) > 0]
+    credit_total = sum((money(row.get("amount")) for row in requested_credits), Decimal("0.00"))
+    debit_total = sum((money(row.get("amount")) for row in requested_debits), Decimal("0.00"))
+    if not requested_credits or not requested_debits or abs(credit_total - debit_total) > Decimal("0.01"):
+        raise HTTPException(status_code=400, detail="Selected credit and debit allocation totals must match.")
+    debit_ids = [str(row.get("id") or "") for row in requested_debits]
+    invoices = await many(session, select(accounting_ar_invoices).where(accounting_ar_invoices.c.client_id == client_id, accounting_ar_invoices.c.customer_id == customer_id, accounting_ar_invoices.c.id.in_(debit_ids)))
+    invoice_by_id = {str(row.get("id")): row for row in invoices}
+    for requested in requested_debits:
+        invoice = invoice_by_id.get(str(requested.get("id")))
+        if not invoice or money(requested.get("amount")) > money(invoice.get("outstanding_amount")):
+            raise HTTPException(status_code=400, detail=f"Debit allocation exceeds the outstanding balance for {requested.get('reference') or requested.get('id')}.")
+    sources: list[dict] = []
+    for requested in requested_credits:
+        source_id = str(requested.get("id") or "")
+        source_type = str(requested.get("source_type") or "")
+        requested_amount = money(requested.get("amount"))
+        if source_type == "receipt":
+            source = await one(session, select(accounting_ar_receipts).where(accounting_ar_receipts.c.client_id == client_id, accounting_ar_receipts.c.customer_id == customer_id, accounting_ar_receipts.c.id == source_id))
+            existing = await many(session, select(accounting_ar_receipt_allocations).where(accounting_ar_receipt_allocations.c.receipt_id == source_id))
+            available = max(money((source or {}).get("amount")) - sum((money(row.get("amount")) for row in existing), Decimal("0.00")), Decimal("0.00"))
+        elif source_type == "credit_note":
+            source = await one(session, select(accounting_ar_credit_notes).where(accounting_ar_credit_notes.c.client_id == client_id, accounting_ar_credit_notes.c.customer_id == customer_id, accounting_ar_credit_notes.c.id == source_id))
+            available = money((source or {}).get("unallocated_amount"))
+        else:
+            raise HTTPException(status_code=400, detail="Every selected credit must be a receipt or customer credit note.")
+        if not source or requested_amount > available:
+            raise HTTPException(status_code=400, detail=f"Credit allocation exceeds the available balance for {requested.get('reference') or source_id}.")
+        sources.append({"id": source_id, "source_type": source_type, "remaining": requested_amount, "source": source})
+    now = utc_now_iso()
+    created: list[dict] = []
+    for requested_debit in requested_debits:
+        invoice_id = str(requested_debit.get("id"))
+        debit_remaining = money(requested_debit.get("amount"))
+        for source in sources:
+            if debit_remaining <= 0:
+                break
+            if source["remaining"] <= 0:
+                continue
+            amount = min(debit_remaining, source["remaining"])
+            if source["source_type"] == "receipt":
+                allocation = {"id": new_id(), "client_id": client_id, "receipt_id": source["id"], "invoice_id": invoice_id, "credit_note_id": None, "amount": money_str(amount), "created_at": now}
+                await session.execute(insert(accounting_ar_receipt_allocations).values(**allocation))
+            else:
+                allocation = {"id": new_id(), "client_id": client_id, "customer_id": customer_id, "credit_note_id": source["id"], "invoice_id": invoice_id, "amount": money_str(amount), "created_at": now}
+                await session.execute(insert(accounting_ar_credit_allocations).values(**allocation))
+            created.append({**allocation, "source_type": source["source_type"]})
+            source["remaining"] -= amount
+            debit_remaining -= amount
+        invoice = invoice_by_id[invoice_id]
+        new_outstanding = max(money(invoice.get("outstanding_amount")) - money(requested_debit.get("amount")), Decimal("0.00"))
+        await session.execute(update(accounting_ar_invoices).where(accounting_ar_invoices.c.id == invoice_id).values(outstanding_amount=money_str(new_outstanding), status="paid" if new_outstanding == 0 else "part_paid", updated_at=now))
+    for source in sources:
+        allocated_amount = money(next(row.get("amount") for row in requested_credits if str(row.get("id")) == source["id"])) - source["remaining"]
+        if source["source_type"] == "credit_note":
+            previous = money(source["source"].get("unallocated_amount"))
+            remaining = max(previous - allocated_amount, Decimal("0.00"))
+            await session.execute(update(accounting_ar_credit_notes).where(accounting_ar_credit_notes.c.id == source["id"]).values(unallocated_amount=money_str(remaining), status="paid" if remaining == 0 else "part_paid", updated_at=now))
+    await add_accounting_audit(session, client_id, user.get("id"), "customer_transactions_allocated", "accounts_receivable", customer_id, {"allocation_count": len(created), "amount": money_str(credit_total), "allocations": created})
+    await session.commit()
+    return {"ok": True, "allocations": created, "total_allocated": money_str(credit_total)}
+
+
+@api.post("/admin/accounting/clients/{client_id}/ar/customers/{customer_id}/credit-allocations/{allocation_id}/unallocate")
+async def unallocate_ar_customer_credit(
+    client_id: str,
+    customer_id: str,
+    allocation_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    allocation = await one(session, select(accounting_ar_credit_allocations).where(
+        accounting_ar_credit_allocations.c.client_id == client_id,
+        accounting_ar_credit_allocations.c.customer_id == customer_id,
+        accounting_ar_credit_allocations.c.id == allocation_id,
+    ))
+    if not allocation:
+        raise HTTPException(status_code=404, detail="Customer credit allocation not found.")
+    invoice = await get_ar_invoice_or_404(session, client_id, str(allocation.get("invoice_id")))
+    credit = await one(session, select(accounting_ar_credit_notes).where(accounting_ar_credit_notes.c.client_id == client_id, accounting_ar_credit_notes.c.id == allocation.get("credit_note_id")))
+    amount = money(allocation.get("amount"))
+    now = utc_now_iso()
+    invoice_outstanding = min(money(invoice.get("gross_amount")), money(invoice.get("outstanding_amount")) + amount)
+    await session.execute(update(accounting_ar_invoices).where(accounting_ar_invoices.c.id == invoice.get("id")).values(outstanding_amount=money_str(invoice_outstanding), status="posted" if invoice_outstanding == money(invoice.get("gross_amount")) else "part_paid", updated_at=now))
+    if credit:
+        credit_available = min(money(credit.get("gross_amount")), money(credit.get("unallocated_amount")) + amount)
+        await session.execute(update(accounting_ar_credit_notes).where(accounting_ar_credit_notes.c.id == credit.get("id")).values(unallocated_amount=money_str(credit_available), status="posted" if credit_available == money(credit.get("gross_amount")) else "part_paid" if credit_available > 0 else "paid", updated_at=now))
+    await session.execute(delete(accounting_ar_credit_allocations).where(accounting_ar_credit_allocations.c.id == allocation_id))
+    await add_accounting_audit(session, client_id, user.get("id"), "customer_credit_unallocated", "accounts_receivable", customer_id, {"allocation_id": allocation_id, "invoice_id": allocation.get("invoice_id"), "credit_note_id": allocation.get("credit_note_id"), "amount": money_str(amount)})
+    await session.commit()
+    return {"ok": True}
 
 
 @api.post("/admin/accounting/clients/{client_id}/ar/invoices")
@@ -12847,7 +14374,7 @@ async def create_ar_invoice(
     await session.commit()
     ar_settings = await ensure_ar_settings(session, client_id)
     if not bool(ar_settings.get("approval_required", True)):
-        return await post_ar_invoice(client_id, invoice["id"], user, session)
+        return await post_ar_invoice(client_id, invoice["id"], {}, user, session)
     return await get_ar_invoice_detail(client_id, invoice["id"], user, session)
 
 
@@ -12951,9 +14478,11 @@ async def update_ar_invoice(
     existing_lines = await many(session, select(accounting_ar_invoice_lines).where(accounting_ar_invoice_lines.c.invoice_id == invoice_id).order_by(accounting_ar_invoice_lines.c.line_number.asc()))
     raw_lines = payload.get("lines") if isinstance(payload.get("lines"), list) else existing_lines
     lines = [ar_line_values(line, customer.get("default_sales_account") or settings_row.get("default_sales_account") or "4000") for line in raw_lines]
-    header_vat_code = await validate_native_vat_codes_for_document(session, client_id, payload.get("vat_code") or invoice.get("vat_code"), lines, "Sales invoice")
-    totals = validate_ar_document_totals({**invoice, **payload}, lines, "Sales invoice")
     invoice_date = parse_date_or_today(payload.get("invoice_date") or payload.get("date") or invoice.get("invoice_date")).isoformat()
+    header_vat_code = await validate_native_vat_codes_for_document(session, client_id, payload.get("vat_code") or invoice.get("vat_code"), lines, "Sales invoice", invoice_date, "sales")
+    if header_vat_code == "NO VAT":
+        normalize_document_header_outside_vat_period(payload)
+    totals = validate_ar_document_totals({**invoice, **payload}, lines, "Sales invoice")
     due_date = parse_date_or_today(payload.get("due_date") or invoice.get("due_date")).isoformat()
     try:
         payment_terms_days = int(payload.get("payment_terms_days", invoice.get("payment_terms_days") or customer.get("payment_terms_days") or 30) or 30)
@@ -13033,7 +14562,7 @@ async def copy_ar_invoice(
     await session.commit()
     ar_settings = await ensure_ar_settings(session, client_id)
     if not bool(ar_settings.get("approval_required", True)):
-        return await post_ar_invoice(client_id, copied_id, user, session)
+        return await post_ar_invoice(client_id, copied_id, {}, user, session)
     return await get_ar_invoice_detail(client_id, copied_id, user, session)
 
 
@@ -13041,6 +14570,7 @@ async def copy_ar_invoice(
 async def approve_ar_invoice(
     client_id: str,
     invoice_id: str,
+    payload: dict = {},
     user: dict = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ):
@@ -13053,13 +14583,14 @@ async def approve_ar_invoice(
     await session.execute(update(accounting_ar_invoices).where(accounting_ar_invoices.c.id == invoice_id).values(status="approved", approved_by=user.get("id"), approved_at=now, updated_at=now))
     await add_accounting_audit(session, client_id, user.get("id"), "sales_invoice_approved", "accounts_receivable", invoice_id, {"previous_status": invoice.get("status")})
     await session.flush()
-    return await post_ar_invoice(client_id, invoice_id, user, session)
+    return await post_ar_invoice(client_id, invoice_id, payload, user, session)
 
 
 @api.post("/admin/accounting/clients/{client_id}/ar/invoices/{invoice_id}/post")
 async def post_ar_invoice(
     client_id: str,
     invoice_id: str,
+    payload: dict = {},
     user: dict = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ):
@@ -13076,8 +14607,23 @@ async def post_ar_invoice(
     customer = await get_ar_customer_or_404(session, client_id, str(invoice.get("customer_id")))
     contact = await one(session, select(accounting_contacts).where(accounting_contacts.c.id == customer.get("contact_id")))
     lines = await many(session, select(accounting_ar_invoice_lines).where(accounting_ar_invoice_lines.c.invoice_id == invoice_id).order_by(accounting_ar_invoice_lines.c.line_number.asc()))
-    await validate_native_vat_codes_for_document(session, client_id, invoice.get("vat_code"), lines, "Sales invoice")
+    await validate_native_vat_codes_for_document(session, client_id, invoice.get("vat_code"), lines, "Sales invoice", invoice.get("invoice_date"), "sales")
     validate_ar_document_totals(invoice, lines, "Sales invoice")
+    vat_context = await late_invoice_vat_context(session, client_id, str(invoice.get("invoice_date") or ""), invoice.get("vat_amount"))
+    if vat_context and vat_context.get("requires_reopen"):
+        raise HTTPException(status_code=409, detail={
+            "code": "vat_period_locked",
+            "message": "This invoice belongs to a locked VAT period that has not been closed. Reopen that period before posting.",
+            "original_period": serialize_vat_period(vat_context["original_period"]),
+        })
+    if vat_context and not bool(payload.get("confirm_prior_period_vat_adjustment")):
+        raise HTTPException(status_code=409, detail={
+            "code": "prior_period_vat_adjustment_confirmation",
+            "message": "The invoice date belongs to a closed VAT period. Create the recommended VAT adjustment automatically in the current open period?",
+            "original_period": serialize_vat_period(vat_context["original_period"]),
+            "reported_period": serialize_vat_period(vat_context["reported_period"]),
+            "vat_amount": money_str(money(invoice.get("vat_amount"))),
+        })
     debtors = find_native_account(accounts, settings_row.get("default_debtors_control_account"), "1100")
     journal_lines = [{"account": debtors, "contact": contact, "debit": money_str(money(invoice.get("gross_amount"))), "credit": "0.00", "description": invoice.get("invoice_number")}]
     for line in lines:
@@ -13094,7 +14640,7 @@ async def post_ar_invoice(
         client_id=client_id,
         source_type="ar_invoice",
         source_id=invoice_id,
-        entry_date=invoice.get("invoice_date"),
+        entry_date=vat_context["posting_date"] if vat_context else invoice.get("invoice_date"),
         reference=invoice.get("invoice_number") or invoice_id,
         description=f"Sales invoice {invoice.get('invoice_number')}",
         lines=journal_lines,
@@ -13104,8 +14650,28 @@ async def post_ar_invoice(
     await session.execute(
         update(accounting_ar_invoices)
         .where(accounting_ar_invoices.c.id == invoice_id)
-        .values(status="posted", posted_journal_id=journal.get("id"), posted_by=user.get("id"), posted_at=now, approved_by=invoice.get("approved_by") or user.get("id"), approved_at=invoice.get("approved_at") or now, updated_at=now)
+        .values(
+            status="posted",
+            posted_journal_id=journal.get("id"),
+            posting_date=vat_context["posting_date"] if vat_context else invoice.get("invoice_date"),
+            vat_effective_date=vat_context["posting_date"] if vat_context else invoice.get("invoice_date"),
+            vat_treatment="prior_period_correction" if vat_context else "normal",
+            original_vat_period_id=vat_context["original_period"].get("id") if vat_context else None,
+            reported_vat_period_id=vat_context["reported_period"].get("id") if vat_context else None,
+            posted_by=user.get("id"),
+            posted_at=now,
+            approved_by=invoice.get("approved_by") or user.get("id"),
+            approved_at=invoice.get("approved_at") or now,
+            updated_at=now,
+        )
     )
+    vat_adjustment = None
+    if vat_context:
+        vat_adjustment = await apply_confirmed_late_invoice_vat_adjustment(
+            session, client_id, "ar_invoice", invoice_id, str(invoice.get("invoice_number") or invoice_id),
+            str(invoice.get("vat_code") or ""), invoice.get("net_amount"), invoice.get("vat_amount"), invoice.get("gross_amount"),
+            vat_context, user.get("id"),
+        )
     await add_accounting_audit(session, client_id, user.get("id"), "sales_invoice_posted", "accounts_receivable", invoice_id, {"journal_id": journal.get("id")})
     await session.commit()
     detail = await get_ar_invoice_detail(client_id, invoice_id, user, session)
@@ -13125,6 +14691,7 @@ async def post_ar_invoice(
         "status": "posted",
         "detail": detail,
         "ledger_summary": ledger.get("summary") or {},
+        "vat_adjustment": serialize_vat_adjustment(vat_adjustment) if vat_adjustment else None,
     }
 
 
@@ -13166,7 +14733,9 @@ async def create_ar_credit_note(
     lines = [ar_line_values(line, customer.get("default_sales_account") or ar_settings.get("default_sales_account") or "4000") for line in (payload.get("lines") or [])]
     if not lines:
         lines = [ar_line_values({"description": payload.get("description") or number, "net_amount": payload.get("net_amount"), "vat_amount": payload.get("vat_amount"), "gross_amount": payload.get("gross_amount"), "vat_code": payload.get("vat_code")}, customer.get("default_sales_account") or "4000")]
-    header_vat_code = await validate_native_vat_codes_for_document(session, client_id, payload.get("vat_code"), lines, "Customer credit note")
+    header_vat_code = await validate_native_vat_codes_for_document(session, client_id, payload.get("vat_code"), lines, "Customer credit note", credit_date, "sales")
+    if header_vat_code == "NO VAT":
+        normalize_document_header_outside_vat_period(payload)
     totals = validate_ar_document_totals(payload, lines, "Customer credit note")
     now = utc_now_iso()
     row = {
@@ -13268,7 +14837,10 @@ async def update_ar_credit_note(
     existing_lines = await many(session, select(accounting_ar_credit_note_lines).where(accounting_ar_credit_note_lines.c.credit_note_id == credit_note_id).order_by(accounting_ar_credit_note_lines.c.line_number.asc()))
     raw_lines = payload.get("lines") if isinstance(payload.get("lines"), list) else existing_lines
     lines = [ar_line_values(line, customer.get("default_sales_account") or settings_row.get("default_sales_account") or "4000") for line in raw_lines]
-    header_vat_code = await validate_native_vat_codes_for_document(session, client_id, payload.get("vat_code") or credit.get("vat_code"), lines, "Customer credit note")
+    effective_credit_date = parse_date_or_today(payload.get("credit_note_date") or payload.get("date") or credit.get("credit_note_date")).isoformat()
+    header_vat_code = await validate_native_vat_codes_for_document(session, client_id, payload.get("vat_code") or credit.get("vat_code"), lines, "Customer credit note", effective_credit_date, "sales")
+    if header_vat_code == "NO VAT":
+        normalize_document_header_outside_vat_period(payload)
     totals = validate_ar_document_totals({**credit, **payload}, lines, "Customer credit note")
     status = str(payload.get("status") or credit.get("status") or "draft").strip().lower()
     if status not in AR_EDITABLE_STATUSES:
@@ -13319,7 +14891,7 @@ async def post_ar_credit_note(
     lines = await many(session, select(accounting_ar_credit_note_lines).where(accounting_ar_credit_note_lines.c.credit_note_id == credit_note_id).order_by(accounting_ar_credit_note_lines.c.line_number.asc()))
     if credit.get("status") not in AR_EDITABLE_STATUSES | {"approved"}:
         raise HTTPException(status_code=400, detail="Customer credit note cannot be posted from this status.")
-    await validate_native_vat_codes_for_document(session, client_id, credit.get("vat_code"), lines, "Customer credit note")
+    await validate_native_vat_codes_for_document(session, client_id, credit.get("vat_code"), lines, "Customer credit note", credit.get("credit_note_date"), "sales")
     validate_ar_document_totals(credit, lines, "Customer credit note")
     journal_lines = []
     for line in lines:
@@ -13341,6 +14913,30 @@ async def post_ar_credit_note(
     return await get_ar_credit_note_detail(client_id, credit_note_id, user, session)
 
 
+@api.post("/admin/accounting/clients/{client_id}/ar/credit-notes/{credit_note_id}/approve")
+async def approve_ar_credit_note(
+    client_id: str,
+    credit_note_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    credit = await one(session, select(accounting_ar_credit_notes).where(accounting_ar_credit_notes.c.client_id == client_id, accounting_ar_credit_notes.c.id == credit_note_id))
+    if not credit:
+        raise HTTPException(status_code=404, detail="Customer credit note not found.")
+    if credit.get("posted_journal_id"):
+        raise HTTPException(status_code=400, detail="Customer credit note is already posted.")
+    if str(credit.get("status") or "").lower() not in {"awaiting_approval", "draft"}:
+        raise HTTPException(status_code=400, detail="Customer credit note is not awaiting approval.")
+    lines = await many(session, select(accounting_ar_credit_note_lines).where(accounting_ar_credit_note_lines.c.credit_note_id == credit_note_id).order_by(accounting_ar_credit_note_lines.c.line_number.asc()))
+    await validate_native_vat_codes_for_document(session, client_id, credit.get("vat_code"), lines, "Customer credit note", credit.get("credit_note_date"), "sales")
+    validate_ar_document_totals(credit, lines, "Customer credit note")
+    now = utc_now_iso()
+    await session.execute(update(accounting_ar_credit_notes).where(accounting_ar_credit_notes.c.id == credit_note_id).values(status="approved", updated_at=now))
+    await add_accounting_audit(session, client_id, user.get("id"), "customer_credit_note_approved", "accounts_receivable", credit_note_id, {"previous_status": credit.get("status")})
+    await session.flush()
+    return await post_ar_credit_note(client_id, credit_note_id, user, session)
+
+
 @api.post("/admin/accounting/clients/{client_id}/ar/receipts")
 async def create_ar_receipt(
     client_id: str,
@@ -13353,15 +14949,19 @@ async def create_ar_receipt(
         raise HTTPException(status_code=400, detail="Enable EPOS native accounting before adding customer receipts.")
     customer = await get_ar_customer_or_404(session, client_id, str(payload.get("customer_id") or ""))
     amount = money(payload.get("amount"))
-    if amount <= 0:
-        raise HTTPException(status_code=400, detail="Receipt amount must be greater than zero.")
+    if amount == 0:
+        raise HTTPException(status_code=400, detail="Receipt amount must not be zero. Use a negative amount for a customer refund.")
+    posting_amount = abs(amount)
+    is_refund = amount < 0
     settings_row = await ensure_accounting_settings(session, client_id)
     ar_settings = await ensure_ar_settings(session, client_id)
     accounts = await ensure_native_accounting_client(session, client_id)
     contact = await one(session, select(accounting_contacts).where(accounting_contacts.c.id == customer.get("contact_id")))
-    bank_account_code = str(payload.get("bank_account_code") or settings_row.get("default_bank_account") or "1200")
+    bank_account_code = str(payload.get("bank_account_code") or "").strip()
+    if not bank_account_code:
+        raise HTTPException(status_code=400, detail="Bank account is required before posting a customer receipt.")
     bank_account = await one(session, select(accounting_bank_accounts).where(accounting_bank_accounts.c.client_id == client_id, accounting_bank_accounts.c.nominal_account_code == bank_account_code))
-    bank = find_native_account(accounts, bank_account_code, "1200")
+    bank = require_native_bank_account(accounts, bank_account_code)
     debtors = find_native_account(accounts, settings_row.get("default_debtors_control_account"), "1100")
     receipt_date = parse_date_or_today(payload.get("receipt_date")).isoformat()
     reference = str(payload.get("reference") or f"Receipt {receipt_date}").strip()
@@ -13382,10 +14982,10 @@ async def create_ar_receipt(
         source_id="pending",
         entry_date=receipt_date,
         reference=reference,
-        description=f"Customer receipt {customer.get('trading_name') or contact.get('name')}",
+        description=f"Customer {'refund' if is_refund else 'receipt'} {customer.get('trading_name') or contact.get('name')}",
         lines=[
-            {"account": bank, "contact": contact, "debit": money_str(amount), "credit": "0.00", "description": reference},
-            {"account": debtors, "contact": contact, "debit": "0.00", "credit": money_str(amount), "description": reference},
+            {"account": bank, "contact": contact, "debit": money_str(posting_amount) if not is_refund else "0.00", "credit": money_str(posting_amount) if is_refund else "0.00", "description": reference},
+            {"account": debtors, "contact": contact, "debit": money_str(posting_amount) if is_refund else "0.00", "credit": money_str(posting_amount) if not is_refund else "0.00", "description": reference},
         ],
         actor_id=user.get("id"),
     )
@@ -13419,8 +15019,8 @@ async def create_ar_receipt(
             reference=reference,
             transaction_type="customer_receipt",
             source_type="ar_receipt",
-            money_in=money_str(amount),
-            money_out="0.00",
+            money_in=money_str(posting_amount) if not is_refund else "0.00",
+            money_out=money_str(posting_amount) if is_refund else "0.00",
             balance="0.00",
             status="unreconciled",
             matched_to=None,
@@ -13435,17 +15035,20 @@ async def create_ar_receipt(
             updated_at=now,
         )
     )
-    remaining = amount
-    invoice_ids = [str(item.get("invoice_id")) for item in (payload.get("allocations") or []) if item.get("invoice_id")]
+    remaining = posting_amount
+    allocation_target = str(payload.get("allocation_target") or ("selected" if payload.get("allocations") else "on_account")).strip().lower()
+    invoice_ids = [] if is_refund else [str(item.get("invoice_id")) for item in (payload.get("allocations") or []) if item.get("invoice_id")]
     if invoice_ids:
         invoices = await many(session, select(accounting_ar_invoices).where(accounting_ar_invoices.c.client_id == client_id, accounting_ar_invoices.c.id.in_(invoice_ids)))
-    else:
+    elif allocation_target == "oldest" and not is_refund:
         invoices = await many(
             session,
             select(accounting_ar_invoices)
             .where(accounting_ar_invoices.c.client_id == client_id, accounting_ar_invoices.c.customer_id == customer["id"], accounting_ar_invoices.c.outstanding_amount != "0.00")
             .order_by(accounting_ar_invoices.c.due_date.asc(), accounting_ar_invoices.c.invoice_date.asc()),
         )
+    else:
+        invoices = []
     allocation_by_invoice = {str(item.get("invoice_id")): money(item.get("amount")) for item in (payload.get("allocations") or []) if item.get("invoice_id")}
     for invoice in invoices:
         if remaining <= 0:
@@ -13522,12 +15125,130 @@ async def unallocate_ar_receipt(
     if invoice_id:
         invoice = await get_ar_invoice_or_404(session, client_id, str(invoice_id))
         remaining_allocations = await many(session, select(accounting_ar_receipt_allocations).where(accounting_ar_receipt_allocations.c.client_id == client_id, accounting_ar_receipt_allocations.c.invoice_id == invoice_id, accounting_ar_receipt_allocations.c.id != allocation_id))
-        values = invoice_allocation_values(invoice, sum((money(row.get("amount")) for row in remaining_allocations), Decimal("0.00")))
+        remaining_credit_allocations = await many(session, select(accounting_ar_credit_allocations).where(accounting_ar_credit_allocations.c.client_id == client_id, accounting_ar_credit_allocations.c.invoice_id == invoice_id))
+        values = invoice_allocation_values(invoice, sum((money(row.get("amount")) for row in [*remaining_allocations, *remaining_credit_allocations]), Decimal("0.00")))
         await session.execute(update(accounting_ar_invoices).where(accounting_ar_invoices.c.id == invoice_id).values(outstanding_amount=values["invoice_balance"], status=values["status"], updated_at=utc_now_iso()))
+    credit_note_id = allocation.get("credit_note_id")
+    if credit_note_id:
+        credit = await one(session, select(accounting_ar_credit_notes).where(accounting_ar_credit_notes.c.client_id == client_id, accounting_ar_credit_notes.c.id == credit_note_id))
+        if credit:
+            remaining_allocations = await many(session, select(accounting_ar_receipt_allocations).where(accounting_ar_receipt_allocations.c.client_id == client_id, accounting_ar_receipt_allocations.c.credit_note_id == credit_note_id, accounting_ar_receipt_allocations.c.id != allocation_id))
+            remaining = max(money(credit.get("gross_amount")) - sum((money(row.get("amount")) for row in remaining_allocations), Decimal("0.00")), Decimal("0.00"))
+            await session.execute(update(accounting_ar_credit_notes).where(accounting_ar_credit_notes.c.id == credit_note_id).values(unallocated_amount=money_str(remaining), status="posted" if remaining == money(credit.get("gross_amount")) else "part_paid" if remaining > 0 else "paid", updated_at=utc_now_iso()))
     await session.execute(delete(accounting_ar_receipt_allocations).where(accounting_ar_receipt_allocations.c.id == allocation_id))
     await add_accounting_audit(session, client_id, user.get("id"), "customer_receipt_unallocated", "accounts_receivable", receipt_id, {"allocation_id": allocation_id, "invoice_id": invoice_id, "amount": allocation.get("amount"), "bank_journal_changed": False})
     await session.commit()
     return await get_ar_receipt_detail(client_id, receipt_id, user, session)
+
+
+@api.post("/admin/accounting/clients/{client_id}/ar/receipts/{receipt_id}/allocations")
+async def allocate_ar_receipt(
+    client_id: str,
+    receipt_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    receipt = await one(session, select(accounting_ar_receipts).where(accounting_ar_receipts.c.client_id == client_id, accounting_ar_receipts.c.id == receipt_id))
+    if not receipt or receipt.get("status") not in {"posted", "part_allocated", "allocated"}:
+        raise HTTPException(status_code=404, detail="Posted customer receipt not found.")
+    receipt_allocations = await many(session, select(accounting_ar_receipt_allocations).where(accounting_ar_receipt_allocations.c.client_id == client_id, accounting_ar_receipt_allocations.c.receipt_id == receipt_id))
+    is_refund = money(receipt.get("amount")) < 0
+    receipt_remaining = max(abs(money(receipt.get("amount"))) - sum((money(row.get("amount")) for row in receipt_allocations), Decimal("0.00")), Decimal("0.00"))
+    requested_rows = payload.get("allocations") if isinstance(payload.get("allocations"), list) else [payload]
+    requested_by_invoice: dict[str, Decimal] = {}
+    for requested in requested_rows:
+        invoice_id = str((requested or {}).get("invoice_id") or "")
+        amount = money((requested or {}).get("amount"))
+        if not invoice_id or amount <= 0:
+            raise HTTPException(status_code=400, detail="Every allocation requires an invoice and an amount greater than zero.")
+        requested_by_invoice[invoice_id] = requested_by_invoice.get(invoice_id, Decimal("0.00")) + amount
+    if sum(requested_by_invoice.values(), Decimal("0.00")) > receipt_remaining:
+        raise HTTPException(status_code=400, detail="The requested allocations exceed the unallocated customer receipt balance.")
+    target_table = accounting_ar_credit_notes if is_refund else accounting_ar_invoices
+    invoices = await many(session, select(target_table).where(target_table.c.client_id == client_id, target_table.c.id.in_(list(requested_by_invoice))))
+    invoice_by_id = {str(invoice["id"]): invoice for invoice in invoices}
+    if len(invoice_by_id) != len(requested_by_invoice):
+        raise HTTPException(status_code=404, detail="One or more sales invoices could not be found.")
+    now = utc_now_iso()
+    created = []
+    for invoice_id, amount in requested_by_invoice.items():
+        invoice = invoice_by_id[invoice_id]
+        if str(invoice.get("customer_id")) != str(receipt.get("customer_id")):
+            raise HTTPException(status_code=400, detail="Every allocation document must belong to the receipt customer.")
+        target_column = accounting_ar_receipt_allocations.c.credit_note_id if is_refund else accounting_ar_receipt_allocations.c.invoice_id
+        invoice_allocations = await many(session, select(accounting_ar_receipt_allocations).where(accounting_ar_receipt_allocations.c.client_id == client_id, target_column == invoice_id))
+        invoice_remaining = max(money(invoice.get("gross_amount")) - sum((money(row.get("amount")) for row in invoice_allocations), Decimal("0.00")), Decimal("0.00"))
+        if amount > invoice_remaining:
+            raise HTTPException(status_code=400, detail=f"Allocation for {invoice.get('invoice_number') or invoice_id} exceeds its outstanding balance.")
+        allocation = {"id": new_id(), "client_id": client_id, "receipt_id": receipt_id, "invoice_id": None if is_refund else invoice_id, "credit_note_id": invoice_id if is_refund else None, "amount": money_str(amount), "created_at": now}
+        await session.execute(insert(accounting_ar_receipt_allocations).values(**allocation))
+        created.append(allocation)
+        new_outstanding = invoice_remaining - amount
+        if is_refund:
+            await session.execute(update(accounting_ar_credit_notes).where(accounting_ar_credit_notes.c.id == invoice_id).values(unallocated_amount=money_str(new_outstanding), status="paid" if new_outstanding == 0 else "part_paid", updated_at=now))
+        else:
+            await session.execute(update(accounting_ar_invoices).where(accounting_ar_invoices.c.id == invoice_id).values(outstanding_amount=money_str(new_outstanding), status="paid" if new_outstanding == 0 else "part_paid", updated_at=now))
+        await add_accounting_audit(session, client_id, user.get("id"), "customer_receipt_allocation_created", "accounts_receivable", receipt_id, {"invoice_id": invoice_id, "amount": money_str(amount), "bank_journal_changed": False})
+    await session.commit()
+    response = await get_ar_receipt_detail(client_id, receipt_id, user, session)
+    response["created_allocations"] = created
+    return response
+
+
+@api.get("/admin/accounting/clients/{client_id}/ar/receipts/{receipt_id}/allocation-options")
+async def get_ar_receipt_allocation_options(
+    client_id: str,
+    receipt_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    receipt = await one(session, select(accounting_ar_receipts).where(accounting_ar_receipts.c.client_id == client_id, accounting_ar_receipts.c.id == receipt_id))
+    if not receipt:
+        raise HTTPException(status_code=404, detail="Customer receipt not found.")
+    allocations = await many(session, select(accounting_ar_receipt_allocations).where(accounting_ar_receipt_allocations.c.client_id == client_id, accounting_ar_receipt_allocations.c.receipt_id == receipt_id).order_by(accounting_ar_receipt_allocations.c.created_at.asc()))
+    invoice_ids = [str(row.get("invoice_id")) for row in allocations if row.get("invoice_id")]
+    credit_note_ids = [str(row.get("credit_note_id")) for row in allocations if row.get("credit_note_id")]
+    existing_invoices = await many(session, select(accounting_ar_invoices).where(accounting_ar_invoices.c.client_id == client_id, accounting_ar_invoices.c.id.in_(invoice_ids))) if invoice_ids else []
+    existing_credits = await many(session, select(accounting_ar_credit_notes).where(accounting_ar_credit_notes.c.client_id == client_id, accounting_ar_credit_notes.c.id.in_(credit_note_ids))) if credit_note_ids else []
+    existing_by_id = {str(row["id"]): row for row in existing_invoices}
+    existing_by_id.update({str(row["id"]): row for row in existing_credits})
+    is_refund = money(receipt.get("amount")) < 0
+    if is_refund:
+        open_invoices = await many(session, select(accounting_ar_credit_notes).where(accounting_ar_credit_notes.c.client_id == client_id, accounting_ar_credit_notes.c.customer_id == receipt.get("customer_id"), accounting_ar_credit_notes.c.status.in_(["posted", "part_paid"]), accounting_ar_credit_notes.c.unallocated_amount != "0.00").order_by(accounting_ar_credit_notes.c.credit_note_date.asc()))
+    else:
+        open_invoices = await many(session, select(accounting_ar_invoices).where(
+            accounting_ar_invoices.c.client_id == client_id,
+            accounting_ar_invoices.c.customer_id == receipt.get("customer_id"),
+            accounting_ar_invoices.c.status.in_(["posted", "part_paid"]),
+            accounting_ar_invoices.c.outstanding_amount != "0.00",
+        ).order_by(accounting_ar_invoices.c.invoice_date.asc(), accounting_ar_invoices.c.invoice_number.asc()))
+    allocated = sum((money(row.get("amount")) for row in allocations), Decimal("0.00"))
+    return {
+        "receipt": {
+            "id": receipt_id,
+            "reference": receipt.get("reference"),
+            "date": receipt.get("receipt_date"),
+            "amount": money_str(abs(money(receipt.get("amount")))),
+            "allocated_amount": money_str(allocated),
+            "unallocated_amount": money_str(max(abs(money(receipt.get("amount"))) - allocated, Decimal("0.00"))),
+            "is_refund": is_refund,
+        },
+        "existing_allocations": [{
+            **dict(row),
+            "invoice_number": (existing_by_id.get(str(row.get("invoice_id") or row.get("credit_note_id"))) or {}).get("invoice_number") or (existing_by_id.get(str(row.get("invoice_id") or row.get("credit_note_id"))) or {}).get("credit_note_number"),
+            "invoice_date": (existing_by_id.get(str(row.get("invoice_id") or row.get("credit_note_id"))) or {}).get("invoice_date") or (existing_by_id.get(str(row.get("invoice_id") or row.get("credit_note_id"))) or {}).get("credit_note_date"),
+        } for row in allocations],
+        "invoices": [{
+            "id": row.get("id"),
+            "invoice_number": row.get("invoice_number") or row.get("credit_note_number"),
+            "invoice_date": row.get("invoice_date") or row.get("credit_note_date"),
+            "due_date": row.get("due_date"),
+            "gross_amount": money_str(money(row.get("gross_amount"))),
+            "outstanding_amount": money_str(money(row.get("unallocated_amount") if is_refund else row.get("outstanding_amount"))),
+            "status": row.get("status"),
+        } for row in open_invoices],
+    }
 
 
 @api.post("/admin/accounting/clients/{client_id}/ar/receipts/{receipt_id}/approve")
@@ -14067,13 +15788,16 @@ async def bulk_send_bank_transactions_to_client(
             continue
         amount = abs(bank_transaction_amount(row))
         direction = "money_in" if money(row.get("money_in")) else "money_out"
-        row_document_type = str(row.get("document_type") or document_type or ("sales_invoice" if direction == "money_in" else "purchase_invoice")).strip().lower()
-        item_type = "sales" if direction == "money_in" or row_document_type == "sales_invoice" else "purchase"
+        item_type = "sales" if direction == "money_in" else "purchase"
+        row_document_type = submission_document_type(item_type, row.get("amount"), direction)
         metadata = {
             "source": "banking",
             "bank_transaction_id": transaction_id,
             "document_type": row_document_type,
             "direction": direction,
+            "source_route": item_type,
+            "source_origin": "banking_request",
+            "route_locked_by_source": True,
             "bank_account_id": row.get("bank_account_id"),
             "bank_account_code": row.get("bank_account_code"),
             "transaction_date": row.get("transaction_date"),
@@ -14450,8 +16174,8 @@ async def send_bank_transaction_to_client_outstanding(
         return response
     amount = money(payload.get("amount")) if payload.get("amount") not in (None, "") else abs(bank_transaction_amount(transaction))
     direction = str(payload.get("direction") or ("money_in" if money(transaction.get("money_in")) else "money_out")).strip().lower()
-    document_type = str(payload.get("document_type") or "unknown").strip().lower()
-    item_type = "sales" if direction == "money_in" or document_type == "sales_invoice" else "purchase"
+    item_type = "sales" if direction == "money_in" else "purchase"
+    document_type = submission_document_type(item_type, transaction.get("amount"), direction)
     description = str(payload.get("description") or transaction.get("description") or "Bank transaction paperwork").strip()
     due_date = str(payload.get("due_date") or "").strip()
     message = str(payload.get("message_to_client") or "").strip()
@@ -14461,6 +16185,9 @@ async def send_bank_transaction_to_client_outstanding(
         "document_type": document_type,
         "message_to_client": message,
         "direction": direction,
+        "source_route": item_type,
+        "source_origin": "banking_request",
+        "route_locked_by_source": True,
         "bank_account_id": transaction.get("bank_account_id"),
         "bank_account_code": transaction.get("bank_account_code"),
         "transaction_date": transaction.get("transaction_date"),
@@ -14569,15 +16296,61 @@ async def create_supplier_payment_from_bank_transaction(
         if net + vat != gross:
             raise HTTPException(status_code=400, detail="Supplier spend net plus VAT must match the bank transaction money out.")
         description = str(payload.get("description") or transaction.get("description") or "Supplier spend").strip()
-        lines = [{"account": expense, "contact": contact, "debit": money_str(net), "credit": "0.00", "vat_code": vat_code, "description": description}]
-        if vat:
-            vat_account = find_native_account(accounts, settings_row.get("default_vat_control_account"), "2200")
-            lines.append({"account": vat_account, "contact": contact, "debit": money_str(vat), "credit": "0.00", "description": f"VAT on {description}"})
-        lines.append({"account": bank, "contact": contact, "debit": "0.00", "credit": money_str(gross), "description": description})
-        journal = await post_native_journal(session, client_id, "bank_supplier_spend", transaction_id, transaction.get("transaction_date"), str(payload.get("reference") or transaction.get("reference") or transaction_id), description, lines, user.get("id"))
-        matched_to = f"Supplier spend: {supplier.get('name') or description}"
-        await mark_bank_transaction_reconciled(session, client_id, transaction, match_type="supplier_spend", matched_record_type="supplier_spend", matched_record_id=journal.get("id"), matched_to=matched_to, amount=amount, journal_id=journal.get("id"), actor_id=user.get("id"), audit_action="bank_supplier_spend_created", contact_id=supplier.get("contact_id"), account_code=expense.get("code"))
-        response = await bank_action_response(session, client_id, transaction_id, matched_to=matched_to, supplier=supplier, journal=journal)
+        reference = str(payload.get("reference") or transaction.get("reference") or transaction_id).strip()
+        invoice_number = str(payload.get("invoice_number") or f"BANK-{transaction_id[:8]}").strip()
+        invoice = await create_ap_invoice_record(
+            session,
+            client_id,
+            {
+                "supplier_id": supplier["id"],
+                "invoice_number": invoice_number,
+                "reference": reference,
+                "invoice_date": transaction.get("transaction_date"),
+                "due_date": transaction.get("transaction_date"),
+                "currency": payload.get("currency") or "GBP",
+                "description": description,
+                "net_amount": money_str(net),
+                "vat_amount": money_str(vat),
+                "gross_amount": money_str(gross),
+                "vat_code": vat_code,
+                "lines": [{
+                    "description": description,
+                    "nominal_account_code": expense.get("code"),
+                    "quantity": "1.00",
+                    "unit_price": money_str(net),
+                    "net_amount": money_str(net),
+                    "vat_amount": money_str(vat),
+                    "gross_amount": money_str(gross),
+                    "vat_code": vat_code,
+                }],
+                "extracted_json": {"source": "bank_reconciliation", "bank_transaction_id": transaction_id},
+            },
+            str(user.get("id") or ""),
+        )
+        now = utc_now_iso()
+        await session.execute(update(accounting_ap_invoices).where(accounting_ap_invoices.c.id == invoice["id"]).values(status="approved", approved_by=user.get("id"), approved_at=now, updated_at=now))
+        await session.flush()
+        await post_ap_invoice(client_id, str(invoice["id"]), {}, user, session)
+        payment_result = await create_ap_payment_record(
+            session,
+            client_id,
+            {
+                "supplier_id": supplier["id"],
+                "amount": money_str(gross),
+                "payment_date": transaction.get("transaction_date"),
+                "bank_account_code": bank.get("code"),
+                "payment_method": payload.get("payment_method") or "Bank Transfer",
+                "reference": reference,
+                "_approved": True,
+                "allocations": [{"invoice_id": invoice["id"], "amount": money_str(gross)}],
+            },
+            str(user.get("id") or ""),
+        )
+        payment = payment_result["payment"]
+        payment_journal = payment_result["journal"]
+        matched_to = f"Supplier expense/payment: {invoice_number}"
+        await mark_bank_transaction_reconciled(session, client_id, transaction, match_type="supplier_expense_payment", matched_record_type="ap_payment", matched_record_id=payment.get("id"), matched_to=matched_to, amount=amount, journal_id=payment_journal.get("id"), actor_id=user.get("id"), audit_action="bank_supplier_expense_payment_created", contact_id=supplier.get("contact_id"), account_code=expense.get("code"))
+        response = await bank_action_response(session, client_id, transaction_id, matched_to=matched_to, supplier=supplier, invoice=invoice, payment=payment, allocations=payment_result["allocations"], journal=payment_journal)
         await session.commit()
         return response
     result = await create_ap_payment_record(session, client_id, {**payload, "amount": money_str(amount), "payment_date": transaction.get("transaction_date"), "bank_account_code": transaction.get("bank_account_code"), "reference": payload.get("reference") or transaction.get("reference") or transaction.get("description")}, user.get("id"))
@@ -15284,6 +17057,107 @@ async def create_bank_transfer(
     return serialize_bank_transfer(row)
 
 
+@api.post("/admin/accounting/clients/{client_id}/vat/periods/{period_id}/submit")
+async def submit_native_vat_period(
+    client_id: str,
+    period_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await ensure_native_accounting_client(session, client_id)
+    period = await get_vat_period_or_404(session, client_id, period_id)
+    existing_return = await one(session, select(accounting_vat_returns).where(
+        accounting_vat_returns.c.client_id == client_id,
+        accounting_vat_returns.c.period_start == period.get("period_start"),
+        accounting_vat_returns.c.period_end == period.get("period_end"),
+    ).order_by(accounting_vat_returns.c.created_at.desc()).limit(1))
+    if vat_period_display_status(period, existing_return) == "submitted":
+        raise HTTPException(status_code=400, detail="This VAT return has already been submitted and cannot be reopened or unsubmitted.")
+    if str(period.get("status") or "open") != "open":
+        raise HTTPException(status_code=400, detail="Only the current open VAT period can be submitted.")
+
+    now = utc_now_iso()
+    transactions = await vat_period_transactions(session, client_id, period)
+    values = vat_return_values(period, transactions, "submitted", now)
+    values["submitted_at"] = now
+    if existing_return:
+        await session.execute(update(accounting_vat_returns).where(accounting_vat_returns.c.id == existing_return["id"]).values(**values))
+        return_id = existing_return["id"]
+    else:
+        return_id = new_id()
+        await session.execute(insert(accounting_vat_returns).values(
+            id=return_id,
+            client_id=client_id,
+            created_at=now,
+            **values,
+        ))
+
+    await session.execute(update(accounting_vat_periods).where(accounting_vat_periods.c.id == period_id).values(
+        status="submitted",
+        output_vat=values["vat_due_sales"],
+        input_vat=values["vat_reclaimed_purchases"],
+        net_vat=values["net_vat_due"],
+        transaction_count=len(transactions),
+        updated_at=now,
+    ))
+
+    settings_row = await ensure_vat_settings(session, client_id)
+    next_start = parse_date_or_today(period.get("period_end")) + timedelta(days=1)
+    months = vat_period_months(settings_row.get("vat_frequency"))
+    next_end = add_months_to_date(next_start, months) - timedelta(days=1)
+    next_period = await one(session, select(accounting_vat_periods).where(
+        accounting_vat_periods.c.client_id == client_id,
+        accounting_vat_periods.c.period_start == next_start.isoformat(),
+    ))
+    if next_period:
+        await session.execute(update(accounting_vat_periods).where(accounting_vat_periods.c.id == next_period["id"]).values(
+            status="open",
+            due_date=vat_period_due_date(next_end, settings_row).isoformat(),
+            payment_due_date=vat_period_due_date(next_end, settings_row, "payment").isoformat(),
+            updated_at=now,
+        ))
+        next_period_id = next_period["id"]
+    else:
+        next_period_id = new_id()
+        await session.execute(insert(accounting_vat_periods).values(
+            id=next_period_id,
+            client_id=client_id,
+            period_start=next_start.isoformat(),
+            period_end=next_end.isoformat(),
+            due_date=vat_period_due_date(next_end, settings_row).isoformat(),
+            payment_due_date=vat_period_due_date(next_end, settings_row, "payment").isoformat(),
+            status="open",
+            created_at=now,
+            updated_at=now,
+        ))
+
+    future_periods = await many(session, select(accounting_vat_periods).where(
+        accounting_vat_periods.c.client_id == client_id,
+        accounting_vat_periods.c.period_start > next_start.isoformat(),
+    ))
+    for future in future_periods:
+        if str(future.get("status") or "") not in {"submitted", "locked", "closed"}:
+            await session.execute(update(accounting_vat_periods).where(accounting_vat_periods.c.id == future["id"]).values(status="scheduled", updated_at=now))
+
+    await add_accounting_audit(session, client_id, user.get("id"), "vat_return_submitted", "vat_return", return_id, {
+        "period_id": period_id,
+        "period_start": period.get("period_start"),
+        "period_end": period.get("period_end"),
+        "transaction_count": len(transactions),
+        "next_period_id": next_period_id,
+    })
+    await session.commit()
+    submitted_return = await one(session, select(accounting_vat_returns).where(accounting_vat_returns.c.id == return_id))
+    next_period = await get_vat_period_or_404(session, client_id, next_period_id)
+    return {
+        "ok": True,
+        "status": "submitted",
+        "return": serialize_vat_return(submitted_return),
+        "period": serialize_vat_period({**period, "status": "submitted"}),
+        "next_period": serialize_vat_period(next_period),
+    }
+
+
 @api.post("/admin/accounting/clients/{client_id}/vat-returns/prepare")
 async def prepare_native_vat_return(
     client_id: str,
@@ -15366,12 +17240,14 @@ async def create_native_vat_code(
         "percentage": money_str(money(payload.get("percentage") if payload.get("percentage") not in (None, "") else payload.get("rate"))),
         "purchase_behavior": str(payload.get("purchase_behavior") or payload.get("purchase_behaviour") or "recoverable"),
         "sales_behavior": str(payload.get("sales_behavior") or payload.get("sales_behaviour") or "output"),
-        "box_sales_vat": str(payload.get("box_sales_vat") or ""),
-        "box_purchase_vat": str(payload.get("box_purchase_vat") or ""),
-        "box_sales_net": str(payload.get("box_sales_net") or ""),
-        "box_purchase_net": str(payload.get("box_purchase_net") or ""),
+        "box_sales_vat": str(payload.get("box_sales_vat") or (payload.get("return_box_vat") if str(payload.get("category") or "both") in ("sales", "both") else "") or ""),
+        "box_purchase_vat": str(payload.get("box_purchase_vat") or (payload.get("return_box_vat") if str(payload.get("category") or "both") in ("purchase", "both") else "") or ""),
+        "box_sales_net": str(payload.get("box_sales_net") or (payload.get("return_box_net") if str(payload.get("category") or "both") in ("sales", "both") else "") or ""),
+        "box_purchase_net": str(payload.get("box_purchase_net") or (payload.get("return_box_net") if str(payload.get("category") or "both") in ("purchase", "both") else "") or ""),
         "active": bool(payload.get("active", True)),
         "system_code": False,
+        "default_code": False,
+        "custom_code": True,
         "created_at": now,
         "updated_at": now,
     }
@@ -15392,7 +17268,8 @@ async def update_native_vat_code(
     row = await one(session, select(accounting_vat_codes).where(accounting_vat_codes.c.client_id == client_id, accounting_vat_codes.c.id == code_id))
     if not row:
         raise HTTPException(status_code=404, detail="VAT code not found.")
-    values = {key: payload[key] for key in ("description", "box_sales_vat", "box_purchase_vat", "box_sales_net", "box_purchase_net") if key in payload}
+    editable = ("description", "display_name", "category", "box_sales_vat", "box_purchase_vat", "box_sales_net", "box_purchase_net")
+    values = {key: payload[key] for key in editable if key in payload}
     if "purchase_behavior" in payload or "purchase_behaviour" in payload:
         values["purchase_behavior"] = str(payload.get("purchase_behavior") or payload.get("purchase_behaviour") or "")
     if "sales_behavior" in payload or "sales_behaviour" in payload:
@@ -15409,6 +17286,41 @@ async def update_native_vat_code(
     return serialize_vat_code(updated)
 
 
+@api.delete("/admin/accounting/clients/{client_id}/vat/codes/{code_id}")
+async def delete_native_vat_code(
+    client_id: str,
+    code_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    row = await one(session, select(accounting_vat_codes).where(
+        accounting_vat_codes.c.client_id == client_id,
+        accounting_vat_codes.c.id == code_id,
+    ))
+    if not row:
+        raise HTTPException(status_code=404, detail="VAT code not found.")
+    if bool(row.get("system_code")):
+        raise HTTPException(status_code=400, detail="System VAT codes cannot be deleted. Make the code inactive instead.")
+    code = str(row.get("code") or "")
+    usage_queries = (
+        select(func.count()).select_from(accounting_ap_invoice_lines).where(accounting_ap_invoice_lines.c.vat_code == code),
+        select(func.count()).select_from(accounting_ap_credit_note_lines).where(accounting_ap_credit_note_lines.c.vat_code == code),
+        select(func.count()).select_from(accounting_ar_invoice_lines).where(accounting_ar_invoice_lines.c.vat_code == code),
+        select(func.count()).select_from(accounting_ar_credit_note_lines).where(accounting_ar_credit_note_lines.c.vat_code == code),
+        select(func.count()).select_from(accounting_vat_adjustments).where(accounting_vat_adjustments.c.client_id == client_id, accounting_vat_adjustments.c.vat_code == code),
+    )
+    history_count = sum(int((await session.execute(query)).scalar() or 0) for query in usage_queries)
+    if history_count:
+        await session.execute(update(accounting_vat_codes).where(accounting_vat_codes.c.id == code_id).values(active=False, updated_at=utc_now_iso()))
+        await add_accounting_audit(session, client_id, user.get("id"), "vat_code_inactivated", "vat", code_id, {"history_count": history_count})
+        await session.commit()
+        return {"ok": True, "deleted": False, "inactivated": True, "history_count": history_count}
+    await session.execute(delete(accounting_vat_codes).where(accounting_vat_codes.c.id == code_id))
+    await add_accounting_audit(session, client_id, user.get("id"), "vat_code_deleted", "vat", code_id, {"code": code})
+    await session.commit()
+    return {"ok": True, "deleted": True, "inactivated": False, "history_count": 0}
+
+
 @api.put("/admin/accounting/clients/{client_id}/vat/settings")
 async def update_native_vat_settings(
     client_id: str,
@@ -15418,9 +17330,26 @@ async def update_native_vat_settings(
 ):
     row = await ensure_vat_settings(session, client_id)
     values = {key: payload[key] for key in (
-        "vat_registration_number", "vat_scheme", "vat_frequency", "vat_start_date",
+        "vat_registration_number", "vat_scheme", "vat_frequency", "vat_start_date", "vat_end_date",
         "hmrc_connection_status"
     ) if key in payload}
+    client = await get_user_by_id(session, client_id)
+    next_start = str(values.get("vat_start_date", row.get("vat_start_date")) or "")[:10]
+    next_end = str(values.get("vat_end_date", row.get("vat_end_date")) or "")[:10]
+    next_scheme = str(values.get("vat_scheme", row.get("vat_scheme")) or "").strip()
+    next_frequency = str(values.get("vat_frequency", row.get("vat_frequency")) or "").strip()
+    if bool((client or {}).get("is_vat_client")) and (not next_start or not next_scheme or not next_frequency):
+        raise HTTPException(status_code=400, detail="VAT start date, scheme and frequency are required before VAT treatment can be applied.")
+    if not bool((client or {}).get("is_vat_client")) and str(row.get("vat_start_date") or "") and not next_end:
+        raise HTTPException(status_code=400, detail="VAT end date is required when disabling VAT for this client.")
+    if next_start and next_end and next_end < next_start:
+        raise HTTPException(status_code=400, detail="VAT end date cannot be before VAT start date.")
+    for key in (
+        "return_due_months_after_period", "return_due_days_after_month",
+        "payment_due_months_after_period", "payment_due_days_after_month",
+    ):
+        if key in payload:
+            values[key] = max(0, int(payload.get(key) or 0))
     for key in ("default_purchase_vat_code", "default_sales_vat_code", "default_bank_vat_code"):
         if key in payload:
             code = vat_code_value(payload.get(key))
@@ -15453,6 +17382,8 @@ async def update_native_vat_period_status(
     status_map = {"open": "open", "lock": "locked", "close": "closed", "reopen": "open"}
     if action not in status_map:
         raise HTTPException(status_code=400, detail="VAT period action must be open, lock, close or reopen.")
+    if str(period.get("status") or "").lower() in {"submitted", "locked", "closed"} and action in {"open", "reopen"}:
+        raise HTTPException(status_code=400, detail="Submitted VAT periods cannot be reopened or unsubmitted. Enter corrections in the current open period.")
     await session.execute(update(accounting_vat_periods).where(accounting_vat_periods.c.id == period_id).values(status=status_map[action], updated_at=utc_now_iso()))
     await add_accounting_audit(session, client_id, user.get("id"), f"vat_period_{action}", "vat", period_id, {"previous_status": period.get("status"), "new_status": status_map[action]})
     await session.commit()
@@ -17510,6 +19441,7 @@ async def publish_submission_to_native_accounting(
         raise HTTPException(status_code=400, detail="Classify this document before publishing.")
     is_sales = route == "sales"
     if not is_sales:
+        purchase_type = str(coding_fields.get("document_type") or submission.get("document_type") or "purchase_invoice").strip().lower()
         existing_ap_invoice = await one(
             session,
             select(accounting_ap_invoices).where(
@@ -17564,10 +19496,7 @@ async def publish_submission_to_native_accounting(
             raise HTTPException(status_code=400, detail="Invoice number or reference is required before publishing to Accounts Payable.")
         if money(coding_fields.get("total") or coding_fields.get("gross") or coding_fields.get("net") or submission.get("amount")) == Decimal("0.00"):
             raise HTTPException(status_code=400, detail="Invoice amount is required before publishing to Accounts Payable.")
-        ap_invoice = await create_ap_invoice_record(
-            session,
-            client_id,
-            {
+        ap_payload = {
                 "supplier_name": supplier_name,
                 "supplier_id": supplier_id,
                 "invoice_number": invoice_number,
@@ -17597,15 +19526,29 @@ async def publish_submission_to_native_accounting(
                 "attachment_path": submission.get("image_filename") or "",
                 "original_filename": submission.get("original_filename") or submission.get("image_filename") or "",
                 "extracted_json": coding_fields,
-            },
-            actor_id,
-        )
+            }
+        if purchase_type in {"supplier_credit_note", "credit_note"}:
+            ap_payload = {
+                **ap_payload,
+                "credit_note_number": invoice_number,
+                "credit_note_date": ap_payload.get("invoice_date"),
+                "net_amount": money_str(abs(money(ap_payload.get("net_amount")))),
+                "vat_amount": money_str(abs(money(ap_payload.get("vat_amount")))),
+                "gross_amount": money_str(abs(money(ap_payload.get("gross_amount")))),
+                "lines": [{**line, "net_amount": money_str(abs(money(line.get("net_amount")))), "vat_amount": money_str(abs(money(line.get("vat_amount")))), "gross_amount": money_str(abs(money(line.get("gross_amount"))))} for line in ap_payload.get("lines", [])],
+            }
+            credit_response = await create_ap_credit_note(client_id, ap_payload, {"id": actor_id}, session)
+            ap_invoice = credit_response.get("credit_note") or credit_response.get("invoice_or_transaction") or credit_response.get("detail", {}).get("credit_note") or {}
+            entity = "SupplierCreditNote"
+        else:
+            ap_invoice = await create_ap_invoice_record(session, client_id, ap_payload, actor_id)
+            entity = "PurchaseInvoice"
         return {
             "provider": "epos_native",
             "destination": "accounts_payable",
-            "entity": "PurchaseInvoice",
+            "entity": entity,
             "id": ap_invoice.get("id"),
-            "reference": ap_invoice.get("invoice_number"),
+            "reference": ap_invoice.get("invoice_number") or ap_invoice.get("credit_note_number"),
             "status": ap_invoice.get("status"),
             "gross_amount": ap_invoice.get("gross_amount"),
             "outstanding_amount": ap_invoice.get("outstanding_amount"),
@@ -17638,18 +19581,33 @@ async def publish_submission_to_native_accounting(
         raise HTTPException(status_code=400, detail="Sales invoice number is required before publishing to Accounts Receivable.")
     if money(sales_fields.get("gross_amount")) == Decimal("0.00") and money(sales_fields.get("net_amount")) == Decimal("0.00"):
         raise HTTPException(status_code=400, detail="Add a net/gross value before publishing to Accounts Receivable.")
-    ar_invoice = await create_ar_invoice_record(
-        session,
-        client_id,
-        sales_submission_payload_for_ar(submission, sales_fields, bool(coding_fields.get("allow_duplicate"))),
-        actor_id,
-    )
+    native_accounts = await ensure_native_accounting_client(session, client_id)
+    native_accounts_by_code = {str(account.get("code") or "").strip(): account for account in native_accounts}
+    sales_codes = [str(sales_fields.get("sales_account_code") or sales_fields.get("sales_nominal_code") or "").strip(), *[str(line.get("nominal_account_code") or line.get("sales_account_code") or line.get("sales_nominal_code") or "").strip() for line in sales_fields.get("lines", [])]]
+    if not sales_codes[0]:
+        raise HTTPException(status_code=400, detail="Sales nominal account is required before publishing to Accounts Receivable.")
+    for code in [value for value in sales_codes if value]:
+        account = native_accounts_by_code.get(code)
+        if not account or not bool(account.get("active", True)):
+            raise HTTPException(status_code=400, detail=f"Sales nominal account '{code}' is not an active native Chart of Accounts code.")
+        classification = f"{account.get('category') or ''} {account.get('account_type') or ''} {account.get('purpose') or ''}".lower()
+        if not any(term in classification for term in ("income", "revenue", "sales")):
+            raise HTTPException(status_code=400, detail=f"Nominal account '{code}' is not a sales/income account.")
+    ar_payload = sales_submission_payload_for_ar(submission, sales_fields, bool(coding_fields.get("allow_duplicate")))
+    if sales_fields.get("document_type") == "customer_credit_note":
+        ar_payload = {**ar_payload, "credit_note_number": sales_fields.get("invoice_number"), "credit_note_date": sales_fields.get("invoice_date") or submission.get("date"), "net_amount": money_str(abs(money(ar_payload.get("net_amount")))), "vat_amount": money_str(abs(money(ar_payload.get("vat_amount")))), "gross_amount": money_str(abs(money(ar_payload.get("gross_amount")))), "lines": [{**line, "net_amount": money_str(abs(money(line.get("net_amount")))), "vat_amount": money_str(abs(money(line.get("vat_amount")))), "gross_amount": money_str(abs(money(line.get("gross_amount"))))} for line in ar_payload.get("lines", [])]}
+        credit_response = await create_ar_credit_note(client_id, ar_payload, {"id": actor_id}, session)
+        ar_invoice = credit_response.get("credit_note") or credit_response.get("invoice_or_transaction") or {}
+        entity = "CustomerCreditNote"
+    else:
+        ar_invoice = await create_ar_invoice_record(session, client_id, ar_payload, actor_id)
+        entity = "SalesInvoice"
     return {
         "provider": "epos_native",
         "destination": "accounts_receivable",
-        "entity": "SalesInvoice",
+        "entity": entity,
         "id": ar_invoice.get("id"),
-        "reference": ar_invoice.get("invoice_number"),
+        "reference": ar_invoice.get("invoice_number") or ar_invoice.get("credit_note_number"),
         "status": ar_invoice.get("status"),
         "gross_amount": ar_invoice.get("gross_amount"),
         "outstanding_amount": ar_invoice.get("outstanding_amount"),
@@ -18661,7 +20619,7 @@ async def run_pre_submission_ai_review(
     try:
         ai_settings = await get_openai_runtime_settings(session)
         coding_history = await get_coding_history(session, str(user["id"]), item["type"])
-        coding_choices = await get_submitted_items_coding_context(session, str(user["id"]), item["type"])
+        coding_choices = await get_submitted_items_coding_context(session, str(user["id"]), item["type"], item.get("date"))
         return await review_document_with_openai(
             raw,
             upload_content_type(file),
@@ -19415,13 +21373,24 @@ def submitted_items_destination(document_type: Optional[str], native: bool) -> s
     return "unclassified"
 
 
-async def get_submitted_items_coding_context(session: AsyncSession, client_id: str, document_type: Optional[str] = None) -> dict:
+async def get_submitted_items_coding_context(
+    session: AsyncSession,
+    client_id: str,
+    document_type: Optional[str] = None,
+    document_date: Optional[str] = None,
+) -> dict:
     client = await get_user_by_id(session, client_id)
     native = is_native_accounting_client(client)
     route = submitted_items_route_from_document_type(document_type)
     if native:
         accounts = await ensure_native_accounting_client(session, client_id)
         vat_codes = await ensure_vat_codes(session, client_id)
+        vat_context = await native_vat_effective_context(
+            session,
+            client_id,
+            document_date,
+            "sales" if route == "sales" else "purchase",
+        )
         await ensure_default_bank_account(session, client_id, accounts)
         contacts = await many(session, select(accounting_contacts).where(accounting_contacts.c.client_id == client_id))
         contact_by_id = {str(contact.get("id")): contact for contact in contacts}
@@ -19465,7 +21434,10 @@ async def get_submitted_items_coding_context(session: AsyncSession, client_id: s
             "sales_accounts": sales_accounts[:500] if route == "sales" else [],
             "vat_codes": native_vat_choices(vat_codes)[:200] if route in {"purchase", "sales"} else [],
             "bank_accounts": [bank_account_coding_choice(row) for row in bank_accounts][:200] if route in {"purchase", "sales"} else [],
+            **vat_context,
         }
+        if document_date and not vat_context["vat_active_for_date"]:
+            context["vat_codes"] = [choice for choice in context["vat_codes"] if str(choice.get("value") or choice.get("code") or "").upper() == "NO VAT"]
         account_options = context["sales_accounts"] if route == "sales" else context["purchase_accounts"] if route == "purchase" else []
         context["categories"] = coding_choice_texts(account_options)
         context["supplier_names"] = coding_choice_texts(context["suppliers"], True)
@@ -19727,15 +21699,16 @@ async def review_document_with_openai(
         raise HTTPException(status_code=400, detail="AI document check is enabled for this client, but OpenAI settings are not configured. Ask your administrator to add an API key.")
 
     is_vat_client = bool(client_user.get("is_vat_client"))
+    vat_active_for_date = bool((coding_choices or {}).get("vat_active_for_date", is_vat_client))
     invoice_kind = "purchase" if item.get("type") == "purchase" else "sales"
     vat_instruction = (
         "This is a VAT client. If the document is an invoice/receipt but VAT evidence is missing "
         "(VAT number, VAT amount/rate, or net/gross breakdown where expected), use needs_review "
         "rather than rejected unless it is clearly not an invoice/receipt."
-        if is_vat_client
+        if vat_active_for_date
         else (
-            "This is not marked as a VAT client. Do not reject only because VAT details are absent. "
-            "For coding, treat VAT as 0.00 and use the closest synced zero/no-VAT VAT code."
+            "This document is outside the client's VAT registration period. Do not reject because VAT details "
+            "are absent. Set header and line VAT to 0.00 and use NO VAT only."
         )
     )
     prompt = (
@@ -19775,6 +21748,11 @@ async def review_document_with_openai(
         "leave that field blank for the accountant to choose. "
         f"Available accounting choices: {json.dumps(coding_choices or {})[:7000]}. "
         f"Published correction examples for this client/type: {json.dumps(coding_history or [])[:5000]}"
+    )
+    vat_instruction += (
+        f" Native VAT effective dates: start {(coding_choices or {}).get('vat_start_date') or 'not configured'}, "
+        f"end {(coding_choices or {}).get('vat_end_date') or 'open-ended'}; "
+        f"VAT active for this document date: {'yes' if vat_active_for_date else 'no'}."
     )
     line_item_schema = {
         "type": "object",
@@ -19922,7 +21900,7 @@ async def review_document_with_openai(
             if output_text:
                 break
     try:
-        return apply_synced_coding_choices(normalize_ai_review(json.loads(output_text or "{}")), coding_choices, is_vat_client)
+        return apply_synced_coding_choices(normalize_ai_review(json.loads(output_text or "{}")), coding_choices, vat_active_for_date)
     except json.JSONDecodeError:
         logger.warning("OpenAI invoice check returned non-JSON output: %s", output_text)
         return {"status": "needs_review", "message": "Please check this document before submitting.", "document_type": "unknown", "payment_method": "not_clear", "confidence": "low"}
@@ -20148,6 +22126,15 @@ async def submit_item(
         raise HTTPException(status_code=400, detail="Invalid mode")
 
     submission_id = new_id()
+    item_metadata = parse_json_object(item.get("metadata_json")) or {}
+    source_route = str(item_metadata.get("source_route") or item.get("type") or "").strip().lower()
+    if source_route not in {"purchase", "sales"}:
+        source_route = "unclassified"
+    source_amount_side = str(item_metadata.get("direction") or item_metadata.get("source_amount_side") or "").strip().lower()
+    routed_document_type = submission_document_type(source_route, item.get("amount"), source_amount_side)
+    ai_type = str((ai_review or {}).get("document_type") or "").strip().lower()
+    route_conflict = bool(ai_type and submitted_items_route_from_document_type(ai_type) in {"purchase", "sales"} and submitted_items_route_from_document_type(ai_type) != source_route)
+    routing_warning = f"AI thinks this may be a {'sales' if source_route == 'purchase' else 'purchase'} document, but it was submitted through the {source_route} route." if route_conflict else ""
     submission_values = {
         "id": submission_id,
         "client_id": user["id"],
@@ -20164,11 +22151,22 @@ async def submit_item(
         "ai_extracted_fields": json.dumps(ai_review.get("coding_fields") or {}) if ai_review else None,
         "ai_client_approved": ai_client_approved,
         "review_status": "inbox",
+        "document_direction": source_route,
+        "document_type": routed_document_type,
+        "source_origin": item_metadata.get("source_origin") or ("banking_request" if item_metadata.get("source") == "banking" else "outstanding_items"),
+        "source_route": source_route,
+        "source_amount_side": source_amount_side,
+        "amount_sign": "negative" if money(item.get("amount")) < Decimal("0.00") else "positive",
+        "route_locked_by_source": True,
+        "accounting_destination": "epos_native_ar" if source_route == "sales" else "epos_native_ap" if source_route == "purchase" else "",
+        "routing_history_json": append_submission_route_event(None, {"action": "source_route_assigned", "route": source_route, "document_type": routed_document_type, "source_origin": item_metadata.get("source_origin") or "outstanding_items"}),
         "submitted_at": utc_now_iso(),
         "client_business_name": user.get("business_name", ""),
         "client_first_name": user.get("first_name", ""),
         "client_last_name": user.get("last_name", ""),
     }
+    if routing_warning:
+        submission_values["ai_review_message"] = " ".join(filter(None, [submission_values.get("ai_review_message"), routing_warning]))
     logger.info(
         "Client submit before insert correlation_id=%s endpoint=item submission_id=%s accepted_warning=%s image_filename=%s ai_review_status=%s ai_message_len=%s ai_fields_len=%s comment_len=%s",
         correlation_id,
@@ -20342,6 +22340,10 @@ async def submit_additional(
     item = {"description": description, "date": "", "amount": "", "type": type, "additional": True}
 
     submission_id = new_id()
+    source_route = str(type or "").strip().lower()
+    if source_route not in {"purchase", "sales"}:
+        source_route = "unclassified"
+    routed_document_type = submission_document_type(source_route)
     submission_values = {
         "id": submission_id,
         "client_id": user["id"],
@@ -20358,6 +22360,13 @@ async def submit_additional(
         "ai_extracted_fields": json.dumps(ai_review.get("coding_fields") or {}) if ai_review else None,
         "ai_client_approved": ai_client_approved,
         "review_status": "inbox",
+        "document_direction": source_route,
+        "document_type": routed_document_type,
+        "source_origin": "manual_upload",
+        "source_route": source_route,
+        "route_locked_by_source": True,
+        "accounting_destination": "epos_native_ar" if source_route == "sales" else "epos_native_ap" if source_route == "purchase" else "",
+        "routing_history_json": append_submission_route_event(None, {"action": "source_route_assigned", "route": source_route, "document_type": routed_document_type, "source_origin": "manual_upload"}),
         "submitted_at": now.isoformat(),
         "client_business_name": user.get("business_name", ""),
         "client_first_name": user.get("first_name", ""),
@@ -20538,6 +22547,7 @@ def purchase_submission_fields(submission: dict, reviewed_fields: Optional[dict]
 async def get_admin_submitted_items_coding_context(
     client_id: str,
     document_type: Optional[str] = None,
+    document_date: Optional[str] = None,
     user: dict = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ):
@@ -20547,7 +22557,7 @@ async def get_admin_submitted_items_coding_context(
         raise HTTPException(status_code=404, detail="Client was not found")
     if submitted_items_route_from_document_type(document_type) == "unclassified":
         raise HTTPException(status_code=400, detail="Choose a purchase or sales document type before loading coding options.")
-    return await get_submitted_items_coding_context(session, client_id, document_type)
+    return await get_submitted_items_coding_context(session, client_id, document_type, document_date)
 
 
 @api.get("/admin/submissions/{submission_id}/coding-context")
@@ -20564,7 +22574,12 @@ async def get_submission_coding_context(
     route_hint = document_type or doc.get("type") or doc.get("document_direction") or ""
     if submitted_items_route_from_document_type(route_hint) == "unclassified":
         raise HTTPException(status_code=400, detail="Classify this document before loading coding options.")
-    return await get_submitted_items_coding_context(session, str(doc["client_id"]), route_hint)
+    stored_fields = {
+        **(parse_json_object(doc.get("ai_extracted_fields")) or {}),
+        **(parse_json_object(doc.get("coding_fields")) or {}),
+    }
+    effective_date = str(stored_fields.get("date") or stored_fields.get("invoice_date") or doc.get("date") or "")
+    return await get_submitted_items_coding_context(session, str(doc["client_id"]), route_hint, effective_date)
 
 
 @api.patch("/admin/submissions/{submission_id}/classification")
@@ -20582,6 +22597,9 @@ async def classify_submission_document(
     mapping = CLASSIFICATION_MAP.get(document_type)
     if not mapping:
         raise HTTPException(status_code=400, detail="Invalid document classification.")
+    locked_route = str(doc.get("source_route") or doc.get("document_direction") or doc.get("type") or "").strip().lower()
+    if bool(doc.get("route_locked_by_source", True)) and locked_route in {"purchase", "sales"} and mapping["route"] in {"purchase", "sales"} and mapping["route"] != locked_route:
+        raise HTTPException(status_code=409, detail=f"This document is locked to the {locked_route} source route. Use Move to {'Sales' if locked_route == 'purchase' else 'Purchase'} to confirm a route change.")
     ai_fields = parse_json_object(doc.get("ai_extracted_fields")) or {}
     coding_fields = parse_json_object(doc.get("coding_fields")) or {}
     reviewer_notes = str(payload.get("reviewer_notes") or "").strip()
@@ -20632,6 +22650,74 @@ async def classify_submission_document(
     if mapping["route"] in {"purchase", "sales"}:
         response["coding_context"] = await get_submitted_items_coding_context(session, str(doc["client_id"]), document_type)
     return response
+
+
+@api.post("/admin/submissions/{submission_id}/move-route")
+async def move_submission_route(
+    submission_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await require_document_processing_module(session)
+    doc = await one(session, select(submissions).where(submissions.c.id == submission_id))
+    if not doc:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    target = str(payload.get("route") or payload.get("document_direction") or "").strip().lower()
+    if target not in {"purchase", "sales"}:
+        raise HTTPException(status_code=400, detail="Route must be purchase or sales.")
+    previous = submission_route(doc)
+    if previous == target:
+        return {"ok": True, "submission": serialize_submission(doc), "coding_context": await get_submitted_items_coding_context(session, str(doc["client_id"]), target)}
+    fields = parse_json_object(doc.get("coding_fields")) or parse_json_object(doc.get("ai_extracted_fields")) or {}
+    incompatible = (
+        {"supplier_id", "supplier_code", "vendor_account", "matched_supplier_id", "create_new_supplier"}
+        if target == "sales"
+        else {"customer_id", "customer_code", "customer_account_code", "matched_customer_id", "create_new_customer"}
+    )
+    for key in incompatible:
+        fields.pop(key, None)
+    document_type = submission_document_type(target, doc.get("amount"), doc.get("source_amount_side"))
+    fields.update({
+        "route": target,
+        "document_direction": target,
+        "document_type": document_type,
+        "routing_warning": "",
+    })
+    event = {
+        "action": "route_manually_moved",
+        "actor_id": str(user.get("id") or ""),
+        "from_route": previous,
+        "to_route": target,
+        "document_type": document_type,
+        "reason": str(payload.get("reason") or "").strip(),
+    }
+    await session.execute(
+        update(submissions).where(submissions.c.id == submission_id).values(
+            type=target,
+            document_direction=target,
+            document_type=document_type,
+            source_route=target,
+            route_locked_by_source=False,
+            accounting_destination="epos_native_ar" if target == "sales" else "epos_native_ap",
+            coding_fields=json.dumps(fields),
+            review_status="sales_review" if target == "sales" else "purchase_review",
+            routing_history_json=append_submission_route_event(doc.get("routing_history_json"), event),
+            reviewed_at=utc_now_iso(),
+        )
+    )
+    await add_accounting_audit(session, str(doc["client_id"]), str(user.get("id") or ""), "submitted_item_route_moved", "submitted_items", submission_id, event)
+    await session.commit()
+    fresh = await one(session, select(submissions).where(submissions.c.id == submission_id))
+    return {
+        "ok": True,
+        "route": target,
+        "destination": "accounts_receivable" if target == "sales" else "accounts_payable",
+        "document_direction": target,
+        "document_type": document_type,
+        "submission": serialize_submission(fresh),
+        "coding_context": await get_submitted_items_coding_context(session, str(doc["client_id"]), target),
+    }
 
 
 @api.get("/admin/submissions/{submission_id}/purchase-invoice-review")
@@ -20760,6 +22846,13 @@ async def get_sales_invoice_review(
     doc = await get_sales_submission_or_404(session, submission_id)
     fields = sales_submission_fields(doc)
     match = parse_json_object(doc.get("customer_match_json")) or await sales_customer_match_suggestions(session, str(doc["client_id"]), fields)
+    if not fields.get("customer_id") and match.get("matched") and match.get("suggestions"):
+        matched_customer = match["suggestions"][0]
+        fields["customer_id"] = matched_customer.get("customer_id") or matched_customer.get("id") or ""
+        fields["customer_code"] = matched_customer.get("customer_code") or matched_customer.get("account_code") or ""
+        fields["customer_reference"] = fields["customer_code"]
+        fields["account_code"] = fields["customer_code"]
+        fields["customer_name"] = fields.get("customer_name") or matched_customer.get("name") or ""
     duplicate = parse_json_object(doc.get("duplicate_warning_json")) or await sales_duplicate_warning(session, str(doc["client_id"]), fields)
     return {
         "submission": serialize_submission(doc),
@@ -20803,7 +22896,7 @@ async def save_sales_invoice_review(
         .where(submissions.c.id == submission_id)
         .values(
             type="sales",
-            ai_document_type="sales_invoice",
+            ai_document_type=reviewed.get("document_type") or "sales_invoice",
             ai_extracted_fields=json.dumps(reviewed),
             coding_fields=json.dumps(reviewed),
             review_status=status,
@@ -20881,7 +22974,7 @@ async def create_sales_review_customer(
         .where(submissions.c.id == submission_id)
         .values(
             type="sales",
-            ai_document_type="sales_invoice",
+            ai_document_type=fields.get("document_type") or "sales_invoice",
             ai_extracted_fields=json.dumps(fields),
             coding_fields=json.dumps(fields),
             document_direction="sales",
@@ -20938,7 +23031,7 @@ async def select_sales_review_customer(
         .where(submissions.c.id == submission_id)
         .values(
             type="sales",
-            ai_document_type="sales_invoice",
+            ai_document_type=fields.get("document_type") or "sales_invoice",
             ai_extracted_fields=json.dumps(fields),
             coding_fields=json.dumps(fields),
             document_direction="sales",
@@ -20985,18 +23078,25 @@ async def publish_sales_submission_to_ar(
     if not is_native_accounting_client(client):
         raise HTTPException(status_code=400, detail="EPOS native accounting is not enabled for this client.")
     if doc.get("published_ar_invoice_id"):
-        existing = await get_ar_invoice_or_404(session, str(doc["client_id"]), str(doc["published_ar_invoice_id"]))
+        existing_fields = sales_submission_fields(doc)
+        is_credit = existing_fields.get("document_type") == "customer_credit_note"
+        if is_credit:
+            existing = await one(session, select(accounting_ar_credit_notes).where(accounting_ar_credit_notes.c.client_id == str(doc["client_id"]), accounting_ar_credit_notes.c.id == str(doc["published_ar_invoice_id"])))
+            if not existing:
+                raise HTTPException(status_code=404, detail="Published customer credit note was not found.")
+        else:
+            existing = await get_ar_invoice_or_404(session, str(doc["client_id"]), str(doc["published_ar_invoice_id"]))
         return submitted_item_publish_response(
             {
                 "provider": "epos_native",
                 "destination": "accounts_receivable",
-                "entity": "SalesInvoice",
+                "entity": "CustomerCreditNote" if is_credit else "SalesInvoice",
                 "id": existing.get("id"),
-                "reference": existing.get("invoice_number"),
+                "reference": existing.get("invoice_number") or existing.get("credit_note_number"),
                 "status": existing.get("status"),
                 "gross_amount": existing.get("gross_amount"),
             },
-            serialize_ar_invoice(existing),
+            serialize_ar_credit_note(existing) if is_credit else serialize_ar_invoice(existing),
             True,
         )
     fields = sales_submission_fields(doc, payload.get("review") if isinstance(payload.get("review"), dict) else payload)
@@ -21006,22 +23106,52 @@ async def publish_sales_submission_to_ar(
         raise HTTPException(status_code=400, detail="Sales invoice number is required before publishing to Accounts Receivable.")
     if money(fields.get("gross_amount")) == Decimal("0.00") and money(fields.get("net_amount")) == Decimal("0.00"):
         raise HTTPException(status_code=400, detail="Sales invoice amount is required before publishing to Accounts Receivable.")
+    accounts = await ensure_native_accounting_client(session, str(doc["client_id"]))
+    accounts_by_code = {str(account.get("code") or "").strip(): account for account in accounts}
+    nominal_codes = [str(fields.get("sales_account_code") or fields.get("sales_nominal_code") or "").strip()]
+    nominal_codes.extend(str(line.get("nominal_account_code") or line.get("sales_account_code") or line.get("sales_nominal_code") or "").strip() for line in fields.get("lines", []))
+    if not nominal_codes[0]:
+        raise HTTPException(status_code=400, detail="Sales nominal account is required before publishing to Accounts Receivable.")
+    for code in [value for value in nominal_codes if value]:
+        account = accounts_by_code.get(code)
+        if not account or not bool(account.get("active", True)):
+            raise HTTPException(status_code=400, detail=f"Sales nominal account '{code}' is not an active native Chart of Accounts code.")
+        account_classification = f"{account.get('category') or ''} {account.get('account_type') or ''} {account.get('purpose') or ''}".lower()
+        if not any(term in account_classification for term in ("income", "revenue", "sales")):
+            raise HTTPException(status_code=400, detail=f"Nominal account '{code}' is not a sales/income account.")
     duplicate = await sales_duplicate_warning(session, str(doc["client_id"]), fields)
     allow_duplicate = bool(payload.get("allow_duplicate") or fields.get("allow_duplicate"))
     if duplicate.get("has_warning") and not allow_duplicate:
         await session.execute(update(submissions).where(submissions.c.id == submission_id).values(duplicate_warning_json=json.dumps(duplicate), publish_status="duplicate_warning"))
         await session.commit()
         raise HTTPException(status_code=409, detail=duplicate)
-    ar_invoice = await create_ar_invoice_record(session, str(doc["client_id"]), sales_submission_payload_for_ar(doc, fields, allow_duplicate), str(user.get("id") or ""))
+    ar_payload = sales_submission_payload_for_ar(doc, fields, allow_duplicate)
+    document_type = str(fields.get("document_type") or "sales_invoice").lower()
+    if document_type == "customer_credit_note":
+        ar_payload = {
+            **ar_payload,
+            "credit_note_number": fields.get("invoice_number"),
+            "credit_note_date": fields.get("invoice_date") or doc.get("date"),
+            "net_amount": money_str(abs(money(ar_payload.get("net_amount")))),
+            "vat_amount": money_str(abs(money(ar_payload.get("vat_amount")))),
+            "gross_amount": money_str(abs(money(ar_payload.get("gross_amount")))),
+            "lines": [{**line, "net_amount": money_str(abs(money(line.get("net_amount")))), "vat_amount": money_str(abs(money(line.get("vat_amount")))), "gross_amount": money_str(abs(money(line.get("gross_amount"))))} for line in ar_payload.get("lines", [])],
+        }
+        credit_response = await create_ar_credit_note(str(doc["client_id"]), ar_payload, user, session)
+        ar_document = credit_response.get("credit_note") or credit_response.get("invoice_or_transaction") or {}
+        publish_entity = "CustomerCreditNote"
+    else:
+        ar_document = await create_ar_invoice_record(session, str(doc["client_id"]), ar_payload, str(user.get("id") or ""))
+        publish_entity = "SalesInvoice"
     publish_summary = {
         "provider": "epos_native",
         "destination": "accounts_receivable",
-        "entity": "SalesInvoice",
-        "id": ar_invoice.get("id"),
-        "reference": ar_invoice.get("invoice_number"),
-        "invoice_number": ar_invoice.get("invoice_number"),
-        "status": ar_invoice.get("status"),
-        "gross_amount": ar_invoice.get("gross_amount"),
+        "entity": publish_entity,
+        "id": ar_document.get("id"),
+        "reference": ar_document.get("invoice_number") or ar_document.get("credit_note_number"),
+        "invoice_number": ar_document.get("invoice_number") or ar_document.get("credit_note_number"),
+        "status": ar_document.get("status"),
+        "gross_amount": ar_document.get("gross_amount"),
     }
     publish_summary = accounting_publish_contract(publish_summary)
     fields["accounting_publish"] = publish_summary
@@ -21031,7 +23161,7 @@ async def publish_sales_submission_to_ar(
         .where(submissions.c.id == submission_id)
         .values(
             type="sales",
-            ai_document_type="sales_invoice",
+            ai_document_type=fields.get("document_type") or "sales_invoice",
             ai_extracted_fields=json.dumps(fields),
             coding_fields=json.dumps(fields),
             review_status="published_to_ar",
@@ -21039,14 +23169,14 @@ async def publish_sales_submission_to_ar(
             accounting_destination="epos_native_ar",
             duplicate_warning_json=json.dumps(duplicate),
             publish_status="published_to_ar",
-            published_ar_invoice_id=ar_invoice.get("id"),
-            routing_history_json=append_submission_route_event(doc.get("routing_history_json"), {"action": "published_to_ar", "actor_id": str(user.get("id") or ""), "ar_invoice_id": ar_invoice.get("id")}),
+            published_ar_invoice_id=ar_document.get("id"),
+            routing_history_json=append_submission_route_event(doc.get("routing_history_json"), {"action": "published_to_ar", "actor_id": str(user.get("id") or ""), "ar_invoice_id": ar_document.get("id"), "document_type": document_type}),
             reviewed_at=utc_now_iso(),
         )
     )
-    await add_accounting_audit(session, str(doc["client_id"]), str(user.get("id") or ""), "submitted_item_published_to_ar", "submitted_items", submission_id, {"ar_invoice_id": ar_invoice.get("id"), "invoice_number": ar_invoice.get("invoice_number")})
+    await add_accounting_audit(session, str(doc["client_id"]), str(user.get("id") or ""), "submitted_item_published_to_ar", "submitted_items", submission_id, {"ar_invoice_id": ar_document.get("id"), "invoice_number": ar_document.get("invoice_number") or ar_document.get("credit_note_number"), "document_type": document_type})
     await session.commit()
-    return submitted_item_publish_response(publish_summary, ar_invoice)
+    return submitted_item_publish_response(publish_summary, ar_document)
 
 
 @api.patch("/admin/submissions/{submission_id}/review-status")
@@ -21065,6 +23195,13 @@ async def update_submission_review_status(
     stored_fields = parse_json_object(existing_submission.get("coding_fields")) or parse_json_object(existing_submission.get("ai_extracted_fields")) or {}
     route_fields = payload_fields if payload.coding_fields is not None else stored_fields
     route = submission_route(existing_submission, route_fields)
+    document_type = str(route_fields.get("document_type") or existing_submission.get("document_type") or "").strip().lower()
+    allowed_types = {
+        "purchase": {"purchase_invoice", "supplier_credit_note", "bill", "credit_note"},
+        "sales": {"sales_invoice", "customer_credit_note"},
+    }
+    if requested_status in {"published", "published_to_ap", "published_to_ar"} and document_type and document_type not in allowed_types.get(route, set()):
+        raise HTTPException(status_code=409, detail=f"The stored {route} route conflicts with document type '{document_type}'. Move the document route or correct its type before publishing.")
     if requested_status in {"published", "published_to_ap", "published_to_ar"} and route not in {"purchase", "sales"}:
         raise HTTPException(status_code=400, detail="Classify this document before publishing.")
     status = normalize_submission_review_status(requested_status, route, sales_submission_fields(existing_submission, route_fields) if route == "sales" else route_fields)
@@ -21104,23 +23241,34 @@ async def update_submission_review_status(
                 coding_fields["quickbooks_publish"] = accounting_publish
             if accounting_publish.get("provider") == "epos_native":
                 coding_fields["native_accounting_publish"] = accounting_publish
-            if accounting_publish.get("entity") == "SalesInvoice":
+            if accounting_publish.get("entity") in {"SalesInvoice", "CustomerCreditNote"}:
                 values["review_status"] = "published_to_ar"
                 values["publish_status"] = "published_to_ar"
                 values["published_ar_invoice_id"] = accounting_publish.get("id")
                 values["document_direction"] = "sales"
                 values["accounting_destination"] = "epos_native_ar"
                 values["routing_history_json"] = append_submission_route_event(existing_submission.get("routing_history_json"), {"action": "published_to_ar", "actor_id": str(user.get("id") or ""), "ar_invoice_id": accounting_publish.get("id")})
-                ar_invoice = await get_ar_invoice_or_404(session, str(existing_submission["client_id"]), str(accounting_publish.get("id")))
-                publish_response = submitted_item_publish_response(accounting_publish, serialize_ar_invoice(ar_invoice), bool(accounting_publish.get("already_posted")))
-            elif accounting_publish.get("entity") == "PurchaseInvoice":
+                if accounting_publish.get("entity") == "CustomerCreditNote":
+                    ar_invoice = await one(session, select(accounting_ar_credit_notes).where(accounting_ar_credit_notes.c.client_id == str(existing_submission["client_id"]), accounting_ar_credit_notes.c.id == str(accounting_publish.get("id"))))
+                    if not ar_invoice:
+                        raise HTTPException(status_code=404, detail="Published customer credit note was not found.")
+                    serialized_ar_document = serialize_ar_credit_note(ar_invoice)
+                else:
+                    ar_invoice = await get_ar_invoice_or_404(session, str(existing_submission["client_id"]), str(accounting_publish.get("id")))
+                    serialized_ar_document = serialize_ar_invoice(ar_invoice)
+                publish_response = submitted_item_publish_response(accounting_publish, serialized_ar_document, bool(accounting_publish.get("already_posted")))
+            elif accounting_publish.get("entity") in {"PurchaseInvoice", "SupplierCreditNote"}:
                 values["review_status"] = "published_to_ap"
                 values["publish_status"] = "published_to_ap"
                 values["document_direction"] = "purchase"
                 values["accounting_destination"] = "epos_native_ap"
                 values["routing_history_json"] = append_submission_route_event(existing_submission.get("routing_history_json"), {"action": "published_to_ap", "actor_id": str(user.get("id") or ""), "ap_invoice_id": accounting_publish.get("id")})
-                ap_invoice = await get_ap_invoice_or_404(session, str(existing_submission["client_id"]), str(accounting_publish.get("id")))
-                publish_response = submitted_item_publish_response(accounting_publish, serialize_ap_invoice(ap_invoice), bool(accounting_publish.get("already_posted")))
+                if accounting_publish.get("entity") == "SupplierCreditNote":
+                    ap_invoice = await one(session, select(accounting_ap_credit_notes).where(accounting_ap_credit_notes.c.client_id == str(existing_submission["client_id"]), accounting_ap_credit_notes.c.id == str(accounting_publish.get("id"))))
+                    publish_response = submitted_item_publish_response(accounting_publish, serialize_ap_credit_note(ap_invoice) if ap_invoice else {}, bool(accounting_publish.get("already_posted")))
+                else:
+                    ap_invoice = await get_ap_invoice_or_404(session, str(existing_submission["client_id"]), str(accounting_publish.get("id")))
+                    publish_response = submitted_item_publish_response(accounting_publish, serialize_ap_invoice(ap_invoice), bool(accounting_publish.get("already_posted")))
         values["coding_fields"] = json.dumps(coding_fields)
         memory_updated = status in {"published_to_ap", "published_to_ar"}
     result = await session.execute(
@@ -21138,6 +23286,13 @@ async def update_submission_review_status(
         "memory_updated": memory_updated,
         "supplier_name": supplier_name,
         "accounting_publish": accounting_publish,
+        "route": route,
+        "destination": "accounts_receivable" if route == "sales" else "accounts_payable" if route == "purchase" else "",
+        "document_direction": route,
+        "document_type": document_type or submission_document_type(route, existing_submission.get("amount"), existing_submission.get("source_amount_side")),
+        "publish_status": values.get("publish_status"),
+        "ap_invoice_id": accounting_publish.get("id") if accounting_publish and route == "purchase" else None,
+        "ar_invoice_id": accounting_publish.get("id") if accounting_publish and route == "sales" else None,
         "quickbooks_publish": accounting_publish if accounting_publish and accounting_publish.get("provider") == "quickbooks" else None,
     }
     if publish_response:
@@ -21189,6 +23344,19 @@ async def extract_submission_fields(
         coding_choices,
     )
     extracted = ai_review.get("coding_fields") or {}
+    ai_route = submitted_items_route_from_document_type(ai_review.get("document_type") or extracted.get("document_type"))
+    route_conflict = route in {"purchase", "sales"} and ai_route in {"purchase", "sales"} and ai_route != route
+    if route in {"purchase", "sales"}:
+        stored_type = str(doc.get("document_type") or submission_document_type(route, doc.get("amount"), doc.get("source_amount_side"))).strip().lower()
+        extracted["document_direction"] = route
+        extracted["route"] = route
+        extracted["document_type"] = stored_type
+        if route_conflict:
+            warning = f"AI thinks this may be a {ai_route} document, but it was submitted through the {route} route."
+            extracted["routing_warning"] = warning
+            ai_review["message"] = " ".join(filter(None, [ai_review.get("message"), warning]))
+        ai_review["document_type"] = stored_type
+        ai_review["coding_fields"] = extracted
     await session.execute(
         update(submissions)
         .where(submissions.c.id == submission_id)

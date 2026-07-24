@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { api, formatApiError } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, Search, ChevronRight, Plus, ArrowUpDown } from "lucide-react";
+import { ArrowLeft, Search, ChevronRight, Plus, ArrowUpDown, ReceiptText } from "lucide-react";
 import { toast } from "sonner";
 
 function parseListDate(value) {
@@ -90,21 +90,24 @@ export default function ClientList() {
             <li key={it._id}>
               <button
                 onClick={() => nav(`/portal/submit/${it._id}`)}
-                className="w-full text-left rounded-2xl border border-stone-200 bg-white p-5 card-hover"
+                className="group w-full rounded-xl border border-stone-200 bg-white p-4 text-left shadow-[0_3px_12px_rgba(28,25,23,0.06)] transition duration-150 hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-[0_10px_26px_rgba(6,78,59,0.12)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2"
                 data-testid={`item-${it._id}`}
               >
                 <div className="flex items-center gap-4">
+                  <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100">
+                    <ReceiptText className="h-6 w-6" />
+                  </span>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
                       <Badge style={{ background: "var(--outstanding-bg)", color: "var(--outstanding)" }} className="hover:opacity-80">Outstanding</Badge>
                     </div>
-                    <div className="font-display font-semibold text-stone-900 truncate">{it.description}</div>
+                    <div className="truncate font-display font-bold text-stone-950">{it.description}</div>
                     <div className="text-xs text-stone-500 mt-1">
                       {it.date && <span>{it.date}</span>}
                       {it.amount && <span> - {it.amount}</span>}
                     </div>
                   </div>
-                  <ChevronRight className="h-5 w-5 text-stone-400" />
+                  <ChevronRight className="h-5 w-5 text-stone-400 transition group-hover:translate-x-1 group-hover:text-emerald-700" />
                 </div>
               </button>
             </li>

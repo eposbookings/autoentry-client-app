@@ -76,19 +76,21 @@ function statusClass(status) {
 
 function KpiCard({ label, value, icon: Icon, tone = "emerald" }) {
   const tones = {
-    emerald: "border-emerald-100 bg-emerald-50 text-emerald-950",
-    amber: "border-amber-100 bg-amber-50 text-amber-950",
-    red: "border-red-100 bg-red-50 text-red-950",
-    stone: "border-stone-100 bg-stone-50 text-stone-900",
+    emerald: "bg-emerald-50 text-emerald-700 ring-emerald-100",
+    amber: "bg-amber-50 text-amber-700 ring-amber-100",
+    red: "bg-red-50 text-red-700 ring-red-100",
+    stone: "bg-stone-100 text-stone-600 ring-stone-200",
   };
   return (
-    <div className={`rounded-lg border p-4 shadow-sm ${tones[tone] || tones.stone}`}>
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-wide opacity-70">{label}</p>
-          <p className="mt-2 font-display text-2xl font-bold">{value ?? 0}</p>
+    <div className="rounded-xl border border-stone-200 bg-white p-4 shadow-[0_3px_12px_rgba(28,25,23,0.06)]">
+      <div className="flex items-center gap-3">
+        <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full ring-1 ${tones[tone] || tones.stone}`}>
+          <Icon className="h-5 w-5" />
+        </span>
+        <div className="min-w-0">
+          <p className="truncate text-[10px] font-semibold uppercase tracking-wide text-stone-500">{label}</p>
+          <p className="mt-1 truncate font-display text-xl font-bold text-stone-950">{value ?? 0}</p>
         </div>
-        <Icon className="h-5 w-5 opacity-70" />
       </div>
     </div>
   );
@@ -127,15 +129,21 @@ function ProviderSelect({ value, onChange, providers }) {
 
 function ConnectionCard({ connection, onAction, onSync }) {
   return (
-    <div className="rounded-lg border border-stone-200 bg-white p-4 shadow-sm">
+    <div className="flex min-h-[250px] flex-col rounded-xl border border-stone-200 bg-white p-4 shadow-[0_3px_12px_rgba(28,25,23,0.07)]">
       <div className="flex items-start justify-between gap-3">
-        <div>
-          <h3 className="font-display text-base font-bold text-stone-900">{connection.provider_name}</h3>
-          <p className="text-sm text-stone-500">{connection.category} - {connection.environment}</p>
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100">
+            <PlugZap className="h-6 w-6" />
+          </span>
+          <div className="min-w-0 pt-0.5">
+            <h3 className="truncate font-display text-base font-bold text-stone-950">{connection.provider_name}</h3>
+            <p className="mt-1 truncate text-xs text-stone-500">{connection.category} - {connection.environment}</p>
+            <p className="mt-1.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700">Connected service</p>
+          </div>
         </div>
         <Badge className={statusClass(connection.disabled ? "disabled" : connection.status)}>{connection.disabled ? "Disabled" : connection.status}</Badge>
       </div>
-      <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+      <div className="mt-4 grid grid-cols-2 gap-3 border-t border-stone-200 pt-3 text-sm">
         <div>
           <p className="text-xs font-semibold uppercase text-stone-400">Last sync</p>
           <p className="text-stone-700">{connection.last_sync_at || "Not synced"}</p>
@@ -153,7 +161,7 @@ function ConnectionCard({ connection, onAction, onSync }) {
           <p className="text-stone-700">{connection.health_status || "Unknown"}</p>
         </div>
       </div>
-      <div className="mt-4 flex flex-wrap gap-2">
+      <div className="mt-auto flex flex-wrap gap-2 border-t border-stone-100 pt-3">
         <Button size="sm" variant="outline" onClick={() => onAction(connection.id, "test")}>Test</Button>
         <Button size="sm" variant="outline" onClick={() => onAction(connection.id, "reconnect")}>Reconnect</Button>
         <Button size="sm" variant="outline" onClick={() => onSync(connection.id)}>Sync</Button>
@@ -394,15 +402,21 @@ export default function AdminIntegrationHub() {
               <Panel key={group.category} title={group.category}>
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                   {safeArray(group.providers).map((provider) => (
-                    <div key={provider.id} className="rounded-lg border border-stone-200 bg-white p-4 shadow-sm">
+                    <div key={provider.id} className="flex min-h-[190px] flex-col rounded-xl border border-stone-200 bg-white p-4 shadow-[0_3px_12px_rgba(28,25,23,0.07)]">
                       <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <h3 className="font-display text-base font-bold text-stone-900">{provider.name}</h3>
-                          <p className="text-sm text-stone-500">{provider.auth_type} authentication</p>
+                        <div className="flex min-w-0 items-start gap-3">
+                          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100">
+                            <Link2 className="h-6 w-6" />
+                          </span>
+                          <div className="min-w-0 pt-0.5">
+                            <h3 className="truncate font-display text-base font-bold text-stone-950">{provider.name}</h3>
+                            <p className="mt-1 text-xs text-stone-500">{provider.auth_type} authentication</p>
+                            <p className="mt-1.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700">Available integration</p>
+                          </div>
                         </div>
                         <Badge className={statusClass(provider.status)}>{provider.status}</Badge>
                       </div>
-                      <Button className="mt-4 w-full gap-2" variant="outline" onClick={() => createConnection(provider.id)} disabled={saving}>
+                      <Button className="mt-auto w-full gap-2 border-emerald-200 text-emerald-800 hover:bg-emerald-50" variant="outline" onClick={() => createConnection(provider.id)} disabled={saving}>
                         <Link2 className="h-4 w-4" /> Add connection
                       </Button>
                     </div>
