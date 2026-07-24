@@ -13,6 +13,7 @@ import {
   ReceiptText,
   Save,
   Search,
+  Trash2,
   UsersRound,
   WalletCards,
   X,
@@ -228,6 +229,7 @@ function isReceiptDocument(type) {
 }
 
 function isReadOnlyTransaction(draft) {
+  if (typeof draft?.view_only === "boolean") return draft.view_only;
   return !editableStatuses.includes(String(draft?.status || "draft").toLowerCase());
 }
 
@@ -1181,6 +1183,29 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
     return createInvoiceFromDraft(e, true);
   }
 
+  async function deleteSelectedInvoices() {
+    const invoicesToDelete = selectedLedgerRowsForExport.filter((row) => row.source === "invoice");
+    if (!invoicesToDelete.length) return toast.error("Select one or more sales invoices.");
+    if (!window.confirm(`Delete ${invoicesToDelete.length} selected unpaid sales invoice${invoicesToDelete.length === 1 ? "" : "s"}? Posted invoices will be reversed before removal.`)) return;
+    setSaving(true);
+    try {
+      const { data } = await api.post(`/admin/accounting/clients/${clientId}/account-transactions/bulk-delete`, {
+        transactions: invoicesToDelete.map((row) => ({ id: row.id, type: "ar_invoice" })),
+      });
+      const blocked = data?.results?.filter((row) => row.status !== "deleted") || [];
+      if (blocked.length) toast.error(blocked.map((row) => row.reason).filter(Boolean).join(" "));
+      if (data?.deleted) toast.success(`${data.deleted} sales invoice${data.deleted === 1 ? "" : "s"} deleted`);
+      setSelectedLedgerKeys([]);
+      setTransactionDraft(null);
+      setTransactionEntryMode("");
+      await Promise.all([refreshCustomerLedger(), reloadWorkspace?.()]);
+    } catch (error) {
+      toast.error(formatApiError(error));
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const customerAuditRows = useMemo(() => {
     const realRows = auditTrail.filter((row) => {
       if (!selectedCustomer) return false;
@@ -1344,9 +1369,14 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
                 <div className="mb-2 flex flex-wrap justify-end gap-2">
                   {hasLedgerFilters ? <Button type="button" variant="outline" size="sm" onClick={clearLedgerColumnFilters}>Clear filters</Button> : null}
                   {selectedLedgerRowsForExport.length ? (
-                    <Button type="button" variant="outline" size="sm" onClick={() => exportRows(selectedLedgerRowsForExport, `${selectedCustomer?.name || "customer"}-selected-ledger.csv`)}>
-                      <Download className="mr-2 h-4 w-4" /> Export selected ({selectedLedgerRowsForExport.length})
-                    </Button>
+                    <>
+                      <Button type="button" variant="outline" size="sm" onClick={() => exportRows(selectedLedgerRowsForExport, `${selectedCustomer?.name || "customer"}-selected-ledger.csv`)}>
+                        <Download className="mr-2 h-4 w-4" /> Export selected ({selectedLedgerRowsForExport.length})
+                      </Button>
+                      <Button type="button" variant="outline" size="sm" disabled={saving} onClick={deleteSelectedInvoices} className="text-red-700">
+                        <Trash2 className="mr-2 h-4 w-4" /> Delete selected invoices
+                      </Button>
+                    </>
                   ) : null}
                 </div>
               ) : null}

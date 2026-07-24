@@ -4172,7 +4172,7 @@ def serialize_ap_invoice(row: dict, lines: Optional[list[dict]] = None, supplier
     has_source_file = bool(resolve_upload_path(item["attachment_path"]))
     item["source_document_status"] = "available" if has_source_file else ("missing" if has_source_reference else "none")
     item["source_document_missing"] = item["source_document_status"] == "missing"
-    item["editable"] = item.get("status") in AP_EDITABLE_STATUSES
+    item["editable"] = unpaid_invoice_is_editable(item)
     item["view_only"] = not item["editable"]
     if supplier:
         item["supplier"] = supplier
@@ -4245,6 +4245,18 @@ AP_EDITABLE_STATUSES = {"draft", "awaiting_approval"}
 AR_EDITABLE_STATUSES = {"draft", "awaiting_approval"}
 
 
+def unpaid_invoice_is_editable(row: dict) -> bool:
+    status = str(row.get("status") or "").strip().lower()
+    if status in {"draft", "awaiting_approval"}:
+        return True
+    return (
+        status in {"approved", "posted"}
+        and row.get("outstanding_amount") is not None
+        and row.get("gross_amount") is not None
+        and money(row.get("outstanding_amount")) == money(row.get("gross_amount"))
+    )
+
+
 def require_ap_editable(row: dict, label: str) -> None:
     if row.get("status") not in AP_EDITABLE_STATUSES:
         raise HTTPException(status_code=400, detail=f"{label} cannot be edited from status {row.get('status')}.")
@@ -4253,6 +4265,11 @@ def require_ap_editable(row: dict, label: str) -> None:
 def require_ar_editable(row: dict, label: str) -> None:
     if row.get("status") not in AR_EDITABLE_STATUSES:
         raise HTTPException(status_code=400, detail=f"{label} cannot be edited from status {row.get('status')}.")
+
+
+def require_unpaid_invoice_editable(row: dict, label: str) -> None:
+    if not unpaid_invoice_is_editable(row):
+        raise HTTPException(status_code=400, detail=f"{label} can only be edited while unpaid and unallocated.")
 
 
 def ap_document_response(document_type: str, document: dict, lines: Optional[list[dict]] = None) -> dict:
@@ -4727,7 +4744,7 @@ def serialize_ar_invoice(row: dict, lines: Optional[list[dict]] = None, customer
     has_source_file = bool(resolve_upload_path(item["attachment_path"]))
     item["source_document_status"] = "available" if has_source_file else ("missing" if has_source_reference else "none")
     item["source_document_missing"] = item["source_document_status"] == "missing"
-    item["editable"] = item.get("status") in AR_EDITABLE_STATUSES
+    item["editable"] = unpaid_invoice_is_editable(item)
     item["view_only"] = not item["editable"]
     if customer:
         item["customer"] = dict(customer)
@@ -6933,11 +6950,16 @@ async def delete_safe_account_transaction(session: AsyncSession, client_id: str,
         invoice = await one(session, select(accounting_ap_invoices).where(accounting_ap_invoices.c.client_id == client_id, accounting_ap_invoices.c.id == record_id))
         if not invoice:
             return {"id": record_id, "type": item_type, "status": "blocked", "reason": "AP invoice not found."}
-        if invoice.get("posted_journal_id") or invoice.get("status") not in AP_EDITABLE_STATUSES:
-            return {"id": record_id, "type": item_type, "status": "blocked", "reason": "Posted or approved AP invoices must be voided or reversed, not deleted."}
-        allocations = await count_rows(session, accounting_ap_payment_allocations, accounting_ap_payment_allocations.c.client_id == client_id, accounting_ap_payment_allocations.c.invoice_id == record_id)
+        allocations = (
+            await count_rows(session, accounting_ap_payment_allocations, accounting_ap_payment_allocations.c.client_id == client_id, accounting_ap_payment_allocations.c.invoice_id == record_id)
+            + await count_rows(session, accounting_ap_credit_allocations, accounting_ap_credit_allocations.c.client_id == client_id, accounting_ap_credit_allocations.c.invoice_id == record_id)
+        )
         if allocations:
             return {"id": record_id, "type": item_type, "status": "blocked", "reason": "AP invoice has payment allocations."}
+        if not unpaid_invoice_is_editable(invoice):
+            return {"id": record_id, "type": item_type, "status": "blocked", "reason": "Only an unpaid, unallocated AP invoice can be deleted."}
+        if invoice.get("posted_journal_id"):
+            await reverse_native_journal(session, client_id, str(invoice.get("posted_journal_id")), "ap_invoice", record_id, actor_id)
         await session.execute(delete(accounting_ap_invoice_lines).where(accounting_ap_invoice_lines.c.invoice_id == record_id))
         await session.execute(delete(accounting_ap_invoices).where(accounting_ap_invoices.c.id == record_id))
     elif item_type == "ap_payment":
@@ -6960,11 +6982,16 @@ async def delete_safe_account_transaction(session: AsyncSession, client_id: str,
         invoice = await one(session, select(accounting_ar_invoices).where(accounting_ar_invoices.c.client_id == client_id, accounting_ar_invoices.c.id == record_id))
         if not invoice:
             return {"id": record_id, "type": item_type, "status": "blocked", "reason": "AR invoice not found."}
-        if invoice.get("posted_journal_id") or invoice.get("status") not in AR_EDITABLE_STATUSES:
-            return {"id": record_id, "type": item_type, "status": "blocked", "reason": "Posted or approved AR invoices must be voided or reversed, not deleted."}
-        allocations = await count_rows(session, accounting_ar_receipt_allocations, accounting_ar_receipt_allocations.c.client_id == client_id, accounting_ar_receipt_allocations.c.invoice_id == record_id)
+        allocations = (
+            await count_rows(session, accounting_ar_receipt_allocations, accounting_ar_receipt_allocations.c.client_id == client_id, accounting_ar_receipt_allocations.c.invoice_id == record_id)
+            + await count_rows(session, accounting_ar_credit_allocations, accounting_ar_credit_allocations.c.client_id == client_id, accounting_ar_credit_allocations.c.invoice_id == record_id)
+        )
         if allocations:
             return {"id": record_id, "type": item_type, "status": "blocked", "reason": "AR invoice has receipt allocations."}
+        if not unpaid_invoice_is_editable(invoice):
+            return {"id": record_id, "type": item_type, "status": "blocked", "reason": "Only an unpaid, unallocated AR invoice can be deleted."}
+        if invoice.get("posted_journal_id"):
+            await reverse_native_journal(session, client_id, str(invoice.get("posted_journal_id")), "ar_invoice", record_id, actor_id)
         await session.execute(delete(accounting_ar_invoice_lines).where(accounting_ar_invoice_lines.c.invoice_id == record_id))
         await session.execute(delete(accounting_ar_invoices).where(accounting_ar_invoices.c.id == record_id))
     elif item_type == "ar_receipt":
@@ -12215,7 +12242,7 @@ async def create_ap_invoice_record(
             accounting_ap_invoices.c.status != "void",
         ),
     )
-    if duplicate and bool(ap_settings.get("duplicate_invoice_warning", True)):
+    if duplicate and bool(ap_settings.get("duplicate_invoice_warning", True)) and not bool(payload.get("allow_duplicate")):
         raise HTTPException(status_code=409, detail={"has_warning": True, "message": f"Possible duplicate: supplier already has invoice {invoice_number}.", "matches": [serialize_ap_invoice(duplicate)]})
     invoice_date = parse_ap_document_date(payload.get("invoice_date") or payload.get("date"), "Invoice date").isoformat()
     due_date_raw = payload.get("due_date")
@@ -13458,7 +13485,7 @@ async def update_ap_invoice(
     conn = await session.connection()
     await ensure_table_columns(conn, (accounting_ap_invoices, accounting_ap_invoice_lines))
     invoice = await get_ap_invoice_or_404(session, client_id, invoice_id)
-    require_ap_editable(invoice, "Purchase invoice")
+    require_unpaid_invoice_editable(invoice, "Purchase invoice")
     ap_settings = await ensure_ap_settings(session, client_id)
     settings_row = await ensure_accounting_settings(session, client_id)
     supplier = await get_ap_supplier_or_404(session, client_id, str(payload.get("supplier_id") or invoice.get("supplier_id")))
@@ -13492,9 +13519,13 @@ async def update_ap_invoice(
         payment_terms_days = int(payload.get("payment_terms_days", invoice.get("payment_terms_days") or supplier.get("payment_terms_days") or 30) or 30)
     except (TypeError, ValueError):
         payment_terms_days = int(ap_settings.get("default_payment_terms_days") or 30)
+    was_posted = bool(invoice.get("posted_journal_id")) and str(invoice.get("status") or "").lower() == "posted"
     status = str(payload.get("status") or invoice.get("status") or "draft").strip().lower()
     if status not in AP_EDITABLE_STATUSES:
         status = invoice.get("status")
+    if was_posted:
+        await reverse_native_journal(session, client_id, str(invoice.get("posted_journal_id")), "ap_invoice", invoice_id, user.get("id"))
+        status = "approved"
     now = utc_now_iso()
     values = {
         "supplier_id": supplier["id"],
@@ -13506,6 +13537,7 @@ async def update_ap_invoice(
         "payment_terms_days": payment_terms_days,
         "currency": str(payload.get("currency", invoice.get("currency") or "GBP") or "GBP").strip().upper()[:8],
         "status": status,
+        "posted_journal_id": None if was_posted else invoice.get("posted_journal_id"),
         "description": str(payload.get("description", invoice.get("description") or "") or "").strip(),
         "attachment_path": str(payload.get("attachment_path", invoice.get("attachment_path") or "") or "").strip(),
         "vat_code": header_vat_code,
@@ -13519,6 +13551,10 @@ async def update_ap_invoice(
     for index, line in enumerate(lines, start=1):
         await session.execute(insert(accounting_ap_invoice_lines).values(id=new_id(), client_id=client_id, invoice_id=invoice_id, line_number=index, created_at=now, updated_at=now, **line))
     await add_accounting_audit(session, client_id, user.get("id"), "purchase_invoice_updated", "accounts_payable", invoice_id, {"status": status})
+    if was_posted:
+        await session.flush()
+        await add_accounting_audit(session, client_id, user.get("id"), "purchase_invoice_reposted_after_edit", "accounts_payable", invoice_id, {"original_journal_id": invoice.get("posted_journal_id")})
+        return await post_ap_invoice(client_id, invoice_id, payload, user, session)
     await session.commit()
     updated = await get_ap_invoice_or_404(session, client_id, invoice_id)
     return ap_document_response("purchase_invoice", serialize_ap_invoice(updated, lines, supplier), lines)
@@ -14911,7 +14947,7 @@ async def update_ar_invoice(
     conn = await session.connection()
     await ensure_table_columns(conn, (accounting_ar_invoices, accounting_ar_invoice_lines))
     invoice = await get_ar_invoice_or_404(session, client_id, invoice_id)
-    require_ar_editable(invoice, "Sales invoice")
+    require_unpaid_invoice_editable(invoice, "Sales invoice")
     ar_settings = await ensure_ar_settings(session, client_id)
     settings_row = await ensure_accounting_settings(session, client_id)
     customer = await get_ar_customer_or_404(session, client_id, str(payload.get("customer_id") or invoice.get("customer_id")))
@@ -14943,9 +14979,13 @@ async def update_ar_invoice(
         payment_terms_days = int(payload.get("payment_terms_days", invoice.get("payment_terms_days") or customer.get("payment_terms_days") or 30) or 30)
     except (TypeError, ValueError):
         payment_terms_days = int(ar_settings.get("default_payment_terms_days") or 30)
+    was_posted = bool(invoice.get("posted_journal_id")) and str(invoice.get("status") or "").lower() == "posted"
     status = str(payload.get("status") or invoice.get("status") or "draft").strip().lower()
     if status not in AR_EDITABLE_STATUSES:
         status = invoice.get("status")
+    if was_posted:
+        await reverse_native_journal(session, client_id, str(invoice.get("posted_journal_id")), "ar_invoice", invoice_id, user.get("id"))
+        status = "approved"
     now = utc_now_iso()
     values = {
         "customer_id": customer["id"],
@@ -14958,6 +14998,7 @@ async def update_ar_invoice(
         "currency": str(payload.get("currency", invoice.get("currency") or "GBP") or "GBP").strip().upper()[:8],
         "description": str(payload.get("description", invoice.get("description") or "") or "").strip(),
         "status": status,
+        "posted_journal_id": None if was_posted else invoice.get("posted_journal_id"),
         "attachment_path": str(payload.get("attachment_path", invoice.get("attachment_path") or "") or "").strip(),
         "original_filename": str(payload.get("original_filename", invoice.get("original_filename") or "") or "").strip()[:255],
         "vat_code": header_vat_code,
@@ -14979,6 +15020,10 @@ async def update_ar_invoice(
         await add_accounting_audit(session, client_id, user.get("id"), "sales_invoice_line_removed", "accounts_receivable", invoice_id, {"count": len(existing_lines) - len(lines)})
     if old_signatures != new_signatures:
         await add_accounting_audit(session, client_id, user.get("id"), "sales_invoice_lines_edited", "accounts_receivable", invoice_id, {"line_count": len(lines)})
+    if was_posted:
+        await session.flush()
+        await add_accounting_audit(session, client_id, user.get("id"), "sales_invoice_reposted_after_edit", "accounts_receivable", invoice_id, {"original_journal_id": invoice.get("posted_journal_id")})
+        return await post_ar_invoice(client_id, invoice_id, payload, user, session)
     await session.commit()
     return await get_ar_invoice_detail(client_id, invoice_id, user, session)
 
@@ -20001,7 +20046,26 @@ async def publish_submission_to_native_accounting(
                 coding_fields["create_new_supplier"] = False
                 coding_fields["supplier_created_from_review"] = True
             else:
-                raise HTTPException(status_code=400, detail="Select or create a supplier before publishing to Accounts Payable.")
+                match = await native_ap_supplier_match_suggestions(
+                    session,
+                    client_id,
+                    {
+                        "supplier_name": supplier_name,
+                        "supplier_code": coding_fields.get("supplier_code") or coding_fields.get("vendor_account"),
+                        "supplier_email": coding_fields.get("supplier_email"),
+                        "supplier_vat_number": coding_fields.get("supplier_vat_number"),
+                    },
+                    limit=1,
+                )
+                suggestion = (match.get("suggestions") or [None])[0] if match.get("matched") else None
+                if suggestion:
+                    supplier_id = str(suggestion.get("id") or suggestion.get("supplier_id") or "")
+                    coding_fields["supplier_id"] = supplier_id
+                    coding_fields["supplier_name"] = suggestion.get("name") or supplier_name
+                    coding_fields["vendor_name"] = suggestion.get("name") or supplier_name
+                    coding_fields["supplier_code"] = suggestion.get("supplier_code") or coding_fields.get("supplier_code") or ""
+                else:
+                    raise HTTPException(status_code=400, detail="Select or create a supplier before publishing to Accounts Payable.")
         invoice_number = str(coding_fields.get("bill_number") or coding_fields.get("invoice_number") or coding_fields.get("reference") or "").strip()
         if not invoice_number:
             raise HTTPException(status_code=400, detail="Invoice number or reference is required before publishing to Accounts Payable.")
@@ -20037,6 +20101,7 @@ async def publish_submission_to_native_accounting(
                 "attachment_path": submission.get("image_filename") or "",
                 "original_filename": submission.get("original_filename") or submission.get("image_filename") or "",
                 "extracted_json": coding_fields,
+                "allow_duplicate": bool(coding_fields.get("allow_duplicate")),
             }
         if purchase_type in {"supplier_credit_note", "credit_note"}:
             ap_payload = {
@@ -20053,6 +20118,11 @@ async def publish_submission_to_native_accounting(
             entity = "SupplierCreditNote"
         else:
             ap_invoice = await create_ap_invoice_record(session, client_id, ap_payload, actor_id)
+            ap_settings = await ensure_ap_settings(session, client_id)
+            if not bool(ap_settings.get("approval_required", True)):
+                await session.flush()
+                posted = await post_ap_invoice(client_id, str(ap_invoice["id"]), ap_payload, {"id": actor_id}, session)
+                ap_invoice = posted.get("invoice") or posted.get("invoice_or_transaction") or ap_invoice
             entity = "PurchaseInvoice"
         return {
             "provider": "epos_native",
@@ -20064,6 +20134,7 @@ async def publish_submission_to_native_accounting(
             "gross_amount": ap_invoice.get("gross_amount"),
             "outstanding_amount": ap_invoice.get("outstanding_amount"),
             "created_at": ap_invoice.get("created_at"),
+            "lines": ap_invoice.get("lines") or ap_payload.get("lines") or [],
         }
     existing_ar_invoice = await one(
         session,
@@ -20087,7 +20158,15 @@ async def publish_submission_to_native_accounting(
         }
     sales_fields = sales_submission_fields(submission, coding_fields)
     if not sales_fields.get("customer_id"):
-        raise HTTPException(status_code=400, detail="Select or create a customer before publishing to Accounts Receivable.")
+        match = await sales_customer_match_suggestions(session, client_id, sales_fields, limit=1)
+        suggestion = (match.get("suggestions") or [None])[0] if match.get("matched") else None
+        if suggestion:
+            sales_fields["customer_id"] = str(suggestion.get("id") or suggestion.get("customer_id") or "")
+            coding_fields["customer_id"] = sales_fields["customer_id"]
+            coding_fields["customer_name"] = suggestion.get("name") or sales_fields.get("customer_name")
+            coding_fields["customer_code"] = suggestion.get("customer_code") or coding_fields.get("customer_code") or ""
+        else:
+            raise HTTPException(status_code=400, detail="Select or create a customer before publishing to Accounts Receivable.")
     if not sales_fields.get("invoice_number"):
         raise HTTPException(status_code=400, detail="Sales invoice number is required before publishing to Accounts Receivable.")
     if money(sales_fields.get("gross_amount")) == Decimal("0.00") and money(sales_fields.get("net_amount")) == Decimal("0.00"):
@@ -20112,6 +20191,11 @@ async def publish_submission_to_native_accounting(
         entity = "CustomerCreditNote"
     else:
         ar_invoice = await create_ar_invoice_record(session, client_id, ar_payload, actor_id)
+        ar_settings = await ensure_ar_settings(session, client_id)
+        if not bool(ar_settings.get("approval_required", True)):
+            await session.flush()
+            posted = await post_ar_invoice(client_id, str(ar_invoice["id"]), ar_payload, {"id": actor_id}, session)
+            ar_invoice = posted.get("invoice") or posted.get("invoice_or_transaction") or ar_invoice
         entity = "SalesInvoice"
     return {
         "provider": "epos_native",
@@ -20123,6 +20207,7 @@ async def publish_submission_to_native_accounting(
         "gross_amount": ar_invoice.get("gross_amount"),
         "outstanding_amount": ar_invoice.get("outstanding_amount"),
         "created_at": ar_invoice.get("created_at"),
+        "lines": ar_invoice.get("lines") or ar_payload.get("lines") or [],
     }
 
 

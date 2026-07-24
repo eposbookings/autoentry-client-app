@@ -241,6 +241,27 @@ def test_serialize_ar_invoice_marks_posted_as_view_only():
     assert item["view_only"] is True
 
 
+def test_serialize_ar_invoice_allows_unpaid_posted_invoice_editing():
+    item = server.serialize_ar_invoice({
+        "id": "inv-1",
+        "client_id": "client-1",
+        "status": "posted",
+        "gross_amount": "120.00",
+        "outstanding_amount": "120.00",
+    })
+
+    assert item["editable"] is True
+    assert item["view_only"] is False
+
+
+def test_unpaid_invoice_editing_stops_after_part_allocation():
+    assert server.unpaid_invoice_is_editable({
+        "status": "posted",
+        "gross_amount": "120.00",
+        "outstanding_amount": "80.00",
+    }) is False
+
+
 def test_attachment_resolution_preserves_stored_relative_folders():
     candidates = server.upload_path_candidates("demo/ap/00600.pdf")
 
