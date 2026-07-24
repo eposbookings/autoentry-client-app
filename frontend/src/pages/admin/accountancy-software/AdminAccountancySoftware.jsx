@@ -134,7 +134,10 @@ export default function AdminAccountancySoftware() {
     if (moduleKey && MODULE_DETAILS[moduleKey]) {
       const requestedTab = initialRoute.get("tab");
       setModule(moduleKey);
-      setModuleTab(moduleKey === "vat" && requestedTab === "VAT Periods" ? "VAT Returns" : requestedTab || MODULE_DETAILS[moduleKey].tabs?.[0] || "");
+      const resolvedTab = moduleKey === "vat" && ["Dashboard", "VAT Periods"].includes(requestedTab)
+        ? "VAT Returns"
+        : requestedTab;
+      setModuleTab(resolvedTab || MODULE_DETAILS[moduleKey].tabs?.[0] || "");
     }
   }, [initialRoute]);
 
@@ -2281,10 +2284,8 @@ function VatEngineWorkspace({ workspace, tab, filters, reloadWorkspace, busy }) 
   const codes = vat.codes || [];
   const activeCodes = codes.filter((code) => code.active !== false);
   const periods = vat.periods || [];
-  const transactions = vat.transactions || [];
   const dashboard = vat.dashboard || {};
   const vatActivitySummary = vat.activity_summary || {};
-  const currentBoxes = vat.current_boxes || {};
   const currentPeriod = periods.find((period) => period.id === dashboard.current_period_id) || periods.find((period) => period.status === "open") || periods[0];
   const [search, setSearch] = useState("");
   const [vatCodeFilter, setVatCodeFilter] = useState("");
@@ -2293,7 +2294,6 @@ function VatEngineWorkspace({ workspace, tab, filters, reloadWorkspace, busy }) 
   const [basisConfirmation, setBasisConfirmation] = useState("");
   const [codeForm, setCodeForm] = useState({ code: "", description: "", percentage: "20", purchase_behavior: "input", sales_behavior: "output", return_box_net: "7", return_box_vat: "4", active: true });
   const [adjustmentForm, setAdjustmentForm] = useState({ adjustment_date: "", vat_period_id: "", vat_code: "", direction: "", reason: "", source_reference: "", notes: "", net_amount: "", vat_amount: "", gross_amount: "" });
-  const [openBox, setOpenBox] = useState(null);
   const [vatPage, setVatPage] = useState(() => normalisePaginatedResponse({ page_size: DEFAULT_PAGE_SIZE }));
   const [vatPageNumber, setVatPageNumber] = useState(1);
   const [vatPageSize, setVatPageSize] = useState(DEFAULT_PAGE_SIZE);
@@ -2459,46 +2459,6 @@ function VatEngineWorkspace({ workspace, tab, filters, reloadWorkspace, busy }) 
       setAdjustmentDetailLoading("");
     }
   };
-
-  if (tab === "Dashboard") {
-    return (
-      <div className="space-y-4">
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
-          <SummaryCard label="Current VAT Liability" value={formatMoney(dashboard.current_vat_liability)} />
-          <SummaryCard label="VAT Due to HMRC" value={formatMoney(dashboard.vat_due_to_hmrc)} tone="warning" />
-          <SummaryCard label="VAT Recoverable" value={formatMoney(dashboard.vat_recoverable)} tone="success" />
-          <SummaryCard label="Current VAT Period" value={currentPeriod ? `${formatDate(currentPeriod.start_date)} - ${formatDate(currentPeriod.end_date)}` : "-"} />
-          <SummaryCard label="Next Return Due" value={formatDate(dashboard.next_return_due)} />
-          <SummaryCard label="Outstanding Returns" value={dashboard.outstanding_returns || 0} />
-        </div>
-        <div className="grid gap-4 xl:grid-cols-[1fr_420px]">
-          <Panel title="Current VAT Summary">
-            <VatBoxGrid boxes={currentBoxes} transactions={transactions} onOpenBox={setOpenBox} />
-            {openBox && <VatBoxDrilldown box={openBox} transactions={transactions} onClose={() => setOpenBox(null)} />}
-          </Panel>
-          <Panel title="Recent VAT Activity">
-            <div className="space-y-2">
-              {transactions.slice(0, 8).map((transaction) => (
-                <div key={transaction.id} className="rounded-md border border-stone-200 p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="font-semibold text-stone-900">{transaction.document_number || transaction.document_type}</p>
-                      <p className="text-xs text-stone-500">{formatDate(transaction.date)} - {transaction.source_module}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="font-display font-bold text-stone-900">{formatMoney(transaction.vat)}</p>
-                      <p className="text-xs text-stone-500">{transaction.vat_code || "-"}</p>
-                    </div>
-                  </div>
-                </div>
-              ))}
-              {transactions.length === 0 && <p className="py-8 text-center text-sm text-stone-500">No VAT activity yet.</p>}
-            </div>
-          </Panel>
-        </div>
-      </div>
-    );
-  }
 
   if (tab === "VAT Returns") {
     return (
@@ -2711,71 +2671,6 @@ function VatAccountingFilterBar({ search, setSearch, extra }) {
       </div>
     </div>
   );
-}
-
-function VatBoxGrid({ boxes = {}, transactions = [], onOpenBox }) {
-  const rows = Array.from({ length: 9 }, (_, index) => {
-    const box = `box${index + 1}`;
-    const value = boxes[box] || 0;
-    const count = vatBoxTransactions(box, transactions).length;
-    return { box, label: vatBoxLabel(box), value, count };
-  });
-  return (
-    <div className="grid gap-3 md:grid-cols-3">
-      {rows.map((row) => (
-        <button key={row.box} type="button" onClick={() => onOpenBox(row.box)} className="group flex min-h-[180px] flex-col rounded-xl border border-stone-200 bg-white p-4 text-left shadow-[0_3px_12px_rgba(28,25,23,0.07)] transition duration-150 hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-[0_10px_26px_rgba(6,78,59,0.13)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2">
-          <span className="flex items-start justify-between gap-3">
-            <span className="flex h-11 w-11 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100"><ClipboardCheck className="h-5 w-5" /></span>
-            <ArrowRight className="mt-3 h-4 w-4 text-stone-400 transition group-hover:translate-x-1 group-hover:text-emerald-700" />
-          </span>
-          <span className="mt-3 text-[10px] font-bold uppercase tracking-wide text-emerald-700">{row.box.toUpperCase()}</span>
-          <span className="mt-1 line-clamp-2 text-sm font-semibold text-stone-800">{row.label}</span>
-          <span className="mt-auto flex items-end justify-between gap-3 border-t border-stone-200 pt-3">
-            <span>
-              <span className="block text-[10px] font-semibold uppercase tracking-wide text-stone-500">Box value</span>
-              <span className="mt-0.5 block font-display text-lg font-bold text-emerald-800">{formatMoney(row.value)}</span>
-            </span>
-            <span className="text-right text-xs text-stone-500">{row.count} transaction{row.count === 1 ? "" : "s"}</span>
-          </span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function VatBoxDrilldown({ box, transactions, onClose }) {
-  const rows = vatBoxTransactions(box, transactions);
-  return (
-    <div className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 p-3">
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <div>
-          <p className="font-semibold text-emerald-950">{box.toUpperCase()} drill-down</p>
-          <p className="text-xs text-emerald-800">{vatBoxLabel(box)}</p>
-        </div>
-        <Button type="button" size="sm" variant="outline" onClick={onClose}>Close</Button>
-      </div>
-      <VatTransactionsTable transactions={rows} compact />
-    </div>
-  );
-}
-
-function vatBoxTransactions(box, transactions = []) {
-  return transactions.filter((transaction) => String(transaction.return_box_vat || "") === box.replace("box", "") || String(transaction.return_box_net || "") === box.replace("box", ""));
-}
-
-function vatBoxLabel(box) {
-  const labels = {
-    box1: "VAT due on sales",
-    box2: "VAT due on acquisitions",
-    box3: "Total VAT due",
-    box4: "VAT reclaimed",
-    box5: "Net VAT due",
-    box6: "Net sales",
-    box7: "Net purchases",
-    box8: "EC sales",
-    box9: "EC purchases",
-  };
-  return labels[box] || box;
 }
 
 function VatTransactionsTable({ transactions = [], compact = false }) {

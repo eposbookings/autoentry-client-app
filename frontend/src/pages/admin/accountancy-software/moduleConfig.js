@@ -98,7 +98,7 @@ export const MODULE_DETAILS = {
     manage: ["VAT Returns", "VAT Transactions", "VAT Codes", "Adjustments"],
     statLabel: "Net VAT due",
     stat: (workspace) => formatMoney(workspace?.vat_engine?.dashboard?.net_vat_due || 0),
-    tabs: ["Dashboard", "VAT Returns", "VAT Transactions", "VAT Codes", "Adjustments", "Reports", "Settings"],
+    tabs: ["VAT Returns", "VAT Transactions", "VAT Codes", "Adjustments", "Reports", "Settings"],
   },
   fixed_assets: {
     title: "Fixed Assets",
