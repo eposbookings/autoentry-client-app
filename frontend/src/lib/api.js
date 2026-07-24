@@ -31,5 +31,12 @@ export function formatApiError(err) {
       .filter(Boolean)
       .join(" · ");
   if (detail?.msg) return String(detail.msg);
-  return String(detail);
+  if (detail?.message) return String(detail.message);
+  if (detail?.error) return String(detail.error);
+  if (detail?.reason) return String(detail.reason);
+  try {
+    return JSON.stringify(detail);
+  } catch {
+    return "Something went wrong.";
+  }
 }

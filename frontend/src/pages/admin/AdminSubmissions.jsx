@@ -220,7 +220,17 @@ export default function AdminSubmissions() {
     const codingFields = isSalesInvoice ? normaliseSalesReviewDraftForPayload(draft, codingOptions) : normalisePurchaseReviewDraftForPayload(draft, codingOptions);
     setBusy(true);
     try {
-      const { data } = await api.patch(`/admin/submissions/${selected.id}/review-status`, { review_status: reviewStatus, coding_fields: codingFields });
+      const publish = (fields) => api.patch(`/admin/submissions/${selected.id}/review-status`, { review_status: reviewStatus, coding_fields: fields });
+      let response;
+      try {
+        response = await publish(codingFields);
+      } catch (error) {
+        const detail = error?.response?.data?.detail;
+        if (!isPublishStatus || error?.response?.status !== 409 || !detail?.has_warning) throw error;
+        if (!window.confirm(`${detail.message || "This may be a duplicate invoice."}\n\nPublish it anyway?`)) return;
+        response = await publish({ ...codingFields, allow_duplicate: true });
+      }
+      const { data } = response;
       if (isPublishStatus && isSalesInvoice) {
         const arPublish = data?.accounting_publish || data?.accounts_receivable_publish || data?.accounts_receivable_invoice || data?.ar_sales_invoice || data?.invoice;
         if (arPublish) {
@@ -853,7 +863,7 @@ function DetailLayer({
           <Button type="button" variant="outline" onClick={() => moveSelected("reviewed")} disabled={busy} className="h-8 gap-2 px-3">
             <CheckCircle2 className="h-4 w-4" /> Save review
           </Button>
-          <Button type="button" onClick={() => moveSelected("published_to_ap")} disabled={busy || !purchaseReviewReady(draft, codingContext)} className="h-8 gap-2 px-3" style={{ background: "var(--brand)" }}>
+          <Button type="button" onClick={() => moveSelected("published_to_ap")} disabled={busy || !purchaseReviewReady(draft, codingContext, codingOptions)} className="h-8 gap-2 px-3" style={{ background: "var(--brand)" }}>
             <CheckCircle2 className="h-4 w-4" /> Publish to Accounts Payable
           </Button>
         </div>
@@ -2169,8 +2179,8 @@ function salesCustomerNameFromSuggested(suggested = {}) {
     || "";
 }
 
-function purchaseReviewReady(draft, codingContext) {
-  if (codingContext?.source === "epos_native" && !draft?.supplier_id) return false;
+function purchaseReviewReady(draft, codingContext, codingOptions = {}) {
+  if (codingContext?.source === "epos_native" && !resolveSupplierOption(draft, codingOptions.supplierOptions || [])) return false;
   return Boolean(
     String(draft?.vendor_name || "").trim()
     && String(draft?.document_type || "").trim()
@@ -2219,7 +2229,7 @@ function salesReviewProblems(draft, codingOptions = {}) {
   const problems = [];
   const hasVatOptions = (codingOptions.vatOptions || []).length > 0;
   if (!String(draft?.customer_name || "").trim()) problems.push("Customer name is required");
-  if (!draft?.customer_id) problems.push("Select or create a customer before publishing to Accounts Receivable.");
+  if (!resolveCustomerOption(draft, codingOptions.customerOptions || [])) problems.push("Select or create a customer before publishing to Accounts Receivable.");
   if (!String(draft?.document_type || "").trim()) problems.push("Document type is required");
   if (!String(draft?.sales_invoice_number || draft?.reference || "").trim()) problems.push("Sales invoice number or reference is required");
   if (!String(draft?.sales_nominal || draft?.category || "").trim()) problems.push("Sales nominal/category is required");
@@ -2238,8 +2248,13 @@ function salesReviewProblems(draft, codingOptions = {}) {
 function normalisePurchaseReviewDraftForPayload(draft = {}, codingOptions = {}) {
   const accountOptions = codingOptions.categoryOptions || [];
   const vatOptions = codingOptions.vatOptions || [];
+  const supplier = resolveSupplierOption(draft, codingOptions.supplierOptions || []);
   const payload = {
     ...draft,
+    supplier_id: draft.supplier_id || supplier?.supplier_id || supplier?.value || "",
+    supplier_code: draft.supplier_code || supplier?.supplier_code || "",
+    vendor_account: draft.vendor_account || supplier?.supplier_code || "",
+    vendor_name: supplier?.supplier_name || draft.vendor_name || "",
     category: canonicalOptionValue(draft.category, accountOptions),
     vat_code: canonicalOptionValue(draft.vat_code, vatOptions),
     line_items: (draft.line_items || []).map((line) => ({
@@ -2263,10 +2278,13 @@ function normaliseSalesReviewDraftForPayload(draft = {}, codingOptions = {}) {
   const vatOptions = codingOptions.vatOptions || [];
   const salesOptions = codingOptions.salesAccountOptions?.length ? codingOptions.salesAccountOptions : codingOptions.categoryOptions || [];
   const salesNominal = canonicalOptionValue(draft.sales_nominal || draft.category, salesOptions);
+  const customer = resolveCustomerOption(draft, codingOptions.customerOptions || []);
   const payload = {
     ...draft,
     document_direction: "sales",
-    customer_code: draft.customer_code || draft.customer_account_code || "",
+    customer_id: draft.customer_id || customer?.customer_id || customer?.value || "",
+    customer_name: customer?.customer_name || draft.customer_name || "",
+    customer_code: draft.customer_code || draft.customer_account_code || customer?.customer_code || "",
     invoice_number: draft.sales_invoice_number || draft.reference || "",
     net_amount: draft.net,
     vat_amount: draft.vat,
@@ -2777,6 +2795,41 @@ function canonicalOptionValue(value, options = []) {
     return code && (normalisedRaw.startsWith(`${code} -`) || label.startsWith(`${normalisedRaw} -`));
   });
   return byPrefix?.value || raw;
+}
+
+function findPartyOption(values = [], options = [], keys = []) {
+  const needles = values.map(normaliseOptionText).filter(Boolean);
+  if (!needles.length) return null;
+  return options.find((option) => {
+    const candidates = keys.map((key) => normaliseOptionText(option?.[key])).filter(Boolean);
+    return needles.some((needle) => candidates.some((candidate) => (
+      candidate === needle
+      || candidate.startsWith(`${needle} -`)
+      || needle.startsWith(`${candidate} -`)
+    )));
+  }) || null;
+}
+
+function resolveSupplierOption(draft = {}, options = []) {
+  if (draft.supplier_id) {
+    return findPartyOption([draft.supplier_id], options, ["value", "supplier_id"]) || { supplier_id: draft.supplier_id };
+  }
+  return findPartyOption(
+    [draft.vendor_name, draft.supplier_name, draft.supplier_code, draft.vendor_account],
+    options,
+    ["value", "label", "supplier_id", "supplier_name", "supplier_code", "supplier_email"],
+  );
+}
+
+function resolveCustomerOption(draft = {}, options = []) {
+  if (draft.customer_id) {
+    return findPartyOption([draft.customer_id], options, ["value", "customer_id"]) || { customer_id: draft.customer_id };
+  }
+  return findPartyOption(
+    [draft.customer_name, draft.customer_display_name, draft.customer_code, draft.customer_account_code],
+    options,
+    ["value", "label", "customer_id", "customer_name", "customer_code", "customer_email"],
+  );
 }
 
 function supplierExists(value, options = []) {
