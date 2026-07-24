@@ -132,8 +132,12 @@ export default function AdminAccountancySoftware() {
     if (!clientId) return;
     setSelectedId(clientId);
     if (moduleKey && MODULE_DETAILS[moduleKey]) {
+      const requestedTab = initialRoute.get("tab");
       setModule(moduleKey);
-      setModuleTab(initialRoute.get("tab") || MODULE_DETAILS[moduleKey].tabs?.[0] || "");
+      const resolvedTab = moduleKey === "vat" && ["Dashboard", "VAT Periods"].includes(requestedTab)
+        ? "VAT Returns"
+        : requestedTab;
+      setModuleTab(resolvedTab || MODULE_DETAILS[moduleKey].tabs?.[0] || "");
     }
   }, [initialRoute]);
 
@@ -737,7 +741,7 @@ function ModuleWorkspace(props) {
   const [recordActionMenuOpen, setRecordActionMenuOpen] = useState(false);
   const detail = MODULE_DETAILS[module];
   const isBankingModule = module === "banking";
-  const suppressGlobalFilterBar = isBankingModule || module === "payables" || module === "receivables" || (module === "vat" && ["VAT Periods", "VAT Returns"].includes(moduleTab));
+  const suppressGlobalFilterBar = isBankingModule || module === "payables" || module === "receivables" || (module === "vat" && moduleTab === "VAT Returns");
 
   useEffect(() => {
     setRecordHeaderContext(null);
@@ -2280,16 +2284,16 @@ function VatEngineWorkspace({ workspace, tab, filters, reloadWorkspace, busy }) 
   const codes = vat.codes || [];
   const activeCodes = codes.filter((code) => code.active !== false);
   const periods = vat.periods || [];
-  const transactions = vat.transactions || [];
   const dashboard = vat.dashboard || {};
-  const currentBoxes = vat.current_boxes || {};
+  const vatActivitySummary = vat.activity_summary || {};
   const currentPeriod = periods.find((period) => period.id === dashboard.current_period_id) || periods.find((period) => period.status === "open") || periods[0];
   const [search, setSearch] = useState("");
   const [vatCodeFilter, setVatCodeFilter] = useState("");
   const [settingsForm, setSettingsForm] = useState(settings);
+  const [showBasisConfirmation, setShowBasisConfirmation] = useState(false);
+  const [basisConfirmation, setBasisConfirmation] = useState("");
   const [codeForm, setCodeForm] = useState({ code: "", description: "", percentage: "20", purchase_behavior: "input", sales_behavior: "output", return_box_net: "7", return_box_vat: "4", active: true });
-  const [adjustmentForm, setAdjustmentForm] = useState({ adjustment_date: "", vat_period_id: "", vat_code: "", reason: "", notes: "", net_amount: "", vat_amount: "", gross_amount: "" });
-  const [openBox, setOpenBox] = useState(null);
+  const [adjustmentForm, setAdjustmentForm] = useState({ adjustment_date: "", vat_period_id: "", vat_code: "", direction: "", reason: "", source_reference: "", notes: "", net_amount: "", vat_amount: "", gross_amount: "" });
   const [vatPage, setVatPage] = useState(() => normalisePaginatedResponse({ page_size: DEFAULT_PAGE_SIZE }));
   const [vatPageNumber, setVatPageNumber] = useState(1);
   const [vatPageSize, setVatPageSize] = useState(DEFAULT_PAGE_SIZE);
@@ -2297,14 +2301,27 @@ function VatEngineWorkspace({ workspace, tab, filters, reloadWorkspace, busy }) 
   const [vatPageError, setVatPageError] = useState("");
   const [vatRefreshKey, setVatRefreshKey] = useState(0);
   const [showCreateCode, setShowCreateCode] = useState(false);
+  const [showAdjustmentModal, setShowAdjustmentModal] = useState(false);
+  const [expandedAdjustmentId, setExpandedAdjustmentId] = useState("");
+  const [adjustmentDetails, setAdjustmentDetails] = useState({});
+  const [adjustmentDetailLoading, setAdjustmentDetailLoading] = useState("");
+  const [adjustmentDetailError, setAdjustmentDetailError] = useState("");
 
   useEffect(() => {
-    setSettingsForm(settings || {});
+    const basis = settings?.vat_accounting_basis || (settings?.cash_accounting ? "cash" : "accrual");
+    setSettingsForm({ ...(settings || {}), vat_accounting_basis: basis, vat_scheme: settings?.vat_scheme === "flat_rate" ? "flat_rate" : "standard" });
   }, [settings]);
 
   useEffect(() => {
     setRefreshedVat(null);
   }, [clientId]);
+
+  useEffect(() => {
+    if (!showAdjustmentModal) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, [showAdjustmentModal]);
 
   useEffect(() => {
     if (!adjustmentForm.vat_period_id && currentPeriod?.id) {
@@ -2372,20 +2389,39 @@ function VatEngineWorkspace({ workspace, tab, filters, reloadWorkspace, busy }) 
     "VAT code removed"
   );
 
+  const persistSettings = (confirmation = "") => runVatAction(
+    () => api.put(`/admin/accounting/clients/${clientId}/vat/settings`, {
+      ...settingsForm,
+      vat_accounting_basis: settingsForm.vat_accounting_basis || "accrual",
+      cash_accounting: settingsForm.vat_accounting_basis === "cash",
+      accrual_accounting: settingsForm.vat_accounting_basis !== "cash",
+      basis_change_confirmation: confirmation,
+    }),
+    "VAT settings saved"
+  ).then((result) => {
+    if (result) {
+      setShowBasisConfirmation(false);
+      setBasisConfirmation("");
+    }
+    return result;
+  });
+
   const saveSettings = (event) => {
     event.preventDefault();
-    if (vatClient && (!settingsForm.vat_start_date || !settingsForm.vat_scheme || !settingsForm.vat_frequency)) {
-      toast.error("VAT start date, scheme and frequency are required before VAT treatment can be applied.");
+    if (vatClient && (!settingsForm.vat_start_date || !settingsForm.vat_scheme || !settingsForm.vat_accounting_basis || !settingsForm.vat_frequency)) {
+      toast.error("VAT start date, scheme, accounting basis and frequency are required before VAT treatment can be applied.");
       return;
     }
     if (settingsForm.vat_start_date && settingsForm.vat_end_date && settingsForm.vat_end_date < settingsForm.vat_start_date) {
       toast.error("VAT end date cannot be before VAT start date.");
       return;
     }
-    return runVatAction(
-      () => api.put(`/admin/accounting/clients/${clientId}/vat/settings`, settingsForm),
-      "VAT settings saved"
-    );
+    const currentBasis = settings?.vat_accounting_basis || (settings?.cash_accounting ? "cash" : "accrual");
+    if (settingsForm.vat_accounting_basis !== currentBasis && vatActivitySummary.requires_confirmation) {
+      setShowBasisConfirmation(true);
+      return;
+    }
+    return persistSettings();
   };
 
   const createAdjustment = (event) => {
@@ -2393,48 +2429,36 @@ function VatEngineWorkspace({ workspace, tab, filters, reloadWorkspace, busy }) 
     return runVatAction(
       () => api.post(`/admin/accounting/clients/${clientId}/vat/adjustments`, adjustmentForm),
       "VAT adjustment posted"
-    ).then(() => setAdjustmentForm({ adjustment_date: "", vat_period_id: currentPeriod?.id || "", vat_code: "", reason: "", notes: "", net_amount: "", vat_amount: "", gross_amount: "" }));
+    ).then((result) => {
+      if (result) {
+        setAdjustmentForm({ adjustment_date: "", vat_period_id: currentPeriod?.id || "", vat_code: "", direction: "", reason: "", source_reference: "", notes: "", net_amount: "", vat_amount: "", gross_amount: "" });
+        setShowAdjustmentModal(false);
+      }
+      return result;
+    });
   };
 
-  if (tab === "Dashboard") {
-    return (
-      <div className="space-y-4">
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
-          <SummaryCard label="Current VAT Liability" value={formatMoney(dashboard.current_vat_liability)} />
-          <SummaryCard label="VAT Due to HMRC" value={formatMoney(dashboard.vat_due_to_hmrc)} tone="warning" />
-          <SummaryCard label="VAT Recoverable" value={formatMoney(dashboard.vat_recoverable)} tone="success" />
-          <SummaryCard label="Current VAT Period" value={currentPeriod ? `${formatDate(currentPeriod.start_date)} - ${formatDate(currentPeriod.end_date)}` : "-"} />
-          <SummaryCard label="Next Return Due" value={formatDate(dashboard.next_return_due)} />
-          <SummaryCard label="Outstanding Returns" value={dashboard.outstanding_returns || 0} />
-        </div>
-        <div className="grid gap-4 xl:grid-cols-[1fr_420px]">
-          <Panel title="Current VAT Summary">
-            <VatBoxGrid boxes={currentBoxes} transactions={transactions} onOpenBox={setOpenBox} />
-            {openBox && <VatBoxDrilldown box={openBox} transactions={transactions} onClose={() => setOpenBox(null)} />}
-          </Panel>
-          <Panel title="Recent VAT Activity">
-            <div className="space-y-2">
-              {transactions.slice(0, 8).map((transaction) => (
-                <div key={transaction.id} className="rounded-md border border-stone-200 p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="font-semibold text-stone-900">{transaction.document_number || transaction.document_type}</p>
-                      <p className="text-xs text-stone-500">{formatDate(transaction.date)} - {transaction.source_module}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="font-display font-bold text-stone-900">{formatMoney(transaction.vat)}</p>
-                      <p className="text-xs text-stone-500">{transaction.vat_code || "-"}</p>
-                    </div>
-                  </div>
-                </div>
-              ))}
-              {transactions.length === 0 && <p className="py-8 text-center text-sm text-stone-500">No VAT activity yet.</p>}
-            </div>
-          </Panel>
-        </div>
-      </div>
-    );
-  }
+  const toggleAdjustmentDetail = async (adjustment) => {
+    const id = String(adjustment?.id || "");
+    if (!id) return;
+    if (expandedAdjustmentId === id) {
+      setExpandedAdjustmentId("");
+      setAdjustmentDetailError("");
+      return;
+    }
+    setExpandedAdjustmentId(id);
+    setAdjustmentDetailError("");
+    if (adjustmentDetails[id]) return;
+    setAdjustmentDetailLoading(id);
+    try {
+      const { data } = await api.get(`/admin/accounting/clients/${clientId}/vat/adjustments/${id}`);
+      setAdjustmentDetails((current) => ({ ...current, [id]: data || {} }));
+    } catch (error) {
+      setAdjustmentDetailError(formatApiError(error));
+    } finally {
+      setAdjustmentDetailLoading("");
+    }
+  };
 
   if (tab === "VAT Returns") {
     return (
@@ -2493,45 +2517,82 @@ function VatEngineWorkspace({ workspace, tab, filters, reloadWorkspace, busy }) 
     );
   }
 
-  if (tab === "VAT Periods") {
-    return (
-      <Panel title="VAT periods">
-        <VatPeriodTable periods={periods} clientId={clientId} onSubmit={submitPeriod} busy={busy} />
-      </Panel>
-    );
-  }
-
   if (tab === "Adjustments") {
     return (
-      <div className="grid gap-4 xl:grid-cols-[1fr_380px]">
+      <div className="space-y-3">
+        <div className="flex justify-end">
+          <Button type="button" onClick={() => setShowAdjustmentModal(true)} style={{ background: "var(--brand)" }}>New VAT adjustment</Button>
+        </div>
         <Panel title="VAT adjustments">
           <div className="space-y-2">
-            {vatPage.rows.map((adjustment) => (
-              <div key={adjustment.id} className="grid gap-3 rounded-md border border-stone-200 p-3 md:grid-cols-[120px_1fr_120px_120px] md:items-center">
-                <Info label="Date" value={formatDate(adjustment.adjustment_date)} />
-                <Info label="Reason" value={adjustment.reason || adjustment.notes || "VAT adjustment"} />
-                <Info label="VAT code" value={adjustment.vat_code || "-"} />
-                <Info label="VAT" value={formatMoney(adjustment.vat_amount)} />
-              </div>
-            ))}
+            {vatPage.rows.map((adjustment) => {
+              const expanded = expandedAdjustmentId === adjustment.id;
+              const detail = adjustmentDetails[adjustment.id];
+              const source = detail?.source || {};
+              const doubleEntry = detail?.double_entry || {};
+              return <div key={adjustment.id} className="overflow-hidden rounded-lg border border-stone-200 bg-white shadow-sm">
+                <button type="button" onClick={() => toggleAdjustmentDetail(adjustment)} className="grid w-full gap-3 p-3 text-left transition hover:bg-stone-50 md:grid-cols-[24px_120px_minmax(240px,1fr)_150px_120px_120px] md:items-center">
+                  <span className={`text-lg text-stone-500 transition ${expanded ? "rotate-90" : ""}`}>›</span>
+                  <Info label="Date" value={formatDate(adjustment.adjustment_date)} />
+                  <Info label="Reason" value={adjustment.reason || adjustment.notes || "VAT adjustment"} />
+                  <Info label="Source" value={adjustment.source_reference || String(adjustment.source_type || "Manual").replaceAll("_", " ")} />
+                  <Info label="VAT code" value={adjustment.vat_code || "-"} />
+                  <Info label="VAT" value={formatMoney(adjustment.vat_amount)} />
+                </button>
+                {expanded && <div className="border-t border-stone-200 bg-stone-50 p-4">
+                  {adjustmentDetailLoading === adjustment.id ? <p className="py-6 text-center text-sm text-stone-500">Loading adjustment detail...</p> : adjustmentDetailError ? <p className="py-6 text-center text-sm text-red-700">{adjustmentDetailError}</p> : detail ? <div className="space-y-4">
+                    <section className="rounded-lg border border-stone-200 bg-white p-4">
+                      <h4 className="font-display font-bold text-stone-900">Why this adjustment happened</h4>
+                      <p className="mt-1 text-sm text-stone-700">{source.explanation || adjustment.notes || adjustment.reason || "Manual VAT correction"}</p>
+                      <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                        <Info label="Adjustment type" value={String(source.source_type || adjustment.adjustment_type || "manual").replaceAll("_", " ")} />
+                        <Info label="Source reference" value={source.source_reference || "-"} />
+                        <Info label="Original period" value={source.original_vat_period?.label || "-"} />
+                        <Info label="Reported period" value={source.reported_vat_period?.label || "-"} />
+                        {source.invoice && <Info label="Invoice" value={source.invoice.invoice_number || source.invoice.reference || source.invoice.id} />}
+                        {source.payment_or_receipt && <Info label="Payment / receipt" value={source.payment_or_receipt.reference || source.payment_or_receipt.id} />}
+                        {source.bank_transaction && <Info label="Bank transaction" value={`${formatDate(source.bank_transaction.transaction_date)} · ${source.bank_transaction.reference || source.bank_transaction.description || source.bank_transaction.id}`} />}
+                      </div>
+                    </section>
+                    <section className="overflow-hidden rounded-lg border border-stone-300 bg-white">
+                      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-stone-200 bg-stone-100 px-4 py-3">
+                        <div><h4 className="font-display font-bold text-stone-900">Double entry</h4><p className="text-xs text-stone-600">{doubleEntry.explanation}</p></div>
+                        {doubleEntry.journal_id && <Badge variant="outline">Journal {doubleEntry.journal?.reference || doubleEntry.journal_id}</Badge>}
+                      </div>
+                      {doubleEntry.lines?.length ? <div className="overflow-auto"><table className="min-w-full text-left text-sm"><thead className="bg-stone-50 text-xs uppercase text-stone-500"><tr><th className="px-4 py-2">Account</th><th className="px-4 py-2">Description</th><th className="px-4 py-2">VAT code</th><th className="px-4 py-2 text-right">Debit</th><th className="px-4 py-2 text-right">Credit</th></tr></thead><tbody>{doubleEntry.lines.map((line) => <tr key={line.id} className="border-t border-stone-100"><td className="px-4 py-2 font-medium">{line.account_code} - {line.account_name}</td><td className="px-4 py-2 text-stone-600">{line.description || "-"}</td><td className="px-4 py-2">{line.vat_code || "-"}</td><td className="px-4 py-2 text-right">{Number(line.debit || 0) ? formatMoney(line.debit) : "-"}</td><td className="px-4 py-2 text-right">{Number(line.credit || 0) ? formatMoney(line.credit) : "-"}</td></tr>)}</tbody><tfoot className="border-t-2 border-stone-300 bg-stone-50 font-bold"><tr><td colSpan="3" className="px-4 py-2 text-right">Totals</td><td className="px-4 py-2 text-right">{formatMoney(doubleEntry.debit_total)}</td><td className="px-4 py-2 text-right">{formatMoney(doubleEntry.credit_total)}</td></tr></tfoot></table></div> : <p className="p-4 text-sm text-stone-600">No separate General Ledger journal was created for this reporting-only VAT correction.</p>}
+                    </section>
+                  </div> : null}
+                </div>}
+              </div>;
+            })}
             {!vatPageLoading && vatPage.rows.length === 0 && <p className="py-10 text-center text-sm text-stone-500">No VAT adjustments posted yet.</p>}
             {vatPageError && <p className="py-4 text-center text-sm text-red-700">{vatPageError}</p>}
           </div>
           <PaginationFooter page={vatPage.page} pageSize={vatPage.page_size} totalRows={vatPage.total_rows} totalPages={vatPage.total_pages} onPageChange={setVatPageNumber} onPageSizeChange={setVatPageSize} disabled={vatPageLoading} />
         </Panel>
-        <Panel title="Post adjustment">
-          <form onSubmit={createAdjustment} className="space-y-3">
-            <Field label="Adjustment date" type="date" value={adjustmentForm.adjustment_date} onChange={(value) => setAdjustmentForm((current) => ({ ...current, adjustment_date: value }))} />
-            <VatSelect label="VAT period" value={adjustmentForm.vat_period_id} onChange={(value) => setAdjustmentForm((current) => ({ ...current, vat_period_id: value }))} options={periods.map((period) => ({ value: period.id, label: `${formatDate(period.start_date)} - ${formatDate(period.end_date)}` }))} />
-            <VatSelect label="VAT code" value={adjustmentForm.vat_code} onChange={(value) => setAdjustmentForm((current) => ({ ...current, vat_code: value }))} options={activeCodes.map((code) => ({ value: code.code, label: `${code.code} - ${code.description}` }))} />
-            <Field label="Reason" value={adjustmentForm.reason} onChange={(value) => setAdjustmentForm((current) => ({ ...current, reason: value }))} />
-            <Field label="Net" type="number" value={adjustmentForm.net_amount} onChange={(value) => setAdjustmentForm((current) => ({ ...current, net_amount: value }))} />
-            <Field label="VAT" type="number" value={adjustmentForm.vat_amount} onChange={(value) => setAdjustmentForm((current) => ({ ...current, vat_amount: value }))} />
-            <Field label="Gross" type="number" value={adjustmentForm.gross_amount} onChange={(value) => setAdjustmentForm((current) => ({ ...current, gross_amount: value }))} />
-            <Field label="Notes" value={adjustmentForm.notes} onChange={(value) => setAdjustmentForm((current) => ({ ...current, notes: value }))} />
-            <Button disabled={busy} className="w-full" style={{ background: "var(--brand)" }}>Post VAT adjustment</Button>
-          </form>
-        </Panel>
+        {showAdjustmentModal && <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/55 p-4" role="dialog" aria-modal="true" aria-labelledby="vat-adjustment-title">
+          <div className="flex max-h-[calc(100dvh-2rem)] w-full max-w-3xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
+            <header className="sticky top-0 z-10 flex items-center justify-between border-b border-stone-200 bg-white px-5 py-4"><div><h3 id="vat-adjustment-title" className="font-display text-lg font-bold">New VAT adjustment</h3><p className="text-sm text-stone-500">Post a balanced VAT correction to the General Ledger and VAT return.</p></div><Button type="button" variant="outline" onClick={() => setShowAdjustmentModal(false)}>Close</Button></header>
+            <form onSubmit={createAdjustment} className="min-h-0 flex flex-1 flex-col overflow-hidden">
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+                <div className="grid gap-3 md:grid-cols-2">
+                  <Field label="Adjustment date" type="date" value={adjustmentForm.adjustment_date} onChange={(value) => setAdjustmentForm((current) => ({ ...current, adjustment_date: value }))} />
+                  <VatSelect label="VAT period" value={adjustmentForm.vat_period_id} onChange={(value) => setAdjustmentForm((current) => ({ ...current, vat_period_id: value }))} options={periods.filter((period) => period.status === "open").map((period) => ({ value: period.id, label: period.label || `${formatDate(period.start_date)} - ${formatDate(period.end_date)}` }))} />
+                  <VatSelect label="VAT code" value={adjustmentForm.vat_code} onChange={(value) => setAdjustmentForm((current) => ({ ...current, vat_code: value }))} options={activeCodes.map((code) => ({ value: code.code, label: `${code.code} - ${code.description}` }))} />
+                  <VatSelect label="Adjustment direction" value={adjustmentForm.direction} onChange={(value) => setAdjustmentForm((current) => ({ ...current, direction: value }))} options={[{ value: "increase_output", label: "Increase output VAT" }, { value: "decrease_output", label: "Decrease output VAT" }, { value: "increase_input", label: "Increase input VAT" }, { value: "decrease_input", label: "Decrease input VAT" }, { value: "net_adjustment", label: "Net adjustment" }]} />
+                  <Field label="Reason" value={adjustmentForm.reason} onChange={(value) => setAdjustmentForm((current) => ({ ...current, reason: value }))} />
+                  <Field label="Source reference" value={adjustmentForm.source_reference} onChange={(value) => setAdjustmentForm((current) => ({ ...current, source_reference: value }))} />
+                  <Field label="Net" type="number" value={adjustmentForm.net_amount} onChange={(value) => setAdjustmentForm((current) => ({ ...current, net_amount: value }))} />
+                  <Field label="VAT" type="number" value={adjustmentForm.vat_amount} onChange={(value) => setAdjustmentForm((current) => ({ ...current, vat_amount: value }))} />
+                  <Field label="Gross" type="number" value={adjustmentForm.gross_amount} onChange={(value) => setAdjustmentForm((current) => ({ ...current, gross_amount: value }))} />
+                  <Field label="Notes / explanation" value={adjustmentForm.notes} onChange={(value) => setAdjustmentForm((current) => ({ ...current, notes: value }))} />
+                </div>
+                <VatAdjustmentDoubleEntryPreview form={adjustmentForm} />
+              </div>
+              <footer className="sticky bottom-0 flex justify-end gap-2 border-t border-stone-200 bg-white p-4"><Button type="button" variant="outline" onClick={() => setShowAdjustmentModal(false)}>Cancel</Button><Button disabled={busy} style={{ background: "var(--brand)" }}>Post VAT adjustment</Button></footer>
+            </form>
+          </div>
+        </div>}
       </div>
     );
   }
@@ -2542,11 +2603,13 @@ function VatEngineWorkspace({ workspace, tab, filters, reloadWorkspace, busy }) 
 
   if (tab === "Settings") {
     return (
+      <>
       <Panel title="VAT settings">
         <form onSubmit={saveSettings} className="space-y-4">
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <Field label="VAT registration number" value={settingsForm.vat_registration_number || ""} onChange={(value) => setSettingsForm((current) => ({ ...current, vat_registration_number: value }))} />
-            <VatSelect label={`VAT scheme${vatClient ? " *" : ""}`} value={settingsForm.vat_scheme || "standard"} onChange={(value) => setSettingsForm((current) => ({ ...current, vat_scheme: value }))} options={["standard", "cash", "flat_rate"]} />
+            <VatSelect label={`VAT scheme${vatClient ? " *" : ""}`} value={settingsForm.vat_scheme || "standard"} onChange={(value) => setSettingsForm((current) => ({ ...current, vat_scheme: value }))} options={[{ value: "standard", label: "Standard" }, { value: "flat_rate", label: "Flat rate" }]} />
+            <VatSelect label={`VAT accounting basis${vatClient ? " *" : ""}`} value={settingsForm.vat_accounting_basis || "accrual"} onChange={(value) => setSettingsForm((current) => ({ ...current, vat_accounting_basis: value }))} options={[{ value: "accrual", label: "Accrual — invoice/posting tax point" }, { value: "cash", label: "Cash — bank payment/receipt date" }]} />
             <VatSelect label={`VAT frequency${vatClient ? " *" : ""}`} value={settingsForm.vat_frequency || "quarterly"} onChange={(value) => setSettingsForm((current) => ({ ...current, vat_frequency: value }))} options={["monthly", "quarterly", "annual"]} />
             <Field label={`VAT start date${vatClient ? " *" : ""}`} type="date" value={settingsForm.vat_start_date || ""} onChange={(value) => setSettingsForm((current) => ({ ...current, vat_start_date: value }))} />
             <Field label="VAT end date" type="date" value={settingsForm.vat_end_date || ""} onChange={(value) => setSettingsForm((current) => ({ ...current, vat_end_date: value }))} />
@@ -2560,8 +2623,6 @@ function VatEngineWorkspace({ workspace, tab, filters, reloadWorkspace, busy }) 
             <Field label="Flat rate percentage" type="number" value={settingsForm.flat_rate_percentage || ""} onChange={(value) => setSettingsForm((current) => ({ ...current, flat_rate_percentage: value }))} />
           </div>
           <div className="grid gap-3 md:grid-cols-3">
-            <VatCheckbox label="Cash accounting" checked={!!settingsForm.cash_accounting} onChange={(value) => setSettingsForm((current) => ({ ...current, cash_accounting: value, accrual_accounting: !value }))} />
-            <VatCheckbox label="Accrual accounting" checked={settingsForm.accrual_accounting !== false} onChange={(value) => setSettingsForm((current) => ({ ...current, accrual_accounting: value, cash_accounting: !value }))} />
             <VatCheckbox label="MTD ready" checked={!!settingsForm.mtd_enabled} onChange={(value) => setSettingsForm((current) => ({ ...current, mtd_enabled: value }))} />
           </div>
           <div className="flex justify-end">
@@ -2569,6 +2630,29 @@ function VatEngineWorkspace({ workspace, tab, filters, reloadWorkspace, busy }) 
           </div>
         </form>
       </Panel>
+      {showBasisConfirmation && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/55 p-4" role="dialog" aria-modal="true" aria-labelledby="vat-basis-warning-title">
+          <div className="w-full max-w-2xl overflow-hidden rounded-xl border border-amber-300 bg-white shadow-2xl">
+            <header className="border-b border-amber-200 bg-amber-50 p-5">
+              <h3 id="vat-basis-warning-title" className="font-display text-lg font-bold text-amber-950">Confirm VAT accounting basis change</h3>
+            </header>
+            <div className="space-y-4 p-5 text-sm text-stone-700">
+              <p className="whitespace-pre-line">{vat.basis_change_warning || "Changing VAT accounting basis will alter when VAT is reported. Accrual accounting uses invoice/posting dates; cash accounting uses bank payment and receipt dates."}</p>
+              <div className="grid gap-2 rounded-lg border border-stone-200 bg-stone-50 p-3 sm:grid-cols-3">
+                <Info label="AP/AR documents" value={vatActivitySummary.document_count || 0} />
+                <Info label="Bank allocations" value={vatActivitySummary.allocation_count || 0} />
+                <Info label="Locked/submitted periods" value={vatActivitySummary.terminal_periods || 0} />
+              </div>
+              <Field label="Type CHANGE VAT BASIS to confirm" value={basisConfirmation} onChange={setBasisConfirmation} />
+            </div>
+            <footer className="flex justify-end gap-2 border-t border-stone-200 p-4">
+              <Button type="button" variant="outline" onClick={() => { setShowBasisConfirmation(false); setBasisConfirmation(""); }}>Cancel</Button>
+              <Button type="button" disabled={basisConfirmation !== "CHANGE VAT BASIS"} onClick={() => persistSettings(basisConfirmation)} style={{ background: "var(--brand)" }}>Change VAT basis</Button>
+            </footer>
+          </div>
+        </div>
+      )}
+      </>
     );
   }
 
@@ -2589,71 +2673,6 @@ function VatAccountingFilterBar({ search, setSearch, extra }) {
   );
 }
 
-function VatBoxGrid({ boxes = {}, transactions = [], onOpenBox }) {
-  const rows = Array.from({ length: 9 }, (_, index) => {
-    const box = `box${index + 1}`;
-    const value = boxes[box] || 0;
-    const count = vatBoxTransactions(box, transactions).length;
-    return { box, label: vatBoxLabel(box), value, count };
-  });
-  return (
-    <div className="grid gap-3 md:grid-cols-3">
-      {rows.map((row) => (
-        <button key={row.box} type="button" onClick={() => onOpenBox(row.box)} className="group flex min-h-[180px] flex-col rounded-xl border border-stone-200 bg-white p-4 text-left shadow-[0_3px_12px_rgba(28,25,23,0.07)] transition duration-150 hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-[0_10px_26px_rgba(6,78,59,0.13)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2">
-          <span className="flex items-start justify-between gap-3">
-            <span className="flex h-11 w-11 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100"><ClipboardCheck className="h-5 w-5" /></span>
-            <ArrowRight className="mt-3 h-4 w-4 text-stone-400 transition group-hover:translate-x-1 group-hover:text-emerald-700" />
-          </span>
-          <span className="mt-3 text-[10px] font-bold uppercase tracking-wide text-emerald-700">{row.box.toUpperCase()}</span>
-          <span className="mt-1 line-clamp-2 text-sm font-semibold text-stone-800">{row.label}</span>
-          <span className="mt-auto flex items-end justify-between gap-3 border-t border-stone-200 pt-3">
-            <span>
-              <span className="block text-[10px] font-semibold uppercase tracking-wide text-stone-500">Box value</span>
-              <span className="mt-0.5 block font-display text-lg font-bold text-emerald-800">{formatMoney(row.value)}</span>
-            </span>
-            <span className="text-right text-xs text-stone-500">{row.count} transaction{row.count === 1 ? "" : "s"}</span>
-          </span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function VatBoxDrilldown({ box, transactions, onClose }) {
-  const rows = vatBoxTransactions(box, transactions);
-  return (
-    <div className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 p-3">
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <div>
-          <p className="font-semibold text-emerald-950">{box.toUpperCase()} drill-down</p>
-          <p className="text-xs text-emerald-800">{vatBoxLabel(box)}</p>
-        </div>
-        <Button type="button" size="sm" variant="outline" onClick={onClose}>Close</Button>
-      </div>
-      <VatTransactionsTable transactions={rows} compact />
-    </div>
-  );
-}
-
-function vatBoxTransactions(box, transactions = []) {
-  return transactions.filter((transaction) => String(transaction.return_box_vat || "") === box.replace("box", "") || String(transaction.return_box_net || "") === box.replace("box", ""));
-}
-
-function vatBoxLabel(box) {
-  const labels = {
-    box1: "VAT due on sales",
-    box2: "VAT due on acquisitions",
-    box3: "Total VAT due",
-    box4: "VAT reclaimed",
-    box5: "Net VAT due",
-    box6: "Net sales",
-    box7: "Net purchases",
-    box8: "EC sales",
-    box9: "EC purchases",
-  };
-  return labels[box] || box;
-}
-
 function VatTransactionsTable({ transactions = [], compact = false }) {
   if (!transactions.length) {
     return <p className="py-8 text-center text-sm text-stone-500">No VAT transactions found.</p>;
@@ -2671,7 +2690,9 @@ function VatTransactionsTable({ transactions = [], compact = false }) {
             <th className="px-3 py-2 text-right">Net</th>
             <th className="px-3 py-2 text-right">VAT</th>
             <th className="px-3 py-2 text-right">Gross</th>
+            {!compact && <th className="px-3 py-2">Return boxes</th>}
             {!compact && <th className="px-3 py-2">Period</th>}
+            {!compact && <th className="px-3 py-2">Basis</th>}
             {!compact && <th className="px-3 py-2">Status</th>}
           </tr>
         </thead>
@@ -2686,7 +2707,9 @@ function VatTransactionsTable({ transactions = [], compact = false }) {
               <td className="px-3 py-2 text-right">{formatMoney(transaction.net)}</td>
               <td className="px-3 py-2 text-right">{formatMoney(transaction.vat)}</td>
               <td className="px-3 py-2 text-right">{formatMoney(transaction.gross)}</td>
+              {!compact && <td className="px-3 py-2 text-xs text-stone-600">{transaction.direction === "purchase" ? `VAT → Box ${transaction.box_purchase_vat || "—"} · Net → Box ${transaction.box_purchase_net || "—"}` : `VAT → Box ${transaction.box_sales_vat || "—"} · Net → Box ${transaction.box_sales_net || "—"}`}</td>}
               {!compact && <td className="px-3 py-2 text-stone-500">{transaction.vat_period || "-"}</td>}
+              {!compact && <td className="px-3 py-2 capitalize text-stone-600">{transaction.vat_accounting_basis || "-"}</td>}
               {!compact && <td className="px-3 py-2"><Badge className={transaction.status === "locked" ? "bg-stone-200 text-stone-700" : "bg-emerald-100 text-emerald-800"}>{transaction.status || "open"}</Badge></td>}
             </tr>
           ))}
@@ -2699,6 +2722,7 @@ function VatTransactionsTable({ transactions = [], compact = false }) {
 function VatCodeTable({ codes = [], busy, onUpdate, onDelete }) {
   const [expanded, setExpanded] = useState("");
   const [selected, setSelected] = useState([]);
+  const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState({});
   const [visible, setVisible] = useState({ category: true, purchase: true, sales: true, boxes: true, status: true });
   if (!codes.length) {
@@ -2707,6 +2731,7 @@ function VatCodeTable({ codes = [], busy, onUpdate, onDelete }) {
   const toggle = (code) => {
     const next = expanded === code.id ? "" : code.id;
     setExpanded(next);
+    setEditing(false);
     setEditForm(next ? { description: code.description || "", percentage: code.percentage || "0", purchase_behavior: code.purchase_behavior || "", sales_behavior: code.sales_behavior || "", active: code.active !== false } : {});
   };
   const exportSelected = () => {
@@ -2725,7 +2750,7 @@ function VatCodeTable({ codes = [], busy, onUpdate, onDelete }) {
         <div className="flex flex-wrap gap-3 text-xs text-stone-600">
           {Object.keys(visible).map((key) => <label key={key} className="flex items-center gap-1 capitalize"><input type="checkbox" checked={visible[key]} onChange={(e) => setVisible((current) => ({ ...current, [key]: e.target.checked }))} />{key}</label>)}
         </div>
-        <Button type="button" size="sm" variant="outline" onClick={exportSelected}>Export selected ({selected.length})</Button>
+        {selected.length > 0 && <Button type="button" size="sm" variant="outline" onClick={exportSelected}>Export selected ({selected.length})</Button>}
       </div>
       <div className="overflow-auto rounded-md border border-stone-200 bg-white">
       <table className="min-w-full text-left text-sm">
@@ -2752,22 +2777,32 @@ function VatCodeTable({ codes = [], busy, onUpdate, onDelete }) {
               {visible.category && <td className="px-3 py-2 capitalize text-stone-600">{code.category || "both"}</td>}
               {visible.purchase && <td className="px-3 py-2 text-stone-600">{code.purchase_behavior}</td>}
               {visible.sales && <td className="px-3 py-2 text-stone-600">{code.sales_behavior}</td>}
-              {visible.boxes && <td className="px-3 py-2 text-stone-600">Purchase {(code.purchase_boxes || []).join(", ") || "—"} / Sales {(code.sales_boxes || []).join(", ") || "—"}</td>}
+              {visible.boxes && <td className="px-3 py-2 text-xs text-stone-600"><div>Purchase: VAT → Box {code.return_box_mapping?.purchase_vat || "—"} · Net → Box {code.return_box_mapping?.purchase_net || "—"}</div><div>Sales: VAT → Box {code.return_box_mapping?.sales_vat || "—"} · Net → Box {code.return_box_mapping?.sales_net || "—"}</div></td>}
               {visible.status && <td className="px-3 py-2"><Badge className={code.active ? "bg-emerald-100 text-emerald-800" : "bg-stone-200 text-stone-700"}>{code.active ? "Active" : "Inactive"}</Badge></td>}
             </tr>
             {expanded === code.id && <tr className="border-t border-stone-100 bg-stone-50"><td colSpan="10" className="p-4">
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+              {!editing ? <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                <Info label="Description" value={code.description || "—"} />
+                <Info label="Rate" value={`${Number(code.percentage || 0).toFixed(2)}%`} />
+                <Info label="Purchase behaviour" value={code.purchase_behavior || "—"} />
+                <Info label="Sales behaviour" value={code.sales_behavior || "—"} />
+                <Info label="History" value={code.has_history ? `${code.history_count || 0} transaction records` : "No transaction history"} />
+              </div> : <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
                 <Field label="Description" value={editForm.description || ""} onChange={(value) => setEditForm((current) => ({ ...current, description: value }))} />
-                <Field label="Rate %" type="number" value={editForm.percentage || ""} onChange={(value) => setEditForm((current) => ({ ...current, percentage: value }))} />
-                <VatSelect label="Purchase behaviour" value={editForm.purchase_behavior || ""} onChange={(value) => setEditForm((current) => ({ ...current, purchase_behavior: value }))} options={["recoverable", "zero", "exempt", "reverse_charge", "outside_scope"]} />
-                <VatSelect label="Sales behaviour" value={editForm.sales_behavior || ""} onChange={(value) => setEditForm((current) => ({ ...current, sales_behavior: value }))} options={["output", "zero", "exempt", "reverse_charge", "outside_scope"]} />
+                <Field label="Rate %" type="number" disabled={code.system_code || code.default_code || code.has_history} value={editForm.percentage || ""} onChange={(value) => setEditForm((current) => ({ ...current, percentage: value }))} />
+                <VatSelect label="Purchase behaviour" disabled={code.system_code || code.default_code || code.has_history} value={editForm.purchase_behavior || ""} onChange={(value) => setEditForm((current) => ({ ...current, purchase_behavior: value }))} options={["recoverable", "zero", "exempt", "reverse_charge", "outside_scope"]} />
+                <VatSelect label="Sales behaviour" disabled={code.system_code || code.default_code || code.has_history} value={editForm.sales_behavior || ""} onChange={(value) => setEditForm((current) => ({ ...current, sales_behavior: value }))} options={["output", "zero", "exempt", "reverse_charge", "outside_scope"]} />
                 <VatCheckbox label="Active" checked={editForm.active !== false} onChange={(value) => setEditForm((current) => ({ ...current, active: value }))} />
-              </div>
+              </div>}
               <div className="mt-3 flex justify-end gap-2">
-                {!code.system_code && <Button type="button" variant="outline" disabled={busy} onClick={() => window.confirm(`Delete ${code.code}? Codes with history will be made inactive.`) && onDelete(code)}>Delete</Button>}
-                <Button type="button" disabled={busy} onClick={() => onUpdate(code, editForm)} style={{ background: "var(--brand)" }}>Save changes</Button>
+                {!editing && !code.system_code && !code.default_code && !code.has_history && <Button type="button" variant="outline" disabled={busy} onClick={() => window.confirm(`Delete ${code.code}?`) && onDelete(code)}>Delete</Button>}
+                {!editing ? <Button type="button" disabled={busy} onClick={() => setEditing(true)} style={{ background: "var(--brand)" }}>Edit</Button> : <>
+                  <Button type="button" variant="outline" onClick={() => { setEditing(false); setEditForm({ description: code.description || "", percentage: code.percentage || "0", purchase_behavior: code.purchase_behavior || "", sales_behavior: code.sales_behavior || "", active: code.active !== false }); }}>Cancel</Button>
+                  <Button type="button" disabled={busy} onClick={async () => { const result = await onUpdate(code, editForm); if (result) setEditing(false); }} style={{ background: "var(--brand)" }}>Save changes</Button>
+                </>}
               </div>
-              {code.system_code && <p className="mt-2 text-xs text-stone-500">System code: the code itself cannot be renamed or deleted, but safe behaviour, mapping and active fields can be maintained.</p>}
+              {(code.system_code || code.default_code) && <p className="mt-2 text-xs text-stone-500">Default/system VAT code: return mappings, rate and behaviours are locked. Its display description and active state may be maintained.</p>}
+              {code.has_history && !code.system_code && !code.default_code && <p className="mt-2 text-xs text-stone-500">This code has transaction history, so its accounting mapping is locked and it cannot be deleted. Make it inactive to remove it from new-entry dropdowns.</p>}
             </td></tr>}
           </React.Fragment>))}
         </tbody>
@@ -3108,12 +3143,12 @@ function VatReportsWorkspace({ vat, transactions }) {
   );
 }
 
-function VatSelect({ label, value, onChange, options = [] }) {
+function VatSelect({ label, value, onChange, options = [], disabled = false }) {
   const normalised = options.map((option) => typeof option === "string" ? { value: option, label: option } : option);
   return (
     <div>
       <Label className="text-xs font-semibold text-stone-600">{label}</Label>
-      <select value={value || ""} onChange={(e) => onChange(e.target.value)} className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm">
+      <select disabled={disabled} value={value || ""} onChange={(e) => onChange(e.target.value)} className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm disabled:cursor-not-allowed disabled:bg-stone-100 disabled:text-stone-500">
         <option value="">Select</option>
         {normalised.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
       </select>
@@ -3127,6 +3162,24 @@ function VatCheckbox({ label, checked, onChange }) {
       <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
       {label}
     </label>
+  );
+}
+
+function VatAdjustmentDoubleEntryPreview({ form = {} }) {
+  const amount = Math.abs(Number(form.vat_amount || 0));
+  const debitVat = ["decrease_output", "increase_input"].includes(form.direction) || (form.direction === "net_adjustment" && Number(form.vat_amount || 0) > 0);
+  const lines = amount > 0 ? [
+    { account: debitVat ? "VAT control account" : "VAT adjustment / suspense", debit: amount, credit: 0 },
+    { account: debitVat ? "VAT adjustment / suspense" : "VAT control account", debit: 0, credit: amount },
+  ] : [];
+  return (
+    <section className="overflow-hidden rounded-lg border border-stone-300 bg-white">
+      <div className="border-b border-stone-200 bg-stone-100 px-4 py-3">
+        <h4 className="font-display font-bold text-stone-900">Double-entry preview</h4>
+        <p className="text-xs text-stone-600">The configured native VAT control and suspense accounts are resolved when the adjustment is posted.</p>
+      </div>
+      {lines.length ? <table className="min-w-full text-sm"><thead className="bg-stone-50 text-left text-xs uppercase text-stone-500"><tr><th className="px-4 py-2">Account</th><th className="px-4 py-2 text-right">Debit</th><th className="px-4 py-2 text-right">Credit</th></tr></thead><tbody>{lines.map((line) => <tr key={`${line.account}-${line.debit}`} className="border-t border-stone-100"><td className="px-4 py-2 font-medium">{line.account}</td><td className="px-4 py-2 text-right">{line.debit ? formatMoney(line.debit) : "-"}</td><td className="px-4 py-2 text-right">{line.credit ? formatMoney(line.credit) : "-"}</td></tr>)}</tbody><tfoot className="border-t-2 border-stone-300 bg-stone-50 font-bold"><tr><td className="px-4 py-2 text-right">Totals</td><td className="px-4 py-2 text-right">{formatMoney(amount)}</td><td className="px-4 py-2 text-right">{formatMoney(amount)}</td></tr></tfoot></table> : <p className="p-4 text-sm text-stone-500">Select a direction and enter a VAT amount to preview the posting.</p>}
+    </section>
   );
 }
 

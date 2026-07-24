@@ -585,6 +585,7 @@ accounting_ap_payments = Table(
     Column("currency", String(8), default="GBP"),
     Column("status", String(32), default="posted", index=True),
     Column("posted_journal_id", String(36)),
+    Column("bank_transaction_id", String(36), index=True),
     Column("created_at", String(64)),
     Column("updated_at", String(64)),
 )
@@ -1064,6 +1065,7 @@ accounting_vat_settings = Table(
     Column("client_id", String(36), nullable=False, unique=True, index=True),
     Column("vat_registration_number", String(64)),
     Column("vat_scheme", String(64), default="standard"),
+    Column("vat_accounting_basis", String(32), default="accrual"),
     Column("vat_frequency", String(32), default="quarterly"),
     Column("vat_start_date", String(32)),
     Column("vat_end_date", String(32)),
@@ -1141,8 +1143,15 @@ accounting_vat_adjustments = Table(
     Column("journal_entry_id", String(36)),
     Column("source_type", String(64), index=True),
     Column("source_id", String(36), index=True),
+    Column("source_invoice_id", String(36), index=True),
+    Column("source_payment_id", String(36), index=True),
+    Column("source_bank_transaction_id", String(36), index=True),
+    Column("original_payment_date", String(32), index=True),
     Column("original_vat_period_id", String(36), index=True),
     Column("reported_vat_period_id", String(36), index=True),
+    Column("adjustment_reason", Text),
+    Column("source_reference", String(255)),
+    Column("direction", String(32)),
     Column("created_by", String(36)),
     Column("created_at", String(64)),
     Column("updated_at", String(64)),
@@ -7014,6 +7023,8 @@ async def native_vat_effective_context(
         "vat_client": registered,
         "vat_configured": configured,
         "vat_active_for_date": active,
+        "vat_scheme": normalized_vat_scheme(settings_row),
+        "vat_accounting_basis": normalized_vat_accounting_basis(settings_row),
         "vat_start_date": start,
         "vat_end_date": end,
         "default_purchase_vat_code": vat_code_value(settings_row.get("default_purchase_vat_code")) or "20% S",
@@ -7280,7 +7291,12 @@ def serialize_vat_period(row: dict) -> dict:
     row["start_date"] = row.get("period_start")
     row["end_date"] = row.get("period_end")
     row["payment_due_date"] = row.get("payment_due_date") or row.get("due_date")
-    row["label"] = f"{row.get('period_start') or ''} to {row.get('period_end') or ''}"
+    def display_date(value: Any) -> str:
+        try:
+            return datetime.strptime(str(value or "")[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
+        except ValueError:
+            return str(value or "")
+    row["label"] = f"{display_date(row.get('period_start'))} - {display_date(row.get('period_end'))}"
     return row
 
 
@@ -7291,10 +7307,108 @@ def serialize_vat_adjustment(row: dict) -> dict:
     return row
 
 
+async def native_vat_code_history_counts(session: AsyncSession, client_id: str, codes: list[dict]) -> dict[str, int]:
+    """Return native usage counts without relying on any integration tax records."""
+    result = {str(row.get("code") or ""): 0 for row in codes}
+    if not result:
+        return result
+    code_values = list(result)
+    queries = (
+        select(accounting_ap_invoice_lines.c.vat_code, func.count()).join(
+            accounting_ap_invoices, accounting_ap_invoices.c.id == accounting_ap_invoice_lines.c.invoice_id
+        ).where(accounting_ap_invoices.c.client_id == client_id, accounting_ap_invoice_lines.c.vat_code.in_(code_values)).group_by(accounting_ap_invoice_lines.c.vat_code),
+        select(accounting_ap_credit_note_lines.c.vat_code, func.count()).join(
+            accounting_ap_credit_notes, accounting_ap_credit_notes.c.id == accounting_ap_credit_note_lines.c.credit_note_id
+        ).where(accounting_ap_credit_notes.c.client_id == client_id, accounting_ap_credit_note_lines.c.vat_code.in_(code_values)).group_by(accounting_ap_credit_note_lines.c.vat_code),
+        select(accounting_ar_invoice_lines.c.vat_code, func.count()).join(
+            accounting_ar_invoices, accounting_ar_invoices.c.id == accounting_ar_invoice_lines.c.invoice_id
+        ).where(accounting_ar_invoices.c.client_id == client_id, accounting_ar_invoice_lines.c.vat_code.in_(code_values)).group_by(accounting_ar_invoice_lines.c.vat_code),
+        select(accounting_ar_credit_note_lines.c.vat_code, func.count()).join(
+            accounting_ar_credit_notes, accounting_ar_credit_notes.c.id == accounting_ar_credit_note_lines.c.credit_note_id
+        ).where(accounting_ar_credit_notes.c.client_id == client_id, accounting_ar_credit_note_lines.c.vat_code.in_(code_values)).group_by(accounting_ar_credit_note_lines.c.vat_code),
+        select(accounting_journal_lines.c.vat_code, func.count()).where(
+            accounting_journal_lines.c.client_id == client_id, accounting_journal_lines.c.vat_code.in_(code_values)
+        ).group_by(accounting_journal_lines.c.vat_code),
+        select(accounting_vat_adjustments.c.vat_code, func.count()).where(
+            accounting_vat_adjustments.c.client_id == client_id, accounting_vat_adjustments.c.vat_code.in_(code_values)
+        ).group_by(accounting_vat_adjustments.c.vat_code),
+    )
+    for query in queries:
+        for code, count in (await session.execute(query)).all():
+            result[str(code or "")] = result.get(str(code or ""), 0) + int(count or 0)
+    return result
+
+
+async def native_vat_basis_change_summary(session: AsyncSession, client_id: str) -> dict:
+    count_queries = {
+        "ap_documents": select(func.count()).select_from(accounting_ap_invoices).where(accounting_ap_invoices.c.client_id == client_id),
+        "ar_documents": select(func.count()).select_from(accounting_ar_invoices).where(accounting_ar_invoices.c.client_id == client_id),
+        "ap_allocations": select(func.count()).select_from(accounting_ap_payment_allocations).where(accounting_ap_payment_allocations.c.client_id == client_id),
+        "ar_allocations": select(func.count()).select_from(accounting_ar_receipt_allocations).where(accounting_ar_receipt_allocations.c.client_id == client_id),
+        "vat_adjustments": select(func.count()).select_from(accounting_vat_adjustments).where(accounting_vat_adjustments.c.client_id == client_id),
+        "terminal_periods": select(func.count()).select_from(accounting_vat_periods).where(
+            accounting_vat_periods.c.client_id == client_id,
+            accounting_vat_periods.c.status.in_(("locked", "closed", "submitted")),
+        ),
+    }
+    counts = {key: int((await session.execute(query)).scalar() or 0) for key, query in count_queries.items()}
+    counts["allocation_count"] = counts["ap_allocations"] + counts["ar_allocations"]
+    counts["document_count"] = counts["ap_documents"] + counts["ar_documents"]
+    counts["activity_count"] = counts["document_count"] + counts["allocation_count"] + counts["vat_adjustments"] + counts["terminal_periods"]
+    counts["requires_confirmation"] = counts["activity_count"] > 0
+    return counts
+
+
+VAT_BASIS_CHANGE_CONFIRMATION = "CHANGE VAT BASIS"
+VAT_BASIS_CHANGE_WARNING = """Changing VAT accounting basis will alter when VAT is reported.
+
+Accrual accounting reports VAT from invoice/posting dates.
+Cash accounting reports VAT from bank payment and receipt dates.
+
+Changing this after transactions already exist may move VAT between periods, create overlaps, or require correction adjustments, especially if VAT periods have already been locked, closed, or submitted.
+
+Only continue if you have reviewed existing AP, AR, Banking, VAT Returns and VAT Transactions for this client.
+
+Type CHANGE VAT BASIS to confirm."""
+
+
+def normalized_vat_accounting_basis(settings_row: Optional[dict]) -> str:
+    row = settings_row or {}
+    explicit = str(row.get("vat_accounting_basis") or "").strip().lower()
+    if explicit in {"accrual", "cash"}:
+        return explicit
+    legacy_scheme = str(row.get("vat_scheme") or "standard").strip().lower()
+    if bool(row.get("cash_accounting")) or legacy_scheme in {"cash", "cash_accounting", "cash accounting"}:
+        return "cash"
+    return "accrual"
+
+
+def normalized_vat_scheme(settings_row: Optional[dict]) -> str:
+    scheme = str((settings_row or {}).get("vat_scheme") or "standard").strip().lower()
+    return "flat_rate" if scheme in {"flat_rate", "flat rate"} else "standard"
+
+
 async def ensure_vat_settings(session: AsyncSession, client_id: str) -> dict:
     row = await one(session, select(accounting_vat_settings).where(accounting_vat_settings.c.client_id == client_id))
     if row:
-        return row
+        basis = normalized_vat_accounting_basis(row)
+        scheme = normalized_vat_scheme(row)
+        normalized = {
+            **dict(row),
+            "vat_scheme": scheme,
+            "vat_accounting_basis": basis,
+            "cash_accounting": basis == "cash",
+            "accrual_accounting": basis == "accrual",
+        }
+        if any(row.get(key) != normalized[key] for key in ("vat_scheme", "vat_accounting_basis", "cash_accounting", "accrual_accounting")):
+            await session.execute(update(accounting_vat_settings).where(accounting_vat_settings.c.id == row["id"]).values(
+                vat_scheme=scheme,
+                vat_accounting_basis=basis,
+                cash_accounting=basis == "cash",
+                accrual_accounting=basis == "accrual",
+                updated_at=utc_now_iso(),
+            ))
+        return normalized
     today = datetime.now(timezone.utc).date()
     quarter_start_month = (((today.month - 1) // 3) * 3) + 1
     now = utc_now_iso()
@@ -7303,6 +7417,7 @@ async def ensure_vat_settings(session: AsyncSession, client_id: str) -> dict:
         "client_id": client_id,
         "vat_registration_number": "",
         "vat_scheme": "standard",
+        "vat_accounting_basis": "accrual",
         "vat_frequency": "quarterly",
         "vat_start_date": "",
         "vat_end_date": "",
@@ -7452,7 +7567,7 @@ async def late_invoice_vat_context(session: AsyncSession, client_id: str, docume
     if money(vat_amount) == 0:
         return None
     vat_settings = await ensure_vat_settings(session, client_id)
-    if str(vat_settings.get("vat_scheme") or "standard").strip().lower() in {"cash", "cash_accounting", "cash accounting"}:
+    if normalized_vat_accounting_basis(vat_settings) == "cash":
         return None
     periods = await ensure_vat_periods(session, client_id)
     original = find_vat_period_for_date(periods, str(document_date or ""))
@@ -7508,8 +7623,14 @@ async def apply_confirmed_late_invoice_vat_adjustment(
         "journal_entry_id": None,
         "source_type": source_type,
         "source_id": source_id,
+        "source_invoice_id": source_id,
+        "source_payment_id": None,
+        "source_bank_transaction_id": None,
+        "original_payment_date": None,
         "original_vat_period_id": context["original_period"].get("id"),
         "reported_vat_period_id": context["reported_period"].get("id"),
+        "adjustment_reason": f"Late invoice VAT correction: {document_number}",
+        "direction": "purchase" if source_type.startswith("ap_") else "sales" if source_type.startswith("ar_") else "adjustment",
         "created_by": actor_id,
         "created_at": now,
         "updated_at": now,
@@ -7546,6 +7667,120 @@ def vat_document_type(source_type: str) -> str:
     return labels.get(source_type, source_type.replace("_", " ").title())
 
 
+def proportional_vat_allocation_groups(document: dict, lines: list[dict], allocation_amount: Any) -> list[dict]:
+    document_gross = money(document.get("gross_amount")).copy_abs()
+    allocated = money(allocation_amount).copy_abs()
+    ratio = min(allocated / document_gross, Decimal("1")) if document_gross > 0 else Decimal("0")
+    groups: dict[str, dict] = {}
+    for line in lines:
+        vat_code = vat_code_value(line.get("vat_code")) or vat_code_value(document.get("vat_code")) or ""
+        group = groups.setdefault(vat_code, {
+            "vat_code": vat_code,
+            "net_amount": Decimal("0.00"),
+            "vat_amount": Decimal("0.00"),
+            "gross_amount": Decimal("0.00"),
+        })
+        group["net_amount"] += money(line.get("net_amount")) * ratio
+        group["vat_amount"] += money(line.get("vat_amount")) * ratio
+        group["gross_amount"] += money(line.get("gross_amount")) * ratio
+    return [
+        {**group, "net_amount": money_str(group["net_amount"]), "vat_amount": money_str(group["vat_amount"]), "gross_amount": money_str(group["gross_amount"])}
+        for group in groups.values()
+        if money(group["net_amount"]) != 0 or money(group["vat_amount"]) != 0
+    ]
+
+
+def cash_vat_event_date(payment: dict, bank_transactions: dict[str, dict], fallback_field: str) -> str:
+    bank_id = str(payment.get("bank_transaction_id") or "")
+    bank_transaction = bank_transactions.get(bank_id, {})
+    return str(bank_transaction.get("transaction_date") or payment.get(fallback_field) or "")
+
+
+async def ensure_cash_allocation_vat_corrections(session: AsyncSession, client_id: str, periods: list[dict]) -> None:
+    terminal_statuses = {"locked", "closed", "submitted"}
+    current_period = next((period for period in periods if str(period.get("status") or "") == "open"), None)
+    if not current_period:
+        return
+    today = datetime.now(timezone.utc).date().isoformat()
+    adjustment_date = today if str(current_period.get("period_start") or "") <= today <= str(current_period.get("period_end") or "") else str(current_period.get("period_start") or "")
+    existing = await many(session, select(accounting_vat_adjustments).where(
+        accounting_vat_adjustments.c.client_id == client_id,
+        accounting_vat_adjustments.c.adjustment_type == "cash_allocation_prior_period_correction",
+    ))
+    existing_keys = {
+        (str(row.get("source_type") or ""), str(row.get("source_id") or ""), str(row.get("vat_code") or "").lower(), str(row.get("reported_vat_period_id") or ""))
+        for row in existing
+    }
+    sources = [
+        ("cash_ap_allocation", accounting_ap_payment_allocations, accounting_ap_payments, accounting_ap_invoices, accounting_ap_invoice_lines, "payment_id", "payment_date", "invoice_id", "invoice_id", "purchase", Decimal("1")),
+        ("cash_ap_credit_allocation", accounting_ap_payment_allocations, accounting_ap_payments, accounting_ap_credit_notes, accounting_ap_credit_note_lines, "payment_id", "payment_date", "credit_note_id", "credit_note_id", "purchase", Decimal("-1")),
+        ("cash_ar_allocation", accounting_ar_receipt_allocations, accounting_ar_receipts, accounting_ar_invoices, accounting_ar_invoice_lines, "receipt_id", "receipt_date", "invoice_id", "invoice_id", "sales", Decimal("1")),
+        ("cash_ar_credit_allocation", accounting_ar_receipt_allocations, accounting_ar_receipts, accounting_ar_credit_notes, accounting_ar_credit_note_lines, "receipt_id", "receipt_date", "credit_note_id", "credit_note_id", "sales", Decimal("-1")),
+    ]
+    for source_type, allocation_table, payment_table, document_table, line_table, payment_key, date_key, document_key, line_document_key, direction, sign in sources:
+        document_column = getattr(allocation_table.c, document_key)
+        allocations = await many(session, select(allocation_table).where(allocation_table.c.client_id == client_id, document_column.isnot(None)))
+        if not allocations:
+            continue
+        payment_ids = {str(row.get(payment_key) or "") for row in allocations if row.get(payment_key)}
+        document_ids = {str(row.get(document_key) or "") for row in allocations if row.get(document_key)}
+        payments = {str(row["id"]): row for row in await many(session, select(payment_table).where(payment_table.c.id.in_(payment_ids)))} if payment_ids else {}
+        documents = {str(row["id"]): row for row in await many(session, select(document_table).where(document_table.c.id.in_(document_ids)))} if document_ids else {}
+        line_parent = getattr(line_table.c, line_document_key)
+        line_rows = await many(session, select(line_table).where(line_parent.in_(document_ids))) if document_ids else []
+        lines_by_document: dict[str, list[dict]] = {}
+        for line in line_rows:
+            lines_by_document.setdefault(str(line.get(line_document_key) or ""), []).append(line)
+        bank_ids = {str(row.get("bank_transaction_id") or "") for row in payments.values() if row.get("bank_transaction_id")}
+        banks = {str(row["id"]): row for row in await many(session, select(accounting_bank_transactions).where(accounting_bank_transactions.c.id.in_(bank_ids)))} if bank_ids else {}
+        for allocation in allocations:
+            payment = payments.get(str(allocation.get(payment_key) or ""), {})
+            document = documents.get(str(allocation.get(document_key) or ""), {})
+            payment_date = cash_vat_event_date(payment, banks, date_key)
+            if not payment_date:
+                continue
+            original_period = find_vat_period_for_date(periods, payment_date)
+            if not original_period or str(original_period.get("status") or "") not in terminal_statuses:
+                continue
+            for group in proportional_vat_allocation_groups(document, lines_by_document.get(str(document.get("id") or ""), []), allocation.get("amount")):
+                key = (source_type, str(allocation.get("id") or ""), str(group.get("vat_code") or "").lower(), str(current_period.get("id") or ""))
+                if key in existing_keys or money(group.get("vat_amount")) == 0:
+                    continue
+                now = utc_now_iso()
+                adjustment_id = new_id()
+                reason = f"Cash VAT correction for bank/payment date {payment_date}"
+                row = {
+                    "id": adjustment_id, "client_id": client_id, "vat_period_id": current_period.get("id"),
+                    "adjustment_date": adjustment_date, "adjustment_type": "cash_allocation_prior_period_correction",
+                    "vat_code": group.get("vat_code"), "reason": reason,
+                    "notes": "Automatically created because the bank/payment date belongs to a locked or submitted VAT period.",
+                    "net_amount": money_str(money(group.get("net_amount")) * sign),
+                    "vat_amount": money_str(money(group.get("vat_amount")) * sign),
+                    "gross_amount": money_str(money(group.get("gross_amount")) * sign),
+                    "status": "posted", "journal_entry_id": None, "source_type": source_type,
+                    "source_id": allocation.get("id"), "source_invoice_id": document.get("id"),
+                    "source_payment_id": payment.get("id"), "source_bank_transaction_id": payment.get("bank_transaction_id"),
+                    "original_payment_date": payment_date, "original_vat_period_id": original_period.get("id"),
+                    "reported_vat_period_id": current_period.get("id"), "adjustment_reason": reason,
+                    "source_reference": str(document.get("invoice_number") or document.get("reference") or document.get("id") or ""),
+                    "direction": direction, "created_by": None, "created_at": now, "updated_at": now,
+                }
+                await session.execute(insert(accounting_vat_adjustments).values(**row))
+                await add_accounting_audit(session, client_id, None, "cash_vat_prior_period_correction_created", "vat", adjustment_id, {
+                    "original_invoice_id": document.get("id"), "bank_transaction_id": payment.get("bank_transaction_id"),
+                    "original_vat_period_id": original_period.get("id"), "current_correction_period_id": current_period.get("id"),
+                    "allocation_amount": allocation.get("amount"), "vat_code": group.get("vat_code"), "vat_amount": row["vat_amount"],
+                })
+                existing_keys.add(key)
+
+
+async def ensure_current_cash_vat_corrections(session: AsyncSession, client_id: str) -> None:
+    settings_row = await ensure_vat_settings(session, client_id)
+    if normalized_vat_accounting_basis(settings_row) != "cash":
+        return
+    await ensure_cash_allocation_vat_corrections(session, client_id, await ensure_vat_periods(session, client_id, settings_row))
+
+
 def apply_vat_box(boxes: dict[str, Decimal], box: str, amount: Decimal) -> None:
     if not box:
         return
@@ -7558,7 +7793,9 @@ async def vat_transactions_for_client(session: AsyncSession, client_id: str) -> 
     codes = {str(c.get("code") or "").lower(): c for c in await ensure_vat_codes(session, client_id)}
     periods = await ensure_vat_periods(session, client_id)
     vat_settings = await ensure_vat_settings(session, client_id)
-    cash_accounting = str(vat_settings.get("vat_scheme") or "standard").strip().lower() in {"cash", "cash_accounting", "cash accounting"}
+    cash_accounting = normalized_vat_accounting_basis(vat_settings) == "cash"
+    if cash_accounting:
+        await ensure_cash_allocation_vat_corrections(session, client_id, periods)
     transactions: list[dict] = []
 
     def add_transaction(row: dict, line: dict, date_key: str, number_key: str, source_type: str, direction: str, sign: Decimal = Decimal("1")):
@@ -7571,6 +7808,12 @@ async def vat_transactions_for_client(session: AsyncSession, client_id: str) -> 
         code_row = codes.get(code.lower(), {})
         vat_date = str(row.get("vat_effective_date") or row.get(date_key) or "")
         period = find_vat_period_for_date(periods, vat_date)
+        event_source = str(row.get("vat_event_source") or (
+            "bank_transaction_date" if source_type.startswith("bank_")
+            else "payment_or_receipt_date" if cash_accounting and source_type in {"ap_invoice", "ap_credit_note", "ar_invoice", "ar_credit_note"}
+            else "journal_vat_date" if source_type not in {"ap_invoice", "ap_credit_note", "ar_invoice", "ar_credit_note"}
+            else "invoice_or_posting_tax_point"
+        ))
         transactions.append({
             "id": str(line.get("id") or new_id()),
             "date": vat_date,
@@ -7591,6 +7834,8 @@ async def vat_transactions_for_client(session: AsyncSession, client_id: str) -> 
             "vat_period_id": period.get("id") if period else None,
             "vat_period": f"{period.get('period_start')} to {period.get('period_end')}" if period else "Unassigned",
             "status": period.get("status") if period else "unassigned",
+            "vat_accounting_basis": normalized_vat_accounting_basis(vat_settings),
+            "vat_event_source": event_source,
             "box_sales_vat": code_row.get("box_sales_vat") or "",
             "box_purchase_vat": code_row.get("box_purchase_vat") or "",
             "box_sales_net": code_row.get("box_sales_net") or "",
@@ -7605,18 +7850,22 @@ async def vat_transactions_for_client(session: AsyncSession, client_id: str) -> 
             allocations = await many(session, select(accounting_ap_payment_allocations).where(accounting_ap_payment_allocations.c.client_id == client_id, accounting_ap_payment_allocations.c.invoice_id.in_(list(by_id))))
             payment_ids = [str(row.get("payment_id")) for row in allocations if row.get("payment_id")]
             payments = {str(row["id"]): row for row in await many(session, select(accounting_ap_payments).where(accounting_ap_payments.c.id.in_(payment_ids)))} if payment_ids else {}
+            bank_ids = [str(row.get("bank_transaction_id")) for row in payments.values() if row.get("bank_transaction_id")]
+            bank_transactions = {str(row["id"]): row for row in await many(session, select(accounting_bank_transactions).where(accounting_bank_transactions.c.id.in_(bank_ids)))} if bank_ids else {}
             lines_by_invoice: dict[str, list[dict]] = {}
             for line in rows:
                 lines_by_invoice.setdefault(str(line.get("invoice_id")), []).append(line)
             for allocation in allocations:
                 invoice = by_id.get(str(allocation.get("invoice_id")), {})
-                gross = money(invoice.get("gross_amount"))
-                ratio = min(money(allocation.get("amount")) / gross, Decimal("1")) if gross > 0 else Decimal("0")
                 payment = payments.get(str(allocation.get("payment_id")), {})
-                for line in lines_by_invoice.get(str(invoice.get("id")), []):
+                payment_date = cash_vat_event_date(payment, bank_transactions, "payment_date")
+                payment_period = find_vat_period_for_date(periods, payment_date)
+                if not payment_date or (payment_period and str(payment_period.get("status") or "") in {"locked", "closed", "submitted"}):
+                    continue
+                for group in proportional_vat_allocation_groups(invoice, lines_by_invoice.get(str(invoice.get("id")), []), allocation.get("amount")):
                     add_transaction(
-                        {**invoice, "vat_effective_date": payment.get("payment_date") or str(allocation.get("created_at") or "")[:10]},
-                        {**line, "net_amount": money_str(money(line.get("net_amount")) * ratio), "vat_amount": money_str(money(line.get("vat_amount")) * ratio), "gross_amount": money_str(money(line.get("gross_amount")) * ratio)},
+                        {**invoice, "vat_effective_date": payment_date, "vat_event_source": "bank_transaction_date" if payment.get("bank_transaction_id") else "supplier_payment_date"},
+                        {**group, "id": f"{invoice.get('id')}:{allocation.get('id')}:{group.get('vat_code')}"},
                         "invoice_date", "invoice_number", "ap_invoice", "purchase",
                     )
         else:
@@ -7627,8 +7876,27 @@ async def vat_transactions_for_client(session: AsyncSession, client_id: str) -> 
     if ap_credits:
         rows = await many(session, select(accounting_ap_credit_note_lines).where(accounting_ap_credit_note_lines.c.credit_note_id.in_([r["id"] for r in ap_credits])))
         by_id = {str(r["id"]): r for r in ap_credits}
-        for line in rows:
-            add_transaction(by_id.get(str(line.get("credit_note_id")), {}), line, "credit_note_date", "credit_note_number", "ap_credit_note", "purchase", Decimal("-1"))
+        if cash_accounting:
+            allocations = await many(session, select(accounting_ap_payment_allocations).where(accounting_ap_payment_allocations.c.client_id == client_id, accounting_ap_payment_allocations.c.credit_note_id.in_(list(by_id))))
+            payment_ids = [str(row.get("payment_id")) for row in allocations if row.get("payment_id")]
+            payments = {str(row["id"]): row for row in await many(session, select(accounting_ap_payments).where(accounting_ap_payments.c.id.in_(payment_ids)))} if payment_ids else {}
+            bank_ids = [str(row.get("bank_transaction_id")) for row in payments.values() if row.get("bank_transaction_id")]
+            banks = {str(row["id"]): row for row in await many(session, select(accounting_bank_transactions).where(accounting_bank_transactions.c.id.in_(bank_ids)))} if bank_ids else {}
+            lines_by_credit: dict[str, list[dict]] = {}
+            for line in rows:
+                lines_by_credit.setdefault(str(line.get("credit_note_id")), []).append(line)
+            for allocation in allocations:
+                credit = by_id.get(str(allocation.get("credit_note_id")), {})
+                payment = payments.get(str(allocation.get("payment_id")), {})
+                event_date = cash_vat_event_date(payment, banks, "payment_date")
+                event_period = find_vat_period_for_date(periods, event_date)
+                if not event_date or (event_period and str(event_period.get("status") or "") in {"locked", "closed", "submitted"}):
+                    continue
+                for group in proportional_vat_allocation_groups(credit, lines_by_credit.get(str(credit.get("id")), []), allocation.get("amount")):
+                    add_transaction({**credit, "vat_effective_date": event_date}, {**group, "id": f"{credit.get('id')}:{allocation.get('id')}:{group.get('vat_code')}"}, "credit_note_date", "credit_note_number", "ap_credit_note", "purchase", Decimal("-1"))
+        else:
+            for line in rows:
+                add_transaction(by_id.get(str(line.get("credit_note_id")), {}), line, "credit_note_date", "credit_note_number", "ap_credit_note", "purchase", Decimal("-1"))
 
     ar_invoices = await many(session, select(accounting_ar_invoices).where(accounting_ar_invoices.c.client_id == client_id, accounting_ar_invoices.c.posted_journal_id.isnot(None)))
     if ar_invoices:
@@ -7638,18 +7906,22 @@ async def vat_transactions_for_client(session: AsyncSession, client_id: str) -> 
             allocations = await many(session, select(accounting_ar_receipt_allocations).where(accounting_ar_receipt_allocations.c.client_id == client_id, accounting_ar_receipt_allocations.c.invoice_id.in_(list(by_id))))
             receipt_ids = [str(row.get("receipt_id")) for row in allocations if row.get("receipt_id")]
             receipts = {str(row["id"]): row for row in await many(session, select(accounting_ar_receipts).where(accounting_ar_receipts.c.id.in_(receipt_ids)))} if receipt_ids else {}
+            bank_ids = [str(row.get("bank_transaction_id")) for row in receipts.values() if row.get("bank_transaction_id")]
+            bank_transactions = {str(row["id"]): row for row in await many(session, select(accounting_bank_transactions).where(accounting_bank_transactions.c.id.in_(bank_ids)))} if bank_ids else {}
             lines_by_invoice: dict[str, list[dict]] = {}
             for line in rows:
                 lines_by_invoice.setdefault(str(line.get("invoice_id")), []).append(line)
             for allocation in allocations:
                 invoice = by_id.get(str(allocation.get("invoice_id")), {})
-                gross = money(invoice.get("gross_amount"))
-                ratio = min(money(allocation.get("amount")) / gross, Decimal("1")) if gross > 0 else Decimal("0")
                 receipt = receipts.get(str(allocation.get("receipt_id")), {})
-                for line in lines_by_invoice.get(str(invoice.get("id")), []):
+                receipt_date = cash_vat_event_date(receipt, bank_transactions, "receipt_date")
+                receipt_period = find_vat_period_for_date(periods, receipt_date)
+                if not receipt_date or (receipt_period and str(receipt_period.get("status") or "") in {"locked", "closed", "submitted"}):
+                    continue
+                for group in proportional_vat_allocation_groups(invoice, lines_by_invoice.get(str(invoice.get("id")), []), allocation.get("amount")):
                     add_transaction(
-                        {**invoice, "vat_effective_date": receipt.get("receipt_date") or str(allocation.get("created_at") or "")[:10]},
-                        {**line, "net_amount": money_str(money(line.get("net_amount")) * ratio), "vat_amount": money_str(money(line.get("vat_amount")) * ratio), "gross_amount": money_str(money(line.get("gross_amount")) * ratio)},
+                        {**invoice, "vat_effective_date": receipt_date, "vat_event_source": "bank_transaction_date" if receipt.get("bank_transaction_id") else "customer_receipt_date"},
+                        {**group, "id": f"{invoice.get('id')}:{allocation.get('id')}:{group.get('vat_code')}"},
                         "invoice_date", "invoice_number", "ar_invoice", "sales",
                     )
         else:
@@ -7660,8 +7932,27 @@ async def vat_transactions_for_client(session: AsyncSession, client_id: str) -> 
     if ar_credits:
         rows = await many(session, select(accounting_ar_credit_note_lines).where(accounting_ar_credit_note_lines.c.credit_note_id.in_([r["id"] for r in ar_credits])))
         by_id = {str(r["id"]): r for r in ar_credits}
-        for line in rows:
-            add_transaction(by_id.get(str(line.get("credit_note_id")), {}), line, "credit_note_date", "credit_note_number", "ar_credit_note", "sales", Decimal("-1"))
+        if cash_accounting:
+            allocations = await many(session, select(accounting_ar_receipt_allocations).where(accounting_ar_receipt_allocations.c.client_id == client_id, accounting_ar_receipt_allocations.c.credit_note_id.in_(list(by_id))))
+            receipt_ids = [str(row.get("receipt_id")) for row in allocations if row.get("receipt_id")]
+            receipts = {str(row["id"]): row for row in await many(session, select(accounting_ar_receipts).where(accounting_ar_receipts.c.id.in_(receipt_ids)))} if receipt_ids else {}
+            bank_ids = [str(row.get("bank_transaction_id")) for row in receipts.values() if row.get("bank_transaction_id")]
+            banks = {str(row["id"]): row for row in await many(session, select(accounting_bank_transactions).where(accounting_bank_transactions.c.id.in_(bank_ids)))} if bank_ids else {}
+            lines_by_credit: dict[str, list[dict]] = {}
+            for line in rows:
+                lines_by_credit.setdefault(str(line.get("credit_note_id")), []).append(line)
+            for allocation in allocations:
+                credit = by_id.get(str(allocation.get("credit_note_id")), {})
+                receipt = receipts.get(str(allocation.get("receipt_id")), {})
+                event_date = cash_vat_event_date(receipt, banks, "receipt_date")
+                event_period = find_vat_period_for_date(periods, event_date)
+                if not event_date or (event_period and str(event_period.get("status") or "") in {"locked", "closed", "submitted"}):
+                    continue
+                for group in proportional_vat_allocation_groups(credit, lines_by_credit.get(str(credit.get("id")), []), allocation.get("amount")):
+                    add_transaction({**credit, "vat_effective_date": event_date}, {**group, "id": f"{credit.get('id')}:{allocation.get('id')}:{group.get('vat_code')}"}, "credit_note_date", "credit_note_number", "ar_credit_note", "sales", Decimal("-1"))
+        else:
+            for line in rows:
+                add_transaction(by_id.get(str(line.get("credit_note_id")), {}), line, "credit_note_date", "credit_note_number", "ar_credit_note", "sales", Decimal("-1"))
 
     # Banking and manual GL VAT postings are journal-native. AP/AR journals are
     # deliberately excluded here because their exact reviewed net/VAT/gross
@@ -7710,11 +8001,17 @@ async def vat_transactions_for_client(session: AsyncSession, client_id: str) -> 
                 direction,
             )
 
-    adjustments = await many(session, select(accounting_vat_adjustments).where(accounting_vat_adjustments.c.client_id == client_id, accounting_vat_adjustments.c.status == "posted").order_by(accounting_vat_adjustments.c.adjustment_date.desc()))
+    adjustments = await many(session, select(accounting_vat_adjustments).where(accounting_vat_adjustments.c.client_id == client_id, accounting_vat_adjustments.c.status.in_(["posted", "applied_to_source"])).order_by(accounting_vat_adjustments.c.adjustment_date.desc()))
+    periods_by_id = {str(period.get("id") or ""): period for period in periods}
     for adjustment in adjustments:
-        period = find_vat_period_for_date(periods, str(adjustment.get("adjustment_date") or ""))
+        explicit_period_id = str(adjustment.get("reported_vat_period_id") or adjustment.get("vat_period_id") or "")
+        period = periods_by_id.get(explicit_period_id) or find_vat_period_for_date(periods, str(adjustment.get("adjustment_date") or ""))
         code = str(adjustment.get("vat_code") or "").strip()
         code_row = codes.get(code.lower(), {})
+        source_type = str(adjustment.get("source_type") or "")
+        direction = str(adjustment.get("direction") or "")
+        if direction not in {"purchase", "sales"}:
+            direction = "purchase" if source_type.startswith(("ap_", "cash_ap_")) else "sales" if source_type.startswith(("ar_", "cash_ar_")) else "adjustment"
         transactions.append({
             "id": str(adjustment.get("id")),
             "date": adjustment.get("adjustment_date"),
@@ -7729,14 +8026,16 @@ async def vat_transactions_for_client(session: AsyncSession, client_id: str) -> 
             "net": money_str(money(adjustment.get("net_amount"))),
             "vat": money_str(money(adjustment.get("vat_amount"))),
             "gross": money_str(money(adjustment.get("gross_amount"))),
-            "direction": "adjustment",
+            "direction": direction,
             "vat_period_id": period.get("id") if period else None,
             "vat_period": f"{period.get('period_start')} to {period.get('period_end')}" if period else "Unassigned",
-            "status": period.get("status") if period else "unassigned",
+            "status": "adjusted" if "correction" in str(adjustment.get("adjustment_type") or "") else period.get("status") if period else "unassigned",
+            "vat_accounting_basis": normalized_vat_accounting_basis(vat_settings),
+            "vat_event_source": "selected_adjustment_period",
             "box_sales_vat": code_row.get("box_sales_vat") or "1",
-            "box_purchase_vat": "",
-            "box_sales_net": "",
-            "box_purchase_net": "",
+            "box_purchase_vat": code_row.get("box_purchase_vat") or "4",
+            "box_sales_net": code_row.get("box_sales_net") or "6",
+            "box_purchase_net": code_row.get("box_purchase_net") or "7",
         })
 
     client = await get_user_by_id(session, client_id)
@@ -7893,9 +8192,22 @@ async def vat_engine_workspace(session: AsyncSession, client_id: str) -> dict:
         "input_vat": money_str(boxes["box4"]),
         "net_vat_due": money_str(boxes["box5"]),
     }
+    code_history = await native_vat_code_history_counts(session, client_id, codes)
+    serialized_codes = []
+    for code in codes:
+        payload = serialize_vat_code(code)
+        payload["history_count"] = code_history.get(str(payload.get("code") or ""), 0)
+        payload["has_history"] = payload["history_count"] > 0
+        serialized_codes.append(payload)
     return {
-        "settings": dict(settings_row),
-        "codes": [serialize_vat_code(c) for c in codes],
+        "settings": {
+            **dict(settings_row),
+            "vat_scheme": normalized_vat_scheme(settings_row),
+            "vat_accounting_basis": normalized_vat_accounting_basis(settings_row),
+        },
+        "activity_summary": await native_vat_basis_change_summary(session, client_id),
+        "basis_change_warning": VAT_BASIS_CHANGE_WARNING,
+        "codes": serialized_codes,
         "periods": serialized_periods,
         "transactions": [],
         "returns": returns,
@@ -11072,6 +11384,110 @@ async def get_vat_adjustments_page(
     return payload
 
 
+@api.get("/admin/accounting/clients/{client_id}/vat/adjustments/{adjustment_id}")
+async def get_vat_adjustment_detail(
+    client_id: str,
+    adjustment_id: str,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    await get_client_or_404(session, client_id)
+    adjustment = await one(session, select(accounting_vat_adjustments).where(
+        accounting_vat_adjustments.c.client_id == client_id,
+        accounting_vat_adjustments.c.id == adjustment_id,
+    ))
+    if not adjustment:
+        raise HTTPException(status_code=404, detail="VAT adjustment not found.")
+
+    journal = None
+    journal_lines: list[dict] = []
+    journal_id = str(adjustment.get("journal_entry_id") or "")
+    source_invoice = None
+    source_payment = None
+    source_bank_transaction = None
+    source_type = str(adjustment.get("source_type") or "")
+    source_invoice_id = str(adjustment.get("source_invoice_id") or "")
+    source_payment_id = str(adjustment.get("source_payment_id") or "")
+    source_bank_id = str(adjustment.get("source_bank_transaction_id") or "")
+
+    if source_invoice_id:
+        invoice_table = accounting_ap_invoices if "ap" in source_type else accounting_ar_invoices
+        source_invoice = await one(session, select(invoice_table).where(
+            invoice_table.c.client_id == client_id,
+            invoice_table.c.id == source_invoice_id,
+        ))
+        if not journal_id and source_invoice:
+            journal_id = str(source_invoice.get("posted_journal_id") or "")
+    if source_payment_id:
+        payment_table = accounting_ap_payments if "ap" in source_type else accounting_ar_receipts
+        source_payment = await one(session, select(payment_table).where(
+            payment_table.c.client_id == client_id,
+            payment_table.c.id == source_payment_id,
+        ))
+    if source_bank_id:
+        source_bank_transaction = await one(session, select(accounting_bank_transactions).where(
+            accounting_bank_transactions.c.client_id == client_id,
+            accounting_bank_transactions.c.id == source_bank_id,
+        ))
+    if journal_id:
+        journal = await one(session, select(accounting_journal_entries).where(
+            accounting_journal_entries.c.client_id == client_id,
+            accounting_journal_entries.c.id == journal_id,
+        ))
+        journal_lines = await many(session, select(accounting_journal_lines).where(
+            accounting_journal_lines.c.client_id == client_id,
+            accounting_journal_lines.c.entry_id == journal_id,
+        ).order_by(accounting_journal_lines.c.created_at.asc()))
+
+    periods = await many(session, select(accounting_vat_periods).where(
+        accounting_vat_periods.c.client_id == client_id,
+        accounting_vat_periods.c.id.in_([
+            value for value in (
+                adjustment.get("original_vat_period_id"),
+                adjustment.get("reported_vat_period_id"),
+                adjustment.get("vat_period_id"),
+            ) if value
+        ]),
+    ))
+    periods_by_id = {str(period.get("id")): serialize_vat_period(period) for period in periods}
+    lines = [{
+        "id": str(line.get("id") or ""),
+        "account_code": str(line.get("account_code") or ""),
+        "account_name": str(line.get("account_name") or ""),
+        "description": str(line.get("description") or ""),
+        "vat_code": vat_code_value(line.get("vat_code")),
+        "debit": money_str(money(line.get("debit"))),
+        "credit": money_str(money(line.get("credit"))),
+    } for line in journal_lines]
+    is_reporting_only = not bool(adjustment.get("journal_entry_id"))
+    return {
+        "adjustment": serialize_vat_adjustment(adjustment),
+        "source": {
+            "source_type": source_type or "manual_vat_adjustment",
+            "source_reference": adjustment.get("source_reference") or adjustment.get("reason") or adjustment_id,
+            "source_id": adjustment.get("source_id"),
+            "invoice": dict(source_invoice) if source_invoice else None,
+            "payment_or_receipt": dict(source_payment) if source_payment else None,
+            "bank_transaction": serialize_bank_transaction(source_bank_transaction) if source_bank_transaction else None,
+            "original_vat_period": periods_by_id.get(str(adjustment.get("original_vat_period_id") or "")),
+            "reported_vat_period": periods_by_id.get(str(adjustment.get("reported_vat_period_id") or adjustment.get("vat_period_id") or "")),
+            "explanation": adjustment.get("adjustment_reason") or adjustment.get("notes") or adjustment.get("reason"),
+        },
+        "double_entry": {
+            "journal_id": journal_id or None,
+            "journal": dict(journal) if journal else None,
+            "lines": lines,
+            "debit_total": money_str(sum((money(line.get("debit")) for line in lines), Decimal("0.00"))),
+            "credit_total": money_str(sum((money(line.get("credit")) for line in lines), Decimal("0.00"))),
+            "reporting_only_correction": is_reporting_only,
+            "explanation": (
+                "This VAT correction changes the VAT return period only. The source document journal remains the General Ledger double entry."
+                if is_reporting_only else "This is the posted General Ledger double entry for the VAT adjustment."
+            ),
+        },
+    }
+
+
 @api.get("/admin/accounting/clients/{client_id}/vat/reports")
 async def get_vat_reports_page(
     client_id: str, page: int = 1, page_size: int = 50, date_from: str = "", date_to: str = "",
@@ -12888,6 +13304,7 @@ async def allocate_ap_supplier_transactions(client_id: str, supplier_id: str, pa
             remaining = max(money(source["source"].get("unallocated_amount")) - allocated_amount, Decimal("0.00"))
             await session.execute(update(accounting_ap_credit_notes).where(accounting_ap_credit_notes.c.id == source["id"]).values(unallocated_amount=money_str(remaining), status="paid" if remaining == 0 else "part_paid", updated_at=now))
     await add_accounting_audit(session, client_id, user.get("id"), "supplier_transactions_allocated", "accounts_payable", supplier_id, {"allocation_count": len(created), "amount": money_str(credit_total), "allocations": created})
+    await ensure_current_cash_vat_corrections(session, client_id)
     await session.commit()
     return {"ok": True, "allocations": created, "total_allocated": money_str(credit_total)}
 
@@ -13794,6 +14211,7 @@ async def allocate_ap_payment(
         else:
             await session.execute(update(accounting_ap_invoices).where(accounting_ap_invoices.c.id == invoice_id).values(outstanding_amount=money_str(new_outstanding), status="paid" if new_outstanding == 0 else "part_paid", updated_at=now))
         await add_accounting_audit(session, client_id, user.get("id"), "supplier_payment_allocation_created", "accounts_payable", payment_id, {"invoice_id": invoice_id, "amount": money_str(amount), "bank_journal_changed": False})
+    await ensure_current_cash_vat_corrections(session, client_id)
     await session.commit()
     response = await get_ap_payment_detail(client_id, payment_id, user, session)
     response["created_allocations"] = created
@@ -14329,6 +14747,7 @@ async def allocate_ar_customer_transactions(
             remaining = max(previous - allocated_amount, Decimal("0.00"))
             await session.execute(update(accounting_ar_credit_notes).where(accounting_ar_credit_notes.c.id == source["id"]).values(unallocated_amount=money_str(remaining), status="paid" if remaining == 0 else "part_paid", updated_at=now))
     await add_accounting_audit(session, client_id, user.get("id"), "customer_transactions_allocated", "accounts_receivable", customer_id, {"allocation_count": len(created), "amount": money_str(credit_total), "allocations": created})
+    await ensure_current_cash_vat_corrections(session, client_id)
     await session.commit()
     return {"ok": True, "allocations": created, "total_allocated": money_str(credit_total)}
 
@@ -15190,6 +15609,7 @@ async def allocate_ar_receipt(
         else:
             await session.execute(update(accounting_ar_invoices).where(accounting_ar_invoices.c.id == invoice_id).values(outstanding_amount=money_str(new_outstanding), status="paid" if new_outstanding == 0 else "part_paid", updated_at=now))
         await add_accounting_audit(session, client_id, user.get("id"), "customer_receipt_allocation_created", "accounts_receivable", receipt_id, {"invoice_id": invoice_id, "amount": money_str(amount), "bank_journal_changed": False})
+    await ensure_current_cash_vat_corrections(session, client_id)
     await session.commit()
     response = await get_ar_receipt_detail(client_id, receipt_id, user, session)
     response["created_allocations"] = created
@@ -16605,7 +17025,7 @@ async def match_native_bank_transaction(
                 creditors = find_native_account(accounts, settings_row.get("default_creditors_control_account"), "2000")
                 journal = await post_native_journal(session, client_id, "bank_supplier_payment", transaction_id, transaction.get("transaction_date") or datetime.now(timezone.utc).date().isoformat(), transaction.get("reference") or invoice.get("invoice_number") or transaction_id, f"Bank payment allocated to {invoice.get('invoice_number')}", [{"account": creditors, "contact": contact, "debit": money_str(item_amount), "credit": "0.00", "description": transaction.get("description")}, {"account": bank, "contact": contact, "debit": "0.00", "credit": money_str(item_amount), "description": transaction.get("description")}], user.get("id"))
                 payment_id = new_id()
-                await session.execute(insert(accounting_ap_payments).values(id=payment_id, client_id=client_id, supplier_id=supplier["id"], contact_id=supplier.get("contact_id"), payment_date=transaction.get("transaction_date"), bank_account_code=bank.get("code"), reference=transaction.get("reference") or invoice.get("invoice_number"), amount=money_str(item_amount), currency="GBP", status="posted", posted_journal_id=journal.get("id"), created_at=now, updated_at=now))
+                await session.execute(insert(accounting_ap_payments).values(id=payment_id, client_id=client_id, supplier_id=supplier["id"], contact_id=supplier.get("contact_id"), payment_date=transaction.get("transaction_date"), bank_account_code=bank.get("code"), reference=transaction.get("reference") or invoice.get("invoice_number"), amount=money_str(item_amount), currency="GBP", status="posted", posted_journal_id=journal.get("id"), bank_transaction_id=transaction_id, created_at=now, updated_at=now))
                 existing_allocations = await many(session, select(accounting_ap_payment_allocations).where(accounting_ap_payment_allocations.c.client_id == client_id, accounting_ap_payment_allocations.c.invoice_id == invoice["id"]))
                 remaining_balance = max(money(invoice.get("gross_amount")) - sum((money(row.get("amount")) for row in existing_allocations), Decimal("0.00")), Decimal("0.00"))
                 allocation = min(item_amount, remaining_balance)
@@ -16728,7 +17148,7 @@ async def match_native_bank_transaction(
             user.get("id"),
         )
         payment_id = new_id()
-        await session.execute(insert(accounting_ap_payments).values(id=payment_id, client_id=client_id, supplier_id=supplier["id"], contact_id=supplier.get("contact_id"), payment_date=transaction.get("transaction_date"), bank_account_code=bank.get("code"), reference=transaction.get("reference") or invoice.get("invoice_number"), amount=money_str(amount), currency="GBP", status="posted", posted_journal_id=journal.get("id"), created_at=now, updated_at=now))
+        await session.execute(insert(accounting_ap_payments).values(id=payment_id, client_id=client_id, supplier_id=supplier["id"], contact_id=supplier.get("contact_id"), payment_date=transaction.get("transaction_date"), bank_account_code=bank.get("code"), reference=transaction.get("reference") or invoice.get("invoice_number"), amount=money_str(amount), currency="GBP", status="posted", posted_journal_id=journal.get("id"), bank_transaction_id=transaction_id, created_at=now, updated_at=now))
         existing_allocations = await many(session, select(accounting_ap_payment_allocations).where(accounting_ap_payment_allocations.c.client_id == client_id, accounting_ap_payment_allocations.c.invoice_id == invoice["id"]))
         remaining_balance = max(money(invoice.get("gross_amount")) - sum((money(row.get("amount")) for row in existing_allocations), Decimal("0.00")), Decimal("0.00"))
         allocation = min(amount, remaining_balance)
@@ -17268,13 +17688,17 @@ async def update_native_vat_code(
     row = await one(session, select(accounting_vat_codes).where(accounting_vat_codes.c.client_id == client_id, accounting_vat_codes.c.id == code_id))
     if not row:
         raise HTTPException(status_code=404, detail="VAT code not found.")
-    editable = ("description", "display_name", "category", "box_sales_vat", "box_purchase_vat", "box_sales_net", "box_purchase_net")
+    history_count = (await native_vat_code_history_counts(session, client_id, [row])).get(str(row.get("code") or ""), 0)
+    protected = bool(row.get("system_code") or row.get("default_code") or history_count)
+    editable = ("description", "display_name") if protected else (
+        "description", "display_name", "category", "box_sales_vat", "box_purchase_vat", "box_sales_net", "box_purchase_net"
+    )
     values = {key: payload[key] for key in editable if key in payload}
-    if "purchase_behavior" in payload or "purchase_behaviour" in payload:
+    if not protected and ("purchase_behavior" in payload or "purchase_behaviour" in payload):
         values["purchase_behavior"] = str(payload.get("purchase_behavior") or payload.get("purchase_behaviour") or "")
-    if "sales_behavior" in payload or "sales_behaviour" in payload:
+    if not protected and ("sales_behavior" in payload or "sales_behaviour" in payload):
         values["sales_behavior"] = str(payload.get("sales_behavior") or payload.get("sales_behaviour") or "")
-    if "percentage" in payload or "rate" in payload:
+    if not protected and ("percentage" in payload or "rate" in payload):
         values["percentage"] = money_str(money(payload.get("percentage") if payload.get("percentage") not in (None, "") else payload.get("rate")))
     if "active" in payload:
         values["active"] = bool(payload.get("active"))
@@ -17283,7 +17707,10 @@ async def update_native_vat_code(
     await add_accounting_audit(session, client_id, user.get("id"), "vat_code_updated", "vat", code_id, {"previous": dict(row), "new": values})
     await session.commit()
     updated = await one(session, select(accounting_vat_codes).where(accounting_vat_codes.c.id == code_id))
-    return serialize_vat_code(updated)
+    result = serialize_vat_code(updated)
+    result["history_count"] = history_count
+    result["has_history"] = history_count > 0
+    return result
 
 
 @api.delete("/admin/accounting/clients/{client_id}/vat/codes/{code_id}")
@@ -17302,14 +17729,7 @@ async def delete_native_vat_code(
     if bool(row.get("system_code")):
         raise HTTPException(status_code=400, detail="System VAT codes cannot be deleted. Make the code inactive instead.")
     code = str(row.get("code") or "")
-    usage_queries = (
-        select(func.count()).select_from(accounting_ap_invoice_lines).where(accounting_ap_invoice_lines.c.vat_code == code),
-        select(func.count()).select_from(accounting_ap_credit_note_lines).where(accounting_ap_credit_note_lines.c.vat_code == code),
-        select(func.count()).select_from(accounting_ar_invoice_lines).where(accounting_ar_invoice_lines.c.vat_code == code),
-        select(func.count()).select_from(accounting_ar_credit_note_lines).where(accounting_ar_credit_note_lines.c.vat_code == code),
-        select(func.count()).select_from(accounting_vat_adjustments).where(accounting_vat_adjustments.c.client_id == client_id, accounting_vat_adjustments.c.vat_code == code),
-    )
-    history_count = sum(int((await session.execute(query)).scalar() or 0) for query in usage_queries)
+    history_count = (await native_vat_code_history_counts(session, client_id, [row])).get(code, 0)
     if history_count:
         await session.execute(update(accounting_vat_codes).where(accounting_vat_codes.c.id == code_id).values(active=False, updated_at=utc_now_iso()))
         await add_accounting_audit(session, client_id, user.get("id"), "vat_code_inactivated", "vat", code_id, {"history_count": history_count})
@@ -17330,16 +17750,36 @@ async def update_native_vat_settings(
 ):
     row = await ensure_vat_settings(session, client_id)
     values = {key: payload[key] for key in (
-        "vat_registration_number", "vat_scheme", "vat_frequency", "vat_start_date", "vat_end_date",
+        "vat_registration_number", "vat_frequency", "vat_start_date", "vat_end_date",
         "hmrc_connection_status"
     ) if key in payload}
+    if bool(payload.get("cash_accounting")) and bool(payload.get("accrual_accounting")):
+        raise HTTPException(status_code=400, detail="Select one VAT accounting basis: accrual or cash.")
+    requested_basis = normalized_vat_accounting_basis({**dict(row), **payload})
+    requested_scheme = normalized_vat_scheme({**dict(row), **payload})
+    current_basis = normalized_vat_accounting_basis(row)
+    activity_summary = await native_vat_basis_change_summary(session, client_id)
+    if requested_basis != current_basis and activity_summary["requires_confirmation"]:
+        if str(payload.get("basis_change_confirmation") or "").strip() != VAT_BASIS_CHANGE_CONFIRMATION:
+            raise HTTPException(status_code=409, detail={
+                "message": VAT_BASIS_CHANGE_WARNING,
+                "confirmation_required": VAT_BASIS_CHANGE_CONFIRMATION,
+                "activity_summary": activity_summary,
+            })
+    values.update({
+        "vat_scheme": requested_scheme,
+        "vat_accounting_basis": requested_basis,
+        "cash_accounting": requested_basis == "cash",
+        "accrual_accounting": requested_basis == "accrual",
+    })
     client = await get_user_by_id(session, client_id)
     next_start = str(values.get("vat_start_date", row.get("vat_start_date")) or "")[:10]
     next_end = str(values.get("vat_end_date", row.get("vat_end_date")) or "")[:10]
-    next_scheme = str(values.get("vat_scheme", row.get("vat_scheme")) or "").strip()
+    next_scheme = requested_scheme
+    next_basis = requested_basis
     next_frequency = str(values.get("vat_frequency", row.get("vat_frequency")) or "").strip()
-    if bool((client or {}).get("is_vat_client")) and (not next_start or not next_scheme or not next_frequency):
-        raise HTTPException(status_code=400, detail="VAT start date, scheme and frequency are required before VAT treatment can be applied.")
+    if bool((client or {}).get("is_vat_client")) and (not next_start or not next_scheme or not next_basis or not next_frequency):
+        raise HTTPException(status_code=400, detail="VAT start date, scheme, accounting basis and frequency are required before VAT treatment can be applied.")
     if not bool((client or {}).get("is_vat_client")) and str(row.get("vat_start_date") or "") and not next_end:
         raise HTTPException(status_code=400, detail="VAT end date is required when disabling VAT for this client.")
     if next_start and next_end and next_end < next_start:
@@ -17356,7 +17796,7 @@ async def update_native_vat_settings(
             if code:
                 await validate_native_vat_code(session, client_id, code)
             values[key] = code
-    for key in ("cash_accounting", "accrual_accounting", "mtd_enabled"):
+    for key in ("mtd_enabled",):
         if key in payload:
             values[key] = bool(payload.get(key))
     if "flat_rate_percentage" in payload:
@@ -17365,7 +17805,11 @@ async def update_native_vat_settings(
     await session.execute(update(accounting_vat_settings).where(accounting_vat_settings.c.id == row["id"]).values(**values))
     await add_accounting_audit(session, client_id, user.get("id"), "vat_settings_updated", "vat", row["id"], {"previous": dict(row), "new": values})
     await session.commit()
-    return dict(await one(session, select(accounting_vat_settings).where(accounting_vat_settings.c.id == row["id"])))
+    updated = dict(await one(session, select(accounting_vat_settings).where(accounting_vat_settings.c.id == row["id"])))
+    updated["vat_scheme"] = normalized_vat_scheme(updated)
+    updated["vat_accounting_basis"] = normalized_vat_accounting_basis(updated)
+    updated["activity_summary"] = activity_summary
+    return updated
 
 
 @api.post("/admin/accounting/clients/{client_id}/vat/periods/{period_id}/{action}")
@@ -17399,8 +17843,32 @@ async def create_native_vat_adjustment(
 ):
     accounts = await ensure_native_accounting_client(session, client_id)
     settings_row = await ensure_accounting_settings(session, client_id)
-    date_value = parse_date_or_today(payload.get("adjustment_date")).isoformat()
-    vat_amount = money(payload.get("vat_amount"))
+    period_id = str(payload.get("vat_period_id") or "")
+    period = await one(session, select(accounting_vat_periods).where(
+        accounting_vat_periods.c.client_id == client_id,
+        accounting_vat_periods.c.id == period_id,
+    ))
+    if not period or str(period.get("status") or "") != "open":
+        raise HTTPException(status_code=400, detail="Select the current open VAT period. Locked, closed or submitted periods cannot be adjusted directly.")
+    date_value = parse_date_or_today(payload.get("adjustment_date") or period.get("period_end")).isoformat()
+    if not (str(period.get("period_start") or "") <= date_value <= str(period.get("period_end") or "")):
+        raise HTTPException(status_code=400, detail="Adjustment date must be within the selected open VAT period.")
+    vat_code = vat_code_value(payload.get("vat_code"))
+    if not vat_code:
+        raise HTTPException(status_code=400, detail="A native VAT code is required.")
+    await validate_native_vat_code(session, client_id, vat_code)
+    adjustment_direction = str(payload.get("direction") or "").strip().lower()
+    direction_map = {
+        "increase_output": ("sales", Decimal("1")),
+        "decrease_output": ("sales", Decimal("-1")),
+        "increase_input": ("purchase", Decimal("1")),
+        "decrease_input": ("purchase", Decimal("-1")),
+        "net_adjustment": ("adjustment", Decimal("1")),
+    }
+    if adjustment_direction not in direction_map:
+        raise HTTPException(status_code=400, detail="Select whether the adjustment increases/decreases output VAT, increases/decreases input VAT, or is a net adjustment.")
+    vat_direction, direction_sign = direction_map[adjustment_direction]
+    vat_amount = abs(money(payload.get("vat_amount"))) * direction_sign
     if vat_amount == 0:
         raise HTTPException(status_code=400, detail="VAT adjustment amount is required.")
     notes = str(payload.get("notes") or "").strip()
@@ -17409,7 +17877,9 @@ async def create_native_vat_adjustment(
     vat_account = find_native_account(accounts, settings_row.get("default_vat_control_account"), "2200")
     suspense = find_native_account(accounts, settings_row.get("default_suspense_account"), "9999")
     adjustment_id = new_id()
-    debit_vat = vat_amount > 0
+    debit_vat = adjustment_direction in {"decrease_output", "increase_input"} or (
+        adjustment_direction == "net_adjustment" and vat_amount > 0
+    )
     journal = await post_native_journal(
         session,
         client_id,
@@ -17419,8 +17889,8 @@ async def create_native_vat_adjustment(
         str(payload.get("reason") or "VAT adjustment"),
         notes,
         [
-            {"account": vat_account if debit_vat else suspense, "debit": money_str(abs(vat_amount)), "credit": "0.00", "vat_code": payload.get("vat_code"), "description": notes},
-            {"account": suspense if debit_vat else vat_account, "debit": "0.00", "credit": money_str(abs(vat_amount)), "vat_code": payload.get("vat_code"), "description": notes},
+            {"account": vat_account if debit_vat else suspense, "debit": money_str(abs(vat_amount)), "credit": "0.00", "vat_code": vat_code, "description": notes},
+            {"account": suspense if debit_vat else vat_account, "debit": "0.00", "credit": money_str(abs(vat_amount)), "vat_code": vat_code, "description": notes},
         ],
         user.get("id"),
     )
@@ -17428,17 +17898,22 @@ async def create_native_vat_adjustment(
     row = {
         "id": adjustment_id,
         "client_id": client_id,
-        "vat_period_id": str(payload.get("vat_period_id") or ""),
+        "vat_period_id": period_id,
         "adjustment_date": date_value,
         "adjustment_type": str(payload.get("adjustment_type") or "manual"),
-        "vat_code": str(payload.get("vat_code") or ""),
+        "vat_code": vat_code,
         "reason": str(payload.get("reason") or "VAT adjustment"),
         "notes": notes,
-        "net_amount": money_str(money(payload.get("net_amount"))),
+        "net_amount": money_str(abs(money(payload.get("net_amount"))) * direction_sign),
         "vat_amount": money_str(vat_amount),
-        "gross_amount": money_str(money(payload.get("gross_amount"))),
+        "gross_amount": money_str(abs(money(payload.get("gross_amount"))) * direction_sign),
         "status": "posted",
         "journal_entry_id": journal.get("id"),
+        "source_type": "manual_vat_adjustment",
+        "source_id": str(payload.get("source_id") or "") or None,
+        "source_reference": str(payload.get("source_reference") or "").strip(),
+        "adjustment_reason": notes,
+        "direction": vat_direction,
         "created_by": user.get("id"),
         "created_at": now,
         "updated_at": now,

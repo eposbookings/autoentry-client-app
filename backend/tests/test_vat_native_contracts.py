@@ -48,7 +48,7 @@ def test_vat_period_contract_has_consistent_frontend_aliases():
     assert payload["start_date"] == "2026-01-01"
     assert payload["end_date"] == "2026-03-31"
     assert payload["payment_due_date"] == "2026-05-07"
-    assert payload["label"] == "2026-01-01 to 2026-03-31"
+    assert payload["label"] == "01/01/2026 - 31/03/2026"
 
 
 def test_outside_period_document_lines_are_forced_to_no_vat():
@@ -122,6 +122,13 @@ def test_vat_period_drilldown_and_submit_routes_exist():
     assert ("/api/admin/accounting/clients/{client_id}/vat/periods/{period_id}/submit", "POST") in routes
 
 
+def test_vat_adjustment_list_create_and_detail_routes_exist():
+    routes = {(route.path, method) for route in server.api.routes for method in getattr(route, "methods", set())}
+    assert ("/api/admin/accounting/clients/{client_id}/vat/adjustments", "GET") in routes
+    assert ("/api/admin/accounting/clients/{client_id}/vat/adjustments", "POST") in routes
+    assert ("/api/admin/accounting/clients/{client_id}/vat/adjustments/{adjustment_id}", "GET") in routes
+
+
 def test_vat_box_drilldown_contributions_include_derived_boxes():
     sales = server.vat_transaction_box_contributions({
         "direction": "sales",
@@ -152,6 +159,40 @@ def test_cash_accounting_does_not_create_invoice_date_adjustment(monkeypatch):
 
     monkeypatch.setattr(server, "ensure_vat_settings", settings)
     assert asyncio.run(server.late_invoice_vat_context(None, "client", "2026-03-15", "20.00")) is None
+
+
+def test_vat_scheme_and_accounting_basis_are_separate():
+    assert server.normalized_vat_scheme({"vat_scheme": "cash"}) == "standard"
+    assert server.normalized_vat_scheme({"vat_scheme": "flat_rate"}) == "flat_rate"
+    assert server.normalized_vat_accounting_basis({"vat_scheme": "standard", "vat_accounting_basis": "cash"}) == "cash"
+    assert server.normalized_vat_accounting_basis({"vat_scheme": "flat_rate", "vat_accounting_basis": "accrual"}) == "accrual"
+
+
+def test_cash_vat_date_prefers_bank_date_and_never_allocation_date():
+    payment = {
+        "id": "payment",
+        "bank_transaction_id": "bank",
+        "payment_date": "2026-07-20",
+        "created_at": "2026-07-24",
+    }
+    assert server.cash_vat_event_date(payment, {"bank": {"transaction_date": "2026-07-18"}}, "payment_date") == "2026-07-18"
+    assert server.cash_vat_event_date({**payment, "bank_transaction_id": None}, {}, "payment_date") == "2026-07-20"
+    assert server.cash_vat_event_date({"created_at": "2026-07-24"}, {}, "payment_date") == ""
+
+
+def test_cash_part_payment_splits_mixed_vat_lines_proportionally():
+    groups = server.proportional_vat_allocation_groups(
+        {"gross_amount": "180.00"},
+        [
+            {"vat_code": "20% S", "net_amount": "100.00", "vat_amount": "20.00", "gross_amount": "120.00"},
+            {"vat_code": "0% Z", "net_amount": "60.00", "vat_amount": "0.00", "gross_amount": "60.00"},
+        ],
+        "90.00",
+    )
+    by_code = {row["vat_code"]: row for row in groups}
+    assert by_code["20% S"]["net_amount"] == "50.00"
+    assert by_code["20% S"]["vat_amount"] == "10.00"
+    assert by_code["0% Z"]["net_amount"] == "30.00"
 
 
 def test_ap_ar_allocation_routes_support_options_and_bulk_save():
