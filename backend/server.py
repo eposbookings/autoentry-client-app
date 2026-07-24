@@ -8382,18 +8382,21 @@ async def vat_engine_workspace(session: AsyncSession, client_id: str) -> dict:
     current_period = next((p for p in serialized_periods if p.get("status") == "open"), serialized_periods[0] if serialized_periods else None)
     latest_return = return_rows[0] if return_rows else None
     boxes = {f"box{i}": money((latest_return or {}).get(f"box{i}")) for i in range(1, 10)}
+    current_output_vat = money((current_period or {}).get("output_vat"))
+    current_input_vat = money((current_period or {}).get("input_vat"))
+    current_net_vat = money((current_period or {}).get("net_vat"))
     returns = [serialize_vat_return(r) for r in return_rows]
     dashboard = {
-        "current_vat_liability": money_str(boxes["box5"]),
-        "vat_due_to_hmrc": money_str(max(boxes["box5"], Decimal("0.00"))),
-        "vat_recoverable": money_str(boxes["box4"]),
+        "current_vat_liability": money_str(current_net_vat),
+        "vat_due_to_hmrc": money_str(max(current_net_vat, Decimal("0.00"))),
+        "vat_recoverable": money_str(current_input_vat),
         "current_period": f"{current_period.get('period_start')} to {current_period.get('period_end')}" if current_period else "-",
         "next_return_due": current_period.get("due_date") if current_period else None,
         "outstanding_returns": len([p for p in serialized_periods if p.get("status") == "open" and str(p.get("due_date") or "") <= today]),
         "progress": 0,
-        "output_vat": money_str(boxes["box1"] + boxes["box2"]),
-        "input_vat": money_str(boxes["box4"]),
-        "net_vat_due": money_str(boxes["box5"]),
+        "output_vat": money_str(current_output_vat),
+        "input_vat": money_str(current_input_vat),
+        "net_vat_due": money_str(current_net_vat),
     }
     code_history = await native_vat_code_history_counts(session, client_id, codes)
     serialized_codes = []

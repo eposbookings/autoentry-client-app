@@ -144,6 +144,9 @@ def test_open_vat_period_workspace_uses_live_transaction_summary(monkeypatch):
     assert period["output_vat"] == "0.00"
     assert period["input_vat"] == "1.40"
     assert period["net_vat"] == "-1.40"
+    assert workspace["dashboard"]["current_period"] == "2026-07-01 to 2026-09-30"
+    assert workspace["dashboard"]["input_vat"] == "1.40"
+    assert workspace["dashboard"]["net_vat_due"] == "-1.40"
 
 
 def test_outside_period_document_lines_are_forced_to_no_vat():
