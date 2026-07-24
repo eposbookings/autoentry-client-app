@@ -80,6 +80,109 @@ def test_shared_vat_effective_date_rule(monkeypatch):
     assert after["vat_active_for_date"] is False and after["default_vat_code"] == "NO VAT"
 
 
+def test_submitted_item_vat_date_rule_accepts_ai_display_date():
+    context = {
+        "vat_client": True,
+        "vat_configured": True,
+        "vat_start_date": "2026-07-01",
+        "vat_end_date": "",
+    }
+    assert server.submitted_item_vat_active_for_date(context, "23/07/2026") is True
+    assert server.submitted_item_vat_active_for_date(context, "30/06/2026") is False
+
+
+def test_external_vat_client_without_native_effective_dates_keeps_vat():
+    assert server.submitted_item_vat_active_for_date({"source": "external"}, "23/07/2026", True) is True
+
+
+def test_ai_review_applies_vat_period_to_extracted_document_date(monkeypatch):
+    response_body = {
+        "output_text": """{
+            "status": "approved",
+            "document_type": "invoice",
+            "message": "VAT invoice extracted.",
+            "payment_method": "card",
+            "confidence": "high",
+            "coding_fields": {
+                "vendor_name": "20i",
+                "vendor_account": "",
+                "category": "5000",
+                "date": "23/07/2026",
+                "due_date": "23/07/2026",
+                "description": "Startup Hosting",
+                "document_type": "bill",
+                "bill_number": "9572223",
+                "reference": "D Smits 3208",
+                "net": "6.99",
+                "vat": "1.40",
+                "total": "8.39",
+                "vat_code": "20% S",
+                "currency": "GBP",
+                "payment_method": "Card",
+                "mark_as_paid": false,
+                "bank_account": "",
+                "price_is": "Tax Exclusive",
+                "line_items": [{
+                    "description": "Startup Hosting",
+                    "category": "5000",
+                    "vat_code": "20% S",
+                    "units": "1",
+                    "price": "6.99",
+                    "net": "6.99",
+                    "vat": "1.40",
+                    "total": "8.39"
+                }],
+                "ocr_text_lines": [],
+                "ocr_text_boxes": []
+            }
+        }"""
+    }
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return response_body
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(server.httpx, "AsyncClient", lambda **_kwargs: FakeClient())
+    review = asyncio.run(server.review_document_with_openai(
+        b"invoice",
+        "application/pdf",
+        {"type": "purchase", "date": ""},
+        {"is_vat_client": True},
+        "test-key",
+        "test-model",
+        "invoice.pdf",
+        [],
+        {
+            "vat_client": True,
+            "vat_configured": True,
+            "vat_start_date": "2026-07-01",
+            "vat_end_date": "",
+            "vat_codes": [{"value": "20% S", "label": "20% S - Standard rate"}, {"value": "NO VAT", "label": "NO VAT"}],
+            "purchase_accounts": [{"value": "5000", "label": "5000 - Purchases"}],
+            "suppliers": [{"value": "supplier-1", "label": "20i", "name": "20i"}],
+        },
+    ))
+    fields = review["coding_fields"]
+    assert fields["net"] == "6.99"
+    assert fields["vat"] == "1.40"
+    assert fields["total"] == "8.39"
+    assert server.vat_code_value(fields["vat_code"]) == "20% S"
+    assert fields["line_items"][0]["vat"] == "1.40"
+
+
 def test_closed_period_late_invoice_requires_current_period_adjustment(monkeypatch):
     async def settings(_session, _client_id):
         return {"vat_scheme": "standard"}
