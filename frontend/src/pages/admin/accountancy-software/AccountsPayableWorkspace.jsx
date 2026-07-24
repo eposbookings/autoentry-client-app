@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  Building2,
   Download,
   Edit3,
   Filter,
@@ -20,15 +21,21 @@ import {
 import { toast } from "sonner";
 import {
   AccountCodeSelect,
+  AccountTransactionsAllocationModal,
+  ActionDropdown,
+  AllocationModal,
   DEFAULT_PAGE_SIZE,
   Panel,
   PaginationFooter,
+  TransactionAllocationsModal,
   formatDate,
   formatDateTime,
   formatMoney,
   normalisePaginatedResponse,
   normalisePageSize,
   statusBadgeClass,
+  usePersistentTableLayout,
+  vatActiveForDate,
 } from "./shared";
 
 const apTabs = ["Suppliers", "Create supplier", "General Settings"];
@@ -40,9 +47,10 @@ const ledgerColumnDefinitions = [
   { key: "reference", label: "Reference" },
   { key: "description", label: "Description" },
   { key: "invoice_value", label: "Invoice value" },
-  { key: "allocated", label: "Paid / allocated" },
-  { key: "balance", label: "Invoice balance" },
+  { key: "allocated", label: "Payment" },
+  { key: "balance", label: "Line balance" },
   { key: "status", label: "Status" },
+  { key: "allocations", label: "Allocations" },
   { key: "attachment", label: "Attachment" },
 ];
 const defaultLedgerColumnWidths = {
@@ -54,12 +62,24 @@ const defaultLedgerColumnWidths = {
   allocated: 160,
   balance: 170,
   status: 170,
+  allocations: 150,
   attachment: 140,
+};
+const AP_LEDGER_LAYOUT_STORAGE_KEY = "epos-native-accounting.ap-ledger-layout.v1";
+const supplierCategoryLabels = {
+  Trade: "Trade supplier",
+  HMRC_VAT: "HMRC VAT",
+  HMRC_PAYE: "HMRC PAYE",
+  HMRC_CT: "HMRC Corporation Tax",
+  HMRC_CIS: "HMRC CIS",
+  CompaniesHouse: "Companies House",
+  Pension: "Pension provider",
 };
 
 const emptySupplierForm = {
   name: "",
   supplier_code: "",
+  supplier_category: "Trade",
   email: "",
   phone: "",
   website: "",
@@ -72,6 +92,7 @@ const emptySupplierForm = {
   bank_name: "",
   bank_sort_code: "",
   bank_account_number: "",
+  payment_reference: "",
   cis_registered: false,
   reverse_charge: false,
   notes: "",
@@ -191,8 +212,12 @@ function allocatedValue(row = {}) {
   return asNumber(row.paid_allocated);
 }
 
+function paymentValue(row = {}) {
+  return asNumber(row.payment_value ?? row.payment_amount);
+}
+
 function invoiceBalance(row = {}) {
-  return asNumber(row.invoice_balance);
+  return asNumber(row.line_balance ?? row.invoice_balance ?? row.account_balance);
 }
 
 function normaliseApLedgerType(type = "") {
@@ -311,6 +336,7 @@ function normaliseSupplierDraft(supplier = {}) {
   return {
     name: supplier.name || "",
     supplier_code: supplier.supplier_code || "",
+    supplier_category: supplier.supplier_category || supplier.supplierCategory || "Trade",
     trading_name: supplier.trading_name || "",
     email: supplier.email || "",
     phone: supplier.phone || "",
@@ -327,6 +353,7 @@ function normaliseSupplierDraft(supplier = {}) {
     bank_name: supplier.bank_name || "",
     bank_sort_code: supplier.bank_sort_code || "",
     bank_account_number: supplier.bank_account_number || "",
+    payment_reference: supplier.payment_reference || "",
     payment_terms_days: supplier.payment_terms_days ?? "30",
     default_purchase_account: supplier.default_purchase_account || "",
     vat_number: supplier.vat_number || "",
@@ -369,9 +396,9 @@ function HelpHint({ text }) {
 
 function Section({ title, children }) {
   return (
-    <section className="rounded-md border border-stone-200 bg-white p-3">
-      <h4 className="mb-3 text-sm font-semibold text-stone-900">{title}</h4>
-      {children}
+    <section className="overflow-hidden rounded-lg border border-stone-300 bg-white shadow-sm">
+      <h4 className="border-b border-stone-200 bg-stone-100/80 px-4 py-2.5 text-sm font-bold text-stone-900">{title}</h4>
+      <div className="p-4">{children}</div>
     </section>
   );
 }
@@ -499,15 +526,45 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
   const [openLedgerFilter, setOpenLedgerFilter] = useState("");
   const [selectedLedgerKeys, setSelectedLedgerKeys] = useState([]);
   const [columnSelectorOpen, setColumnSelectorOpen] = useState(false);
-  const [visibleLedgerColumns, setVisibleLedgerColumns] = useState(() => ledgerColumnDefinitions.map((column) => column.key));
-  const [ledgerColumnWidths, setLedgerColumnWidths] = useState(defaultLedgerColumnWidths);
+  const {
+    visibleColumns: visibleLedgerColumns,
+    setVisibleColumns: setVisibleLedgerColumns,
+    columnWidths: ledgerColumnWidths,
+    setColumnWidths: setLedgerColumnWidths,
+  } = usePersistentTableLayout(AP_LEDGER_LAYOUT_STORAGE_KEY, ledgerColumnDefinitions, defaultLedgerColumnWidths);
   const [ledgerPage, setLedgerPage] = useState(1);
   const [ledgerPageSize, setLedgerPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [ledgerData, setLedgerData] = useState(() => normalisePaginatedResponse({ rows: [], page_size: DEFAULT_PAGE_SIZE }));
   const [ledgerLoading, setLedgerLoading] = useState(false);
   const [ledgerError, setLedgerError] = useState("");
+  const [allocationRow, setAllocationRow] = useState(null);
+  const [allocationData, setAllocationData] = useState(null);
+  const [allocationLoading, setAllocationLoading] = useState(false);
+  const [allocationSaving, setAllocationSaving] = useState(false);
+  const [allocationError, setAllocationError] = useState("");
+  const [accountAllocationOpen, setAccountAllocationOpen] = useState(false);
+  const [accountAllocationData, setAccountAllocationData] = useState({ credits: [], debits: [], summary: {} });
+  const [accountAllocationLoading, setAccountAllocationLoading] = useState(false);
+  const [accountAllocationSaving, setAccountAllocationSaving] = useState(false);
+  const [accountAllocationError, setAccountAllocationError] = useState("");
+  const [viewAllocationRow, setViewAllocationRow] = useState(null);
   const [ledgerDraftRows, setLedgerDraftRows] = useState([]);
   const [transactionDraft, setTransactionDraft] = useState(null);
+  const transactionVatActive = !transactionDraft || isPaymentDocument(transactionDraft.type) || vatActiveForDate(workspace, transactionDraft.date);
+  const transactionVatCodes = transactionVatActive ? vatCodes : vatCodes.filter((option) => String(option.value).toUpperCase() === "NO VAT");
+  useEffect(() => {
+    if (!transactionDraft || isPaymentDocument(transactionDraft.type) || transactionVatActive) return;
+    setTransactionDraft((current) => {
+      if (!current || (current.vat_code === "NO VAT" && asNumber(current.vat) === 0 && (current.line_items || []).every((line) => line.vat_code === "NO VAT" && asNumber(line.vat) === 0))) return current;
+      return {
+        ...current,
+        vat_code: "NO VAT",
+        vat: "0.00",
+        gross: current.net,
+        line_items: (current.line_items || []).map((line) => ({ ...line, vat_code: "NO VAT", vat: "0.00", gross: line.net })),
+      };
+    });
+  }, [transactionDraft, transactionVatActive]);
   const [transactionEntryMode, setTransactionEntryMode] = useState("");
   const [transactionErrors, setTransactionErrors] = useState({});
   const [auditSearch, setAuditSearch] = useState("");
@@ -573,6 +630,20 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
     setTab?.("Suppliers");
   }
 
+  function createPensionProviderFromTemplate() {
+    if (!selectedSupplierIsSystem || selectedSupplier?.supplier_category !== "Pension") return;
+    setSupplierForm({
+      ...emptySupplierForm,
+      supplier_category: "Pension",
+      payment_terms_days: String(selectedSupplier.payment_terms_days || 30),
+      default_currency: selectedSupplier.default_currency || "GBP",
+      default_purchase_account: selectedSupplier.default_purchase_account || "5000",
+      default_vat_code: selectedSupplier.default_vat_code || "",
+      notes: "Created from the protected Pension Provider system template.",
+    });
+    setCreateSupplierOpen(true);
+  }
+
   useEffect(() => {
     if (selectedSupplierId && !suppliers.some((supplier) => supplier.id === selectedSupplierId)) {
       setSelectedSupplierId("");
@@ -582,6 +653,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
   }, [selectedSupplierId, suppliers]);
 
   const selectedSupplier = suppliers.find((supplier) => supplier.id === selectedSupplierId);
+  const selectedSupplierIsSystem = Boolean(selectedSupplier?.is_system_supplier || selectedSupplier?.isSystemSupplier);
 
   useEffect(() => {
     setSupplierDraft(normaliseSupplierDraft(selectedSupplier));
@@ -680,6 +752,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
       description: row.description || row.supplier_name || "Supplier ledger item",
       invoice_value: invoiceValue(row),
       paid_allocated: allocatedValue(row),
+      payment_value: paymentValue(row),
       invoice_balance: invoiceBalance(row),
       status: row.status || "Open",
     }));
@@ -694,11 +767,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
       ...draftAdditions,
     ].sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
 
-    let runningBalance = 0;
-    return rows.map((row) => {
-      runningBalance += asNumber(row.credit) - asNumber(row.debit);
-      return { ...row, runningBalance };
-    });
+    return rows;
   }, [ledgerData.rows, ledgerDraftRows]);
 
   function supplierLastActivity(supplierId) {
@@ -709,7 +778,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
   function buildTransactionDraft(type, row = {}) {
     const source = row?.source || "frontend";
     const documentType = row?.type === "Credit Note" ? "Supplier Credit Note" : row?.type || type;
-    const gross = row?.gross || row?.gross_amount || row?.total || (row?.credit || row?.debit) || "";
+    const gross = row?.gross || row?.gross_amount || row?.amount || row?.payment_amount || row?.total || (row?.credit || row?.debit) || "";
     const net = row?.net || row?.net_amount || row?.subtotal || "";
     const vat = row?.vat || row?.vat_amount || row?.tax_amount || "";
     const documentDate = toInputDate(row?.invoice_date || row?.document_date || row?.date) || todayInput();
@@ -752,6 +821,10 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
       source_document_url: row?.source_document_url || "",
       source_submission_id: row?.source_submission_id || "",
       payment_allocation: row?.payment_allocation || row?.bank_reference || "",
+      bank_account_code: row?.bank_account_code || "",
+      payment_method: row?.payment_method || "Bank Transfer",
+      allocation_target: row?.allocation_target || (documentType === "Payment on Account" ? "on_account" : "oldest"),
+      invoice_id: row?.invoice_id || "",
       line_items: lineItems,
       notes: "",
     };
@@ -829,7 +902,17 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
     setSaving(true);
     setTransactionErrors({});
     try {
-      const { data } = await postJson(`/ap/invoices/${invoice.id}/approve`, {});
+      let response;
+      try {
+        response = await postJson(`/ap/invoices/${invoice.id}/approve`, {});
+      } catch (error) {
+        const detail = error?.response?.data?.detail;
+        if (error?.response?.status !== 409 || detail?.code !== "prior_period_vat_adjustment_confirmation") throw error;
+        const confirmed = window.confirm(`${detail.message}\n\nOriginal period: ${detail.original_period?.label || "closed period"}\nReport in: ${detail.reported_period?.label || "current open period"}\nVAT amount: ${formatMoney(detail.vat_amount)}\n\nThe invoice date will be preserved and no duplicate VAT-control journal will be created.`);
+        if (!confirmed) return;
+        response = await postJson(`/ap/invoices/${invoice.id}/approve`, { confirm_prior_period_vat_adjustment: true });
+      }
+      const { data } = response;
       const detail = normaliseTransactionDetailResponse(data?.detail || data);
       setTransactionDraft(buildTransactionDraft("Purchase Invoice", { ...detail, source: "invoice", type: "Purchase Invoice" }));
       toast.success("Purchase invoice approved and posted");
@@ -857,6 +940,112 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
     if (saved) await refreshSupplierLedger();
   }
 
+  async function loadApAllocation(paymentId) {
+    setAllocationLoading(true);
+    setAllocationError("");
+    try {
+      const { data } = await api.get(`/admin/accounting/clients/${clientId}/ap/payments/${paymentId}/allocation-options`);
+      setAllocationData(data || {});
+    } catch (error) {
+      setAllocationError(formatApiError(error));
+    } finally {
+      setAllocationLoading(false);
+    }
+  }
+
+  function openApAllocation(row) {
+    setAllocationRow(row);
+    setAllocationData(null);
+    loadApAllocation(row.id);
+  }
+
+  async function saveApAllocations(allocations) {
+    if (!allocationRow?.id) return;
+    setAllocationSaving(true);
+    setAllocationError("");
+    try {
+      await postJson(`/ap/payments/${allocationRow.id}/allocations`, { allocations });
+      toast.success("Supplier payment allocations saved");
+      await Promise.all([loadApAllocation(allocationRow.id), refreshSupplierLedger()]);
+    } catch (error) {
+      setAllocationError(formatApiError(error));
+    } finally {
+      setAllocationSaving(false);
+    }
+  }
+
+  async function unallocateApFromModal(allocation) {
+    if (!allocationRow?.id || !window.confirm(`Unallocate ${formatMoney(allocation.amount)} from ${allocation.invoice_number || "this invoice"}?`)) return;
+    setAllocationSaving(true);
+    setAllocationError("");
+    try {
+      await postJson(`/ap/payments/${allocationRow.id}/allocations/${allocation.id}/unallocate`, {});
+      toast.success("Supplier payment allocation removed");
+      await Promise.all([loadApAllocation(allocationRow.id), refreshSupplierLedger()]);
+    } catch (error) {
+      setAllocationError(formatApiError(error));
+    } finally {
+      setAllocationSaving(false);
+    }
+  }
+
+  async function loadAccountAllocationWorkspace() {
+    if (!selectedSupplierId) return;
+    setAccountAllocationLoading(true);
+    setAccountAllocationError("");
+    try {
+      const { data } = await api.get(`/admin/accounting/clients/${clientId}/ap/suppliers/${selectedSupplierId}/allocation-workspace`);
+      setAccountAllocationData(data || { credits: [], debits: [], summary: {} });
+    } catch (error) {
+      setAccountAllocationError(formatApiError(error));
+    } finally {
+      setAccountAllocationLoading(false);
+    }
+  }
+
+  function openAccountAllocation() {
+    setAccountAllocationOpen(true);
+    setAccountAllocationData({ credits: [], debits: [], summary: {} });
+    loadAccountAllocationWorkspace();
+  }
+
+  async function saveAccountAllocation(payload) {
+    if (!selectedSupplierId) return;
+    setAccountAllocationSaving(true);
+    setAccountAllocationError("");
+    try {
+      await postJson(`/ap/suppliers/${selectedSupplierId}/allocate-transactions`, payload);
+      toast.success("Supplier transactions allocated");
+      setAccountAllocationOpen(false);
+      await Promise.all([refreshSupplierLedger(), reloadWorkspace?.()]);
+    } catch (error) {
+      setAccountAllocationError(formatApiError(error));
+    } finally {
+      setAccountAllocationSaving(false);
+    }
+  }
+
+  async function unallocateLedgerAllocation(allocation) {
+    if (!allocation?.id || !window.confirm(`Unallocate ${formatMoney(allocation.amount)}? The underlying payment or credit note will remain posted.`)) return;
+    setAllocationSaving(true);
+    setAllocationError("");
+    try {
+      if (allocation.allocation_kind === "credit_note") {
+        await postJson(`/ap/suppliers/${selectedSupplierId}/credit-allocations/${allocation.id}/unallocate`, {});
+      } else {
+        if (!allocation.payment_id) throw new Error("The allocation is missing its supplier payment reference.");
+        await postJson(`/ap/payments/${allocation.payment_id}/allocations/${allocation.id}/unallocate`, {});
+      }
+      toast.success("Transaction allocation removed");
+      setViewAllocationRow(null);
+      await Promise.all([refreshSupplierLedger(), reloadWorkspace?.()]);
+    } catch (error) {
+      setAllocationError(formatApiError(error));
+    } finally {
+      setAllocationSaving(false);
+    }
+  }
+
   function validateTransaction() {
     const errors = {};
     if (!transactionDraft?.type) errors.type = "Transaction type is required";
@@ -866,6 +1055,8 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
     if (!transactionDraft?.description?.trim()) errors.description = "Description is required";
     if (!isPaymentDocument(transactionDraft?.type) && !transactionDraft?.purchase_nominal?.trim()) errors.purchase_nominal = "Purchase nominal is required";
     if (!isPaymentDocument(transactionDraft?.type) && asNumber(transactionDraft?.gross) <= 0) errors.amount = "Gross amount is required";
+    if (isPaymentDocument(transactionDraft?.type) && asNumber(transactionDraft?.gross) === 0) errors.amount = "Payment amount must not be zero";
+    if (isPaymentDocument(transactionDraft?.type) && !transactionDraft?.bank_account_code) errors.bank_account = "Bank account is required";
     if (!isPaymentDocument(transactionDraft?.type) && transactionDraft?.line_items?.some((line) => !String(line.description || "").trim())) errors.line_items = "Every line needs a description";
     if (!transactionDraft?.status) errors.status = "Status is required";
     setTransactionErrors(errors);
@@ -874,6 +1065,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
 
   function transactionPayload(nextStatus = "Draft") {
     const supplierId = transactionDraft.supplier_id || selectedSupplier?.id || selectedSupplierId;
+    const isRefundPayment = isPaymentDocument(transactionDraft.type) && asNumber(transactionDraft.gross) < 0;
     return {
       supplier_id: supplierId,
       supplier_name: selectedSupplier?.name || transactionDraft.supplier_name || "",
@@ -896,6 +1088,12 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
       amount: asNumber(transactionDraft.gross),
       amount_paid: asNumber(transactionDraft.gross),
       payment_date: transactionDraft.date,
+      bank_account_code: transactionDraft.bank_account_code,
+      payment_method: transactionDraft.payment_method || "Bank Transfer",
+      allocation_target: isRefundPayment ? "on_account" : (transactionDraft.allocation_target || (transactionDraft.type === "Payment on Account" ? "on_account" : "oldest")),
+      allocations: !isRefundPayment && transactionDraft.allocation_target === "selected" && transactionDraft.invoice_id
+        ? [{ invoice_id: transactionDraft.invoice_id, amount: asNumber(transactionDraft.gross) }]
+        : [],
       credit_note_number: transactionDraft.document_number?.trim() || "",
       credit_note_date: transactionDraft.date,
       status: nextStatus,
@@ -1015,11 +1213,18 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
   }
 
   async function saveSupplierDraft() {
-    if (!supplierDraft.name.trim()) return toast.error("Supplier name is required");
+    if (!selectedSupplierIsSystem && !supplierDraft.name.trim()) return toast.error("Supplier name is required");
     if (!selectedSupplier?.id) return toast.error("Supplier record is unavailable");
+    const payload = selectedSupplierIsSystem ? {
+      bank_name: supplierDraft.bank_name,
+      bank_sort_code: supplierDraft.bank_sort_code,
+      bank_account_number: supplierDraft.bank_account_number,
+      payment_reference: supplierDraft.payment_reference,
+      notes: supplierDraft.notes,
+    } : supplierDraft;
     const saved = await run(
       async () => {
-        await putJson(`/ap/suppliers/${selectedSupplier.id}`, supplierDraft);
+        await putJson(`/ap/suppliers/${selectedSupplier.id}`, payload);
       },
       "Supplier record saved"
     );
@@ -1068,7 +1273,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
       const descriptionOk = !descriptionNeedle || String(row.description || "").toLowerCase().includes(descriptionNeedle);
       const attachmentOk = attachmentMode === "All" || (attachmentMode === "Attached" ? hasAttachment(row) : !hasAttachment(row));
       const invoiceValueOk = inRange(invoiceValue(row), ledgerInvoiceValueMin, ledgerInvoiceValueMax);
-      const allocatedOk = inRange(allocatedValue(row), ledgerAllocatedMin, ledgerAllocatedMax);
+      const allocatedOk = inRange(paymentValue(row), ledgerAllocatedMin, ledgerAllocatedMax);
       const balanceOk = inRange(invoiceBalance(row), ledgerBalanceMin, ledgerBalanceMax);
       return refOk && descriptionOk && attachmentOk && invoiceValueOk && allocatedOk && balanceOk;
     });
@@ -1077,7 +1282,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
       const key = ledgerSort.key;
       if (key === "date") return (new Date(a.date || 0) - new Date(b.date || 0)) * direction;
       if (key === "invoice_value") return (invoiceValue(a) - invoiceValue(b)) * direction;
-      if (key === "allocated") return (allocatedValue(a) - allocatedValue(b)) * direction;
+      if (key === "allocated") return (paymentValue(a) - paymentValue(b)) * direction;
       if (key === "balance") return (invoiceBalance(a) - invoiceBalance(b)) * direction;
       if (key === "attachment") return ((hasAttachment(a) ? 1 : 0) - (hasAttachment(b) ? 1 : 0)) * direction;
       return String(a[key] || "").localeCompare(String(b[key] || "")) * direction;
@@ -1098,16 +1303,17 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
   const resizeLedgerColumn = (key, width) => setLedgerColumnWidths((current) => ({ ...current, [key]: width }));
 
   function exportLedgerRows() {
-    const header = "Date,Type,Reference,Description,Invoice value,Paid / allocated,Invoice balance,Status,Attachment";
+    const header = "Date,Type,Reference,Description,Invoice value,Payment,Line balance,Status,Allocations,Attachment";
     const rows = selectedLedgerRowsForExport.map((row) => [
       formatDate(row.date),
       row.type,
       row.reference,
       String(row.description || "").replaceAll("\"", "\"\""),
       invoiceValue(row).toFixed(2),
-      allocatedValue(row).toFixed(2),
+      paymentValue(row).toFixed(2),
       invoiceBalance(row).toFixed(2),
       row.status,
+      (row.allocation_summary?.allocations || []).length,
       hasAttachment(row) ? "Yes" : "No",
     ].map((value) => `"${value || ""}"`).join(","));
     const blob = new Blob([[header, ...rows].join("\n")], { type: "text/csv;charset=utf-8" });
@@ -1181,20 +1387,19 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
       onBack: () => setSelectedSupplierId(""),
       title: supplierDraft.name || selectedSupplier.name,
       subtitle: `${supplierDraft.supplier_code || "No supplier code"} - ${supplierDraft.email || "No email"}`,
+      titlePrefix: selectedSupplier.system_icon || "",
+      badges: selectedSupplierIsSystem ? [
+        { label: "SYSTEM SUPPLIER", className: "bg-emerald-100 text-emerald-800" },
+        { label: selectedSupplier.system_authority_label || supplierCategoryLabels[selectedSupplier.supplier_category] || "Protected account", className: "bg-stone-100 text-stone-700" },
+      ] : [],
       tabs: supplierRecordTabs,
       activeTab: supplierRecordTab,
       onTabChange: setSupplierRecordTab,
-      actions: supplierRecordTab === "Ledger" ? [
-        { label: "Add purchase invoice", onClick: () => openTransactionForm("Purchase Invoice") },
-        { label: "Add supplier credit note", onClick: () => openTransactionForm("Supplier Credit Note") },
-        { label: "Add payment", onClick: () => openTransactionForm("Payment on Account") },
-        { label: "Select Columns", icon: false, onClick: () => setColumnSelectorOpen((open) => !open) },
-      ] : [],
     });
     return () => setHeaderContext(null);
     // Header action callbacks intentionally use the current workspace handlers without forcing the header context to churn every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedSupplier, supplierDraft.name, supplierDraft.supplier_code, supplierDraft.email, supplierRecordTab, setHeaderContext]);
+  }, [selectedSupplier, selectedSupplierIsSystem, supplierDraft.name, supplierDraft.supplier_code, supplierDraft.email, supplierRecordTab, setHeaderContext]);
 
   if (activeTab === "General Settings") {
     return (
@@ -1217,8 +1422,42 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
     if (selectedSupplier) {
       return (
         <div className="space-y-3">
+          {selectedSupplierIsSystem ? (
+            <div className="overflow-hidden rounded-lg border border-emerald-300 bg-white shadow-sm">
+              <div className="h-1.5 bg-emerald-600" />
+              <div className="grid gap-4 p-4 lg:grid-cols-[1fr_auto] lg:items-start">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-2xl" aria-hidden="true">{selectedSupplier.system_icon || "🛡️"}</span>
+                    <h3 className="font-display text-lg font-bold text-emerald-950">This is a protected system supplier</h3>
+                    <Badge className="bg-emerald-100 text-emerald-800">SYSTEM SUPPLIER</Badge>
+                  </div>
+                  <p className="mt-2 text-sm text-stone-700">
+                    This statutory account can receive automatically generated supplier invoices and supplier payments.
+                  </p>
+                  <div className="mt-3">
+                    <p className="text-xs font-bold uppercase tracking-wide text-stone-500">Used by</p>
+                    <ul className="mt-1 grid gap-1 text-sm text-stone-700 sm:grid-cols-2">
+                      {(selectedSupplier.system_usage || []).map((item) => <li key={item}>• {item}</li>)}
+                    </ul>
+                  </div>
+                </div>
+                <div className="space-y-3">
+                  <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900">
+                    This supplier cannot be deleted, made inactive, renamed, or recategorised.
+                  </div>
+                  {selectedSupplier.supplier_category === "Pension" ? (
+                    <Button type="button" variant="outline" className="w-full border-emerald-300 bg-emerald-50 text-emerald-900 hover:bg-emerald-100" onClick={createPensionProviderFromTemplate}>
+                      <Plus className="mr-2 h-4 w-4" /> Create pension provider from template
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          ) : null}
           {supplierRecordTab === "General" ? (
             <Panel title="Supplier general details">
+              <div className="-mx-3 -mt-3 mb-4 h-1 bg-emerald-600" />
               <div className="mb-4 flex justify-end gap-2">
                 {supplierEditMode ? (
                   <>
@@ -1235,32 +1474,33 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
                   </Button>
                 )}
               </div>
-              <div className="grid gap-3 xl:grid-cols-2">
+              <div className="grid gap-5 xl:grid-cols-2">
                 <Section title="General">
                   <div className="grid gap-3 md:grid-cols-2">
-                    <EditableField label="Supplier name" value={supplierDraft.name} editable={supplierEditMode} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, name: value }))} />
-                    <EditableField label="Supplier code" value={supplierDraft.supplier_code} editable={supplierEditMode} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, supplier_code: value }))} />
-                    <EditableField label="Trading name" value={supplierDraft.trading_name} editable={supplierEditMode} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, trading_name: value }))} />
-                    <EditableField label="Status" value={supplierDraft.status} editable={supplierEditMode} options={["Active", "On hold", "Inactive"]} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, status: value }))} />
-                    <EditableField label="Email" type="email" value={supplierDraft.email} editable={supplierEditMode} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, email: value }))} />
-                    <EditableField label="Phone" value={supplierDraft.phone} editable={supplierEditMode} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, phone: value }))} />
-                    <EditableField label="Website" value={supplierDraft.website} editable={supplierEditMode} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, website: value }))} />
-                    <EditableField label="Currency" value={supplierDraft.default_currency} editable={supplierEditMode} options={["GBP", "EUR", "USD"]} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, default_currency: value }))} />
+                    <EditableField label="Supplier name" value={supplierDraft.name} editable={supplierEditMode && !selectedSupplierIsSystem} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, name: value }))} />
+                    <EditableField label="Supplier code" value={supplierDraft.supplier_code} editable={supplierEditMode && !selectedSupplierIsSystem} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, supplier_code: value }))} />
+                    <EditableField label="Category" value={supplierEditMode && !selectedSupplierIsSystem ? supplierDraft.supplier_category : (supplierCategoryLabels[supplierDraft.supplier_category] || supplierDraft.supplier_category)} editable={supplierEditMode && !selectedSupplierIsSystem} options={[{ value: "Trade", label: "Trade supplier" }, { value: "Pension", label: "Pension provider" }]} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, supplier_category: value }))} />
+                    <EditableField label="Trading name" value={supplierDraft.trading_name} editable={supplierEditMode && !selectedSupplierIsSystem} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, trading_name: value }))} />
+                    <EditableField label="Status" value={supplierDraft.status} editable={supplierEditMode && !selectedSupplierIsSystem} options={["Active", "On hold", "Inactive"]} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, status: value }))} />
+                    <EditableField label="Email" type="email" value={supplierDraft.email} editable={supplierEditMode && !selectedSupplierIsSystem} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, email: value }))} />
+                    <EditableField label="Phone" value={supplierDraft.phone} editable={supplierEditMode && !selectedSupplierIsSystem} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, phone: value }))} />
+                    <EditableField label="Website" value={supplierDraft.website} editable={supplierEditMode && !selectedSupplierIsSystem} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, website: value }))} />
+                    <EditableField label="Currency" value={supplierDraft.default_currency} editable={supplierEditMode && !selectedSupplierIsSystem} options={["GBP", "EUR", "USD"]} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, default_currency: value }))} />
                   </div>
                 </Section>
                 <Section title="Addresses">
                   <div className="grid gap-3 md:grid-cols-2">
-                    <EditableField label="Registered address" value={supplierDraft.registered_address} editable={supplierEditMode} textarea onChange={(value) => setSupplierDraft((draft) => ({ ...draft, registered_address: value }))} />
-                    <EditableField label="Trading address" value={supplierDraft.trading_address} editable={supplierEditMode} textarea onChange={(value) => setSupplierDraft((draft) => ({ ...draft, trading_address: value }))} />
-                    <EditableField label="Billing address" value={supplierDraft.billing_address} editable={supplierEditMode} textarea onChange={(value) => setSupplierDraft((draft) => ({ ...draft, billing_address: value }))} />
+                    <EditableField label="Registered address" value={supplierDraft.registered_address} editable={supplierEditMode && !selectedSupplierIsSystem} textarea onChange={(value) => setSupplierDraft((draft) => ({ ...draft, registered_address: value }))} />
+                    <EditableField label="Trading address" value={supplierDraft.trading_address} editable={supplierEditMode && !selectedSupplierIsSystem} textarea onChange={(value) => setSupplierDraft((draft) => ({ ...draft, trading_address: value }))} />
+                    <EditableField label="Billing address" value={supplierDraft.billing_address} editable={supplierEditMode && !selectedSupplierIsSystem} textarea onChange={(value) => setSupplierDraft((draft) => ({ ...draft, billing_address: value }))} />
                   </div>
                 </Section>
                 <Section title="Contacts">
                   <div className="grid gap-3 md:grid-cols-2">
-                    <EditableField label="Contact name" value={supplierDraft.contact_name} editable={supplierEditMode} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, contact_name: value }))} />
-                    <EditableField label="Position" value={supplierDraft.contact_position} editable={supplierEditMode} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, contact_position: value }))} />
-                    <EditableField label="Contact email" type="email" value={supplierDraft.contact_email} editable={supplierEditMode} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, contact_email: value }))} />
-                    <EditableField label="Contact phone" value={supplierDraft.contact_phone} editable={supplierEditMode} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, contact_phone: value }))} />
+                    <EditableField label="Contact name" value={supplierDraft.contact_name} editable={supplierEditMode && !selectedSupplierIsSystem} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, contact_name: value }))} />
+                    <EditableField label="Position" value={supplierDraft.contact_position} editable={supplierEditMode && !selectedSupplierIsSystem} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, contact_position: value }))} />
+                    <EditableField label="Contact email" type="email" value={supplierDraft.contact_email} editable={supplierEditMode && !selectedSupplierIsSystem} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, contact_email: value }))} />
+                    <EditableField label="Contact phone" value={supplierDraft.contact_phone} editable={supplierEditMode && !selectedSupplierIsSystem} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, contact_phone: value }))} />
                   </div>
                 </Section>
                 <Section title="Bank details">
@@ -1268,21 +1508,22 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
                     <EditableField label="Bank name" value={supplierDraft.bank_name} editable={supplierEditMode} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, bank_name: value }))} />
                     <EditableField label="Sort code" value={supplierDraft.bank_sort_code} editable={supplierEditMode} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, bank_sort_code: value }))} />
                     <EditableField label="Account number" value={supplierDraft.bank_account_number} editable={supplierEditMode} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, bank_account_number: value }))} />
+                    <EditableField label="Payment reference" value={supplierDraft.payment_reference} editable={supplierEditMode} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, payment_reference: value }))} />
                   </div>
                 </Section>
                 <Section title="Payment terms">
                   <div className="grid gap-3 md:grid-cols-2">
-                    <EditableField label="Payment terms days" type="number" value={supplierDraft.payment_terms_days} editable={supplierEditMode} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, payment_terms_days: value }))} />
-                    <EditableField label="Default purchase nominal" value={supplierDraft.default_purchase_account} editable={supplierEditMode} options={expenseAccounts.map((account) => ({ value: account.code, label: `${account.code} - ${account.name}` }))} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, default_purchase_account: value }))} />
+                    <EditableField label="Payment terms days" type="number" value={supplierDraft.payment_terms_days} editable={supplierEditMode && !selectedSupplierIsSystem} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, payment_terms_days: value }))} />
+                    <EditableField label="Default purchase nominal" value={supplierDraft.default_purchase_account} editable={supplierEditMode && !selectedSupplierIsSystem} options={expenseAccounts.map((account) => ({ value: account.code, label: `${account.code} - ${account.name}` }))} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, default_purchase_account: value }))} />
                   </div>
                 </Section>
                 <Section title="Tax">
                   <div className="grid gap-3 md:grid-cols-2">
-                    <EditableField label="VAT number" value={supplierDraft.vat_number} editable={supplierEditMode} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, vat_number: value }))} />
-                    <EditableField label="Company number" value={supplierDraft.company_number} editable={supplierEditMode} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, company_number: value }))} />
-                    <EditableField label="Default VAT code" value={supplierDraft.default_vat_code} editable={supplierEditMode} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, default_vat_code: value }))} />
-                    <EditableField label="CIS registered" checkbox value={supplierDraft.cis_registered} editable={supplierEditMode} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, cis_registered: value }))} />
-                    <EditableField label="Reverse charge" checkbox value={supplierDraft.reverse_charge} editable={supplierEditMode} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, reverse_charge: value }))} />
+                    <EditableField label="VAT number" value={supplierDraft.vat_number} editable={supplierEditMode && !selectedSupplierIsSystem} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, vat_number: value }))} />
+                    <EditableField label="Company number" value={supplierDraft.company_number} editable={supplierEditMode && !selectedSupplierIsSystem} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, company_number: value }))} />
+                    <EditableField label="Default VAT code" value={supplierDraft.default_vat_code} editable={supplierEditMode && !selectedSupplierIsSystem} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, default_vat_code: value }))} />
+                    <EditableField label="CIS registered" checkbox value={supplierDraft.cis_registered} editable={supplierEditMode && !selectedSupplierIsSystem} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, cis_registered: value }))} />
+                    <EditableField label="Reverse charge" checkbox value={supplierDraft.reverse_charge} editable={supplierEditMode && !selectedSupplierIsSystem} onChange={(value) => setSupplierDraft((draft) => ({ ...draft, reverse_charge: value }))} />
                   </div>
                 </Section>
                 <Section title="Notes">
@@ -1293,7 +1534,20 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
           ) : null}
 
           {supplierRecordTab === "Ledger" ? (
-            <Panel title="Supplier ledger">
+            <Panel
+              title="Supplier ledger"
+              action={(
+                <ActionDropdown
+                  actions={[
+                    { label: "Add purchase invoice", onClick: () => openTransactionForm("Purchase Invoice") },
+                    { label: "Add supplier credit note", onClick: () => openTransactionForm("Supplier Credit Note") },
+                    { label: "Add payment", onClick: () => openTransactionForm("Payment on Account") },
+                    { label: "Allocate transactions", onClick: openAccountAllocation },
+                    { label: "Select Columns", onClick: () => setColumnSelectorOpen((open) => !open) },
+                  ]}
+                />
+              )}
+            >
               {columnSelectorOpen ? (
                 <ColumnSelectorPanel
                   columns={ledgerColumnDefinitions}
@@ -1368,7 +1622,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
                         </div>
                         <ClearFilterButton onClick={() => { setLedgerInvoiceValueMin(""); setLedgerInvoiceValueMax(""); }} />
                       </LedgerColumnHeader> : null}
-                      {isLedgerColumnVisible("allocated") ? <LedgerColumnHeader label="Paid / allocated" sortKey="allocated" sort={ledgerSort} onSort={toggleLedgerSort} openKey={openLedgerFilter} setOpenKey={setOpenLedgerFilter} align="right" activeFilter={Boolean(ledgerAllocatedMin || ledgerAllocatedMax)} width={ledgerColumnWidths.allocated} onResize={(width) => resizeLedgerColumn("allocated", width)}>
+                      {isLedgerColumnVisible("allocated") ? <LedgerColumnHeader label="Payment" sortKey="allocated" sort={ledgerSort} onSort={toggleLedgerSort} openKey={openLedgerFilter} setOpenKey={setOpenLedgerFilter} align="right" activeFilter={Boolean(ledgerAllocatedMin || ledgerAllocatedMax)} width={ledgerColumnWidths.allocated} onResize={(width) => resizeLedgerColumn("allocated", width)}>
                         <SortControls sortKey="allocated" onSort={toggleLedgerSort} />
                         <div className="mt-2 grid grid-cols-2 gap-1">
                           <Input type="number" step="0.01" value={ledgerAllocatedMin} onChange={(e) => setLedgerAllocatedMin(e.target.value)} placeholder="Min" className="h-8 text-xs" />
@@ -1376,7 +1630,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
                         </div>
                         <ClearFilterButton onClick={() => { setLedgerAllocatedMin(""); setLedgerAllocatedMax(""); }} />
                       </LedgerColumnHeader> : null}
-                      {isLedgerColumnVisible("balance") ? <LedgerColumnHeader label="Invoice balance" sortKey="balance" sort={ledgerSort} onSort={toggleLedgerSort} openKey={openLedgerFilter} setOpenKey={setOpenLedgerFilter} align="right" activeFilter={Boolean(ledgerBalanceMin || ledgerBalanceMax)} width={ledgerColumnWidths.balance} onResize={(width) => resizeLedgerColumn("balance", width)}>
+                      {isLedgerColumnVisible("balance") ? <LedgerColumnHeader label="Line balance" sortKey="balance" sort={ledgerSort} onSort={toggleLedgerSort} openKey={openLedgerFilter} setOpenKey={setOpenLedgerFilter} align="right" activeFilter={Boolean(ledgerBalanceMin || ledgerBalanceMax)} width={ledgerColumnWidths.balance} onResize={(width) => resizeLedgerColumn("balance", width)}>
                         <SortControls sortKey="balance" onSort={toggleLedgerSort} />
                         <div className="mt-2 grid grid-cols-2 gap-1">
                           <Input type="number" step="0.01" value={ledgerBalanceMin} onChange={(e) => setLedgerBalanceMin(e.target.value)} placeholder="Min" className="h-8 text-xs" />
@@ -1391,6 +1645,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
                         </select>
                         <ClearFilterButton onClick={() => setLedgerStatusFilter("All")} />
                       </LedgerColumnHeader> : null}
+                      {isLedgerColumnVisible("allocations") ? <th className="px-2 py-1.5 text-left" style={ledgerCellStyle("allocations")}>Allocations</th> : null}
                       {isLedgerColumnVisible("attachment") ? <LedgerColumnHeader label="Attachment" sortKey="attachment" sort={ledgerSort} onSort={toggleLedgerSort} openKey={openLedgerFilter} setOpenKey={setOpenLedgerFilter} align="right" activeFilter={ledgerAttachmentFilter !== "All"} width={ledgerColumnWidths.attachment} onResize={(width) => resizeLedgerColumn("attachment", width)}>
                         <SortControls sortKey="attachment" onSort={toggleLedgerSort} />
                         <select value={ledgerAttachmentFilter} onChange={(e) => setLedgerAttachmentFilter(e.target.value)} className="mt-2 h-8 w-full rounded-md border border-stone-200 bg-white px-2 text-xs normal-case">
@@ -1429,13 +1684,13 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
                             {isLedgerColumnVisible("reference") ? <td className="px-2 py-1.5" style={ledgerCellStyle("reference")}>{row.reference}</td> : null}
                             {isLedgerColumnVisible("description") ? <td className="px-2 py-1.5 text-stone-600" style={ledgerCellStyle("description")}>{row.description}</td> : null}
                             {isLedgerColumnVisible("invoice_value") ? <td className="px-2 py-1.5 text-right" style={ledgerCellStyle("invoice_value")}>{invoiceValue(row) ? formatMoney(invoiceValue(row)) : "-"}</td> : null}
-                            {isLedgerColumnVisible("allocated") ? <td className="px-2 py-1.5 text-right" style={ledgerCellStyle("allocated")}>{allocatedValue(row) ? formatMoney(allocatedValue(row)) : "-"}</td> : null}
+                            {isLedgerColumnVisible("allocated") ? <td className="px-2 py-1.5 text-right" style={ledgerCellStyle("allocated")}>{paymentValue(row) ? formatMoney(paymentValue(row)) : "-"}</td> : null}
                             {isLedgerColumnVisible("balance") ? <td className="px-2 py-1.5 text-right font-semibold" style={ledgerCellStyle("balance")}>{invoiceBalance(row) ? formatMoney(invoiceBalance(row)) : "-"}</td> : null}
                             {isLedgerColumnVisible("status") ? <td className="px-2 py-1.5" style={ledgerCellStyle("status")}>
                               <Badge className={row.is_over_allocated ? "bg-red-100 text-red-800" : statusBadgeClass(row.status)}>{row.display_status || displayStatus(row.status)}</Badge>
                               {row.is_over_allocated ? <div className="mt-1 text-xs font-medium text-red-700">Allocation exceeds invoice value</div> : null}
-                              {row.can_unallocate ? <Button type="button" variant="outline" size="sm" className="mt-1" onClick={(event) => { event.stopPropagation(); unallocateApRow(row); }}>Unallocate</Button> : null}
                             </td> : null}
+                            {isLedgerColumnVisible("allocations") ? <td className="px-2 py-1.5" style={ledgerCellStyle("allocations")}>{(row.allocation_summary?.allocations || []).length ? <Button type="button" variant="outline" size="sm" onClick={(event) => { event.stopPropagation(); setAllocationError(""); setViewAllocationRow(row); }}>View Allocation</Button> : "-"}</td> : null}
                             {isLedgerColumnVisible("attachment") ? <td className="px-2 py-1.5" style={ledgerCellStyle("attachment")}>{hasAttachment(row) ? <Badge className="bg-emerald-100 text-emerald-800">Attached</Badge> : "-"}</td> : null}
                           </tr>
                           {selected ? (
@@ -1447,6 +1702,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
                                   errors={transactionErrors}
                                   supplier={selectedSupplier}
                                   expenseAccounts={expenseAccounts}
+                                  bankAccounts={bankAccounts}
                                   vatCodes={vatCodes}
                                   saving={saving}
                                   onClose={() => {
@@ -1458,6 +1714,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
                                   onApproveInvoice={approvePurchaseInvoice}
                                   onCopyInvoice={copyPurchaseInvoiceToNew}
                                   approvalRequired={Boolean(settingsForm.approval_required)}
+                                  openInvoices={supplierLedgerRows(selectedSupplierId).filter((item) => item.source === "invoice" && asNumber(item.invoice_balance) > 0)}
                                 />
                               </td>
                             </tr>
@@ -1546,7 +1803,9 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
                 errors={transactionErrors}
                 supplier={selectedSupplier}
                 expenseAccounts={expenseAccounts}
-                vatCodes={vatCodes}
+                bankAccounts={bankAccounts}
+                vatCodes={transactionVatCodes}
+                outsideVatPeriod={!transactionVatActive}
                 saving={saving}
                 onClose={() => {
                   setTransactionDraft(null);
@@ -1557,9 +1816,45 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
                 onApproveInvoice={approvePurchaseInvoice}
                 onCopyInvoice={copyPurchaseInvoiceToNew}
                 approvalRequired={Boolean(settingsForm.approval_required)}
+                openInvoices={supplierLedgerRows(selectedSupplierId).filter((item) => item.source === "invoice" && asNumber(item.invoice_balance) > 0)}
               />
             </TransactionEntryModal>
           ) : null}
+          <AllocationModal
+            open={Boolean(allocationRow)}
+            title="Supplier payment allocation"
+            accountName={selectedSupplier?.name || allocationRow?.supplier_name}
+            source={allocationData?.payment || {}}
+            sourceLabel="Payment"
+            invoices={allocationData?.invoices || []}
+            existingAllocations={allocationData?.existing_allocations || []}
+            loading={allocationLoading}
+            saving={allocationSaving}
+            error={allocationError}
+            onClose={() => { if (!allocationSaving) { setAllocationRow(null); setAllocationData(null); setAllocationError(""); } }}
+            onAllocate={saveApAllocations}
+            onUnallocate={unallocateApFromModal}
+          />
+          <AccountTransactionsAllocationModal
+            open={accountAllocationOpen}
+            accountName={selectedSupplier?.name || selectedSupplier?.business_name}
+            credits={accountAllocationData.credits || []}
+            debits={accountAllocationData.debits || []}
+            summary={accountAllocationData.summary || {}}
+            loading={accountAllocationLoading}
+            saving={accountAllocationSaving}
+            error={accountAllocationError}
+            onClose={() => { if (!accountAllocationSaving) setAccountAllocationOpen(false); }}
+            onSave={saveAccountAllocation}
+          />
+          <TransactionAllocationsModal
+            open={Boolean(viewAllocationRow)}
+            transaction={viewAllocationRow || {}}
+            saving={allocationSaving}
+            error={allocationError}
+            onClose={() => { if (!allocationSaving) setViewAllocationRow(null); }}
+            onUnallocate={unallocateLedgerAllocation}
+          />
 
         </div>
       );
@@ -1574,7 +1869,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
               <Input value={supplierQuery} onChange={(e) => setSupplierQuery(e.target.value)} placeholder="Search supplier cards" className="h-9 pl-9" />
             </div>
           </div>
-          <div className="grid gap-2 md:grid-cols-2 2xl:grid-cols-3">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
             {visibleSuppliers.map((supplier) => (
               <SupplierCard
                 key={supplier.id}
@@ -1606,6 +1901,12 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
               <FieldControl label="Supplier code">
                 <Input value={supplierForm.supplier_code} onChange={(e) => setSupplierForm((form) => ({ ...form, supplier_code: e.target.value }))} className="h-9" />
               </FieldControl>
+              <FieldControl label="Supplier category">
+                <select value={supplierForm.supplier_category} onChange={(e) => setSupplierForm((form) => ({ ...form, supplier_category: e.target.value }))} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm">
+                  <option value="Trade">Trade supplier</option>
+                  <option value="Pension">Pension provider</option>
+                </select>
+              </FieldControl>
               <FieldControl label="Email">
                 <Input type="email" value={supplierForm.email} onChange={(e) => setSupplierForm((form) => ({ ...form, email: e.target.value }))} className="h-9" />
               </FieldControl>
@@ -1614,6 +1915,9 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
               </FieldControl>
               <FieldControl label="Payment terms">
                 <Input type="number" value={supplierForm.payment_terms_days} onChange={(e) => setSupplierForm((form) => ({ ...form, payment_terms_days: e.target.value }))} className="h-9" />
+              </FieldControl>
+              <FieldControl label="Payment reference">
+                <Input value={supplierForm.payment_reference} onChange={(e) => setSupplierForm((form) => ({ ...form, payment_reference: e.target.value }))} className="h-9" />
               </FieldControl>
               <AccountCodeSelect accounts={expenseAccounts} value={supplierForm.default_purchase_account} onChange={(value) => setSupplierForm((form) => ({ ...form, default_purchase_account: value }))} label="Default purchase nominal" />
               <div className="flex justify-end gap-2 md:col-span-2">
@@ -1637,7 +1941,9 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
                 errors={transactionErrors}
                 supplier={selectedSupplier}
                 expenseAccounts={expenseAccounts}
-                vatCodes={vatCodes}
+                bankAccounts={bankAccounts}
+                vatCodes={transactionVatCodes}
+                outsideVatPeriod={!transactionVatActive}
                 saving={saving}
                 onClose={() => {
                   setTransactionDraft(null);
@@ -1648,6 +1954,7 @@ function AccountsPayableWorkspace({ workspace, tab, setTab, reloadWorkspace, bus
                 onApproveInvoice={approvePurchaseInvoice}
                 onCopyInvoice={copyPurchaseInvoiceToNew}
                 approvalRequired={Boolean(settingsForm.approval_required)}
+                openInvoices={supplierLedgerRows(selectedSupplierId).filter((item) => item.source === "invoice" && asNumber(item.invoice_balance) > 0)}
               />
             </TransactionEntryModal>
           ) : null}
@@ -1836,7 +2143,9 @@ function ManualPurchaseDocumentDrawer({
   errors,
   supplier,
   expenseAccounts,
+  bankAccounts,
   vatCodes,
+  outsideVatPeriod,
   saving,
   onClose,
   onSave,
@@ -1844,6 +2153,7 @@ function ManualPurchaseDocumentDrawer({
   onApproveInvoice,
   onCopyInvoice,
   approvalRequired,
+  openInvoices = [],
 }) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const readOnly = isReadOnlyTransaction(draft);
@@ -1933,7 +2243,7 @@ function ManualPurchaseDocumentDrawer({
                 <Badge className={statusBadgeClass(draft.status)}>{displayStatus(draft.status || "Awaiting approval")}</Badge>
               </div>
               <p className="mt-1 text-sm text-stone-500">
-                {isExistingApInvoice ? "Accounts Payable invoice details. Editable fields can be updated here." : "Manual Accounts Payable purchase document entry. Supplier is locked from the open supplier account."}
+                {isPayment ? "Accounts Payable supplier payment details. The unallocated amount remains on the supplier account until matched." : isExistingApInvoice ? "Accounts Payable invoice details. Editable fields can be updated here." : "Manual Accounts Payable purchase document entry. Supplier is locked from the open supplier account."}
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -1955,7 +2265,7 @@ function ManualPurchaseDocumentDrawer({
           <form onSubmit={(event) => onSave(event, draft.status || "Awaiting approval")} className="min-h-0 min-w-0 p-3">
             {readOnly ? (
               <div className="mb-3 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-600">
-                This AP invoice is view-only because its status is {displayStatus(draft.status)}. Corrections should be entered through the appropriate AP adjustment flow.
+                This {isPayment ? "supplier payment" : "AP invoice"} is view-only because its status is {displayStatus(draft.status)}. Corrections should be entered through the appropriate AP adjustment flow.
               </div>
             ) : null}
             {existingLedgerRecord && !readOnly && !editMode ? (
@@ -1968,6 +2278,7 @@ function ManualPurchaseDocumentDrawer({
 
             <section className="rounded-md border border-stone-200 bg-white p-3">
               <h4 className="mb-3 text-sm font-semibold text-stone-900">Coding / accounting fields</h4>
+              {outsideVatPeriod && !isPayment ? <p className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">Outside VAT registration period. NO VAT applied.</p> : null}
               <div className="grid gap-3 md:grid-cols-3">
                 <FieldControl label="Supplier ID">
                   <Input value={draft.supplier_id || ""} readOnly className="h-9 bg-stone-50" />
@@ -2066,8 +2377,19 @@ function ManualPurchaseDocumentDrawer({
               <section className="mt-3 rounded-md border border-stone-200 bg-white p-3">
                 <h4 className="mb-3 text-sm font-semibold text-stone-900">Supplier payment</h4>
                 <div className="grid gap-3 md:grid-cols-3">
+                  <FieldControl label="Bank account" error={errors.bank_account}>
+                    <select value={draft.bank_account_code || ""} disabled={formReadOnly} onChange={(e) => set("bank_account_code", e.target.value)} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm disabled:bg-stone-50">
+                      <option value="">Select bank account</option>
+                      {bankAccounts.map((account) => <option key={account.code} value={account.code}>{account.code} - {account.name}</option>)}
+                    </select>
+                  </FieldControl>
                   <FieldControl label="Payment date" error={errors.date}>
                     <Input type="date" value={draft.date || ""} readOnly={formReadOnly} onChange={(e) => set("date", e.target.value)} className="h-9" />
+                  </FieldControl>
+                  <FieldControl label="Payment method">
+                    <select value={draft.payment_method || "Bank Transfer"} disabled={formReadOnly} onChange={(e) => set("payment_method", e.target.value)} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm disabled:bg-stone-50">
+                      {["Bank Transfer", "Card", "Cash", "Cheque", "Direct Debit"].map((method) => <option key={method} value={method}>{method}</option>)}
+                    </select>
                   </FieldControl>
                   <FieldControl label="Bank reference">
                     <Input value={draft.reference || ""} readOnly={formReadOnly} onChange={(e) => set("reference", e.target.value)} className="h-9" />
@@ -2075,7 +2397,23 @@ function ManualPurchaseDocumentDrawer({
                   <FieldControl label="Amount paid" error={errors.amount}>
                     <Input type="number" step="0.01" value={draft.gross || ""} readOnly={formReadOnly} onChange={(e) => set("gross", e.target.value)} className="h-9" />
                   </FieldControl>
+                  <FieldControl label="Allocation target">
+                    <select value={draft.allocation_target || "on_account"} disabled={formReadOnly} onChange={(e) => set("allocation_target", e.target.value)} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm disabled:bg-stone-50">
+                      <option value="on_account">Leave as payment on account</option>
+                      <option value="oldest">Oldest invoices automatically</option>
+                      <option value="selected">Selected invoice</option>
+                    </select>
+                  </FieldControl>
+                  {draft.allocation_target === "selected" ? (
+                    <FieldControl label="Selected invoice">
+                      <select value={draft.invoice_id || ""} disabled={formReadOnly} onChange={(e) => set("invoice_id", e.target.value)} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm disabled:bg-stone-50">
+                        <option value="">Select invoice</option>
+                        {openInvoices.map((invoice) => <option key={invoice.id} value={invoice.id}>{invoice.reference || invoice.invoice_number} - {formatMoney(invoice.invoice_balance ?? invoice.outstanding_amount)}</option>)}
+                      </select>
+                    </FieldControl>
+                  ) : null}
                 </div>
+                <p className="mt-3 text-xs text-stone-500">{asNumber(draft.gross) < 0 ? "A negative amount records a supplier refund on account. After posting, allocate it to one or more supplier credit notes." : draft.allocation_target === "on_account" ? "This payment posts only to bank and creditors control and remains available for later allocation." : "Allocation changes the supplier subledger only; it does not create another general-ledger posting."}</p>
               </section>
             )}
 
@@ -2259,26 +2597,41 @@ function FieldControl({ label, error, children }) {
 }
 
 function SupplierCard({ supplier, outstanding, paymentOnAccount, lastActivity, onOpen }) {
+  const systemSupplier = Boolean(supplier.is_system_supplier || supplier.isSystemSupplier);
   return (
-    <button type="button" onClick={onOpen} className="rounded-md border border-stone-200 bg-white p-2.5 text-left shadow-sm transition hover:border-emerald-300 hover:shadow-md">
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <h4 className="truncate font-display text-sm font-semibold text-stone-900">{supplier.name || "Unnamed supplier"}</h4>
-          <p className="mt-0.5 truncate text-[11px] text-stone-500">{supplier.supplier_code || supplier.email || "No supplier code"}</p>
+    <button type="button" onClick={onOpen} className={`group flex min-h-[190px] flex-col overflow-hidden rounded-xl bg-white p-4 text-left shadow-[0_3px_12px_rgba(28,25,23,0.07)] transition duration-150 hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-[0_10px_26px_rgba(6,78,59,0.13)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2 ${systemSupplier ? "border-2 border-emerald-400" : "border border-stone-200"}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100">
+            {systemSupplier
+              ? <span className="text-xl" aria-hidden="true">{supplier.system_icon || "🛡️"}</span>
+              : <Building2 className="h-6 w-6" />}
+          </span>
+          <div className="min-w-0 pt-0.5">
+            <h4 className="truncate font-display text-base font-bold leading-tight text-stone-950">{supplier.name || "Unnamed supplier"}</h4>
+            <p className="mt-1 truncate text-xs font-medium text-stone-500">{supplier.supplier_code || supplier.email || "No supplier code"}</p>
+            <p className="mt-1.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700">{systemSupplier ? "System supplier" : "Supplier account"}</p>
+          </div>
         </div>
-        <Badge className={`${statusBadgeClass(supplier.status || "active")} shrink-0`}>{supplier.status || "Active"}</Badge>
+        <Badge className={`${statusBadgeClass(supplier.status || "active")} mt-1 shrink-0 shadow-sm`}>{supplier.status || "Active"}</Badge>
       </div>
-      <div className="mt-2 grid grid-cols-2 gap-1.5">
-        <div className="min-w-0 rounded-md bg-amber-50 px-2 py-1">
-          <div className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-amber-700"><ReceiptText className="h-3 w-3 shrink-0" /> Outstanding</div>
-          <div className="mt-0.5 truncate font-display text-sm font-bold text-amber-900">{formatMoney(outstanding)}</div>
+      <div className="mt-4 grid flex-1 grid-cols-2 gap-3 border-t border-stone-200 pt-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-50 text-amber-700"><ReceiptText className="h-4 w-4" /></span>
+          <div className="min-w-0">
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-stone-500">Outstanding</div>
+            <div className="mt-0.5 truncate font-display text-sm font-bold text-amber-900">{formatMoney(outstanding)}</div>
+          </div>
         </div>
-        <div className="min-w-0 rounded-md bg-sky-50 px-2 py-1">
-          <div className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-sky-700"><WalletCards className="h-3 w-3 shrink-0" /> On account</div>
-          <div className="mt-0.5 truncate font-display text-sm font-bold text-sky-900">{formatMoney(paymentOnAccount)}</div>
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sky-50 text-sky-700"><WalletCards className="h-4 w-4" /></span>
+          <div className="min-w-0">
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-stone-500">On account</div>
+            <div className="mt-0.5 truncate font-display text-sm font-bold text-sky-900">{formatMoney(paymentOnAccount)}</div>
+          </div>
         </div>
       </div>
-      <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px] text-stone-500">
+      <div className="mt-3 flex items-center justify-between gap-2 border-t border-stone-100 pt-2 text-[11px] text-stone-500">
         <span className="inline-flex min-w-0 items-center gap-1"><FileText className="h-3 w-3 shrink-0" /> <span className="truncate">Last transaction</span></span>
         <span className="shrink-0 font-medium text-stone-700">{lastActivity ? formatDate(lastActivity) : "-"}</span>
       </div>

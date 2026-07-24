@@ -186,6 +186,7 @@ export default function AdminClientDetail() {
   const [integrationSettings, setIntegrationSettings] = useState(DEFAULT_INTEGRATION_SETTINGS);
   const [integrationTab, setIntegrationTab] = useState("account");
   const [savedAccountingDestination, setSavedAccountingDestination] = useState("");
+  const [savedVatClient, setSavedVatClient] = useState(false);
   const [quickBooksConfig, setQuickBooksConfig] = useState({ configured: false, enabled: true, environment: "sandbox" });
   const [integrationBusy, setIntegrationBusy] = useState(false);
   const [outstandingLoaded, setOutstandingLoaded] = useState(false);
@@ -205,6 +206,7 @@ export default function AdminClientDetail() {
         api.get("/admin/accountancy/client-types").catch(() => ({ data: { client_types: DEFAULT_CLIENT_TYPES.map(([key, label]) => ({ key, label, service_keys: [] })) } })),
       ]);
       setClient(c.data);
+      setSavedVatClient(!!c.data?.is_vat_client);
       setSavedAccountingDestination(accountingDestinationForClient(c.data));
       setCompanyQuery(c.data?.business_name || "");
       const nextServices = Array.isArray(services.data.services) && services.data.services.length ? services.data.services : DEFAULT_SERVICES;
@@ -340,6 +342,7 @@ export default function AdminClientDetail() {
 
   async function saveClient() {
     try {
+      const vatChanged = savedVatClient !== !!client.is_vat_client;
       const nextDestination = accountingDestinationForClient(client);
       const destinationChanged = savedAccountingDestination && savedAccountingDestination !== nextDestination;
       if (destinationChanged && destinationChangeMayAffectPublishedDocuments(client)) {
@@ -362,6 +365,13 @@ export default function AdminClientDetail() {
         ...practicePayload,
       });
       toast.success("Client updated");
+      if (vatChanged && nextDestination === "native") {
+        toast.info(client.is_vat_client
+          ? "VAT start date is required before VAT treatment can be applied."
+          : "VAT end date is required when disabling VAT for this client.");
+        nav(`/admin/accounting?client_id=${encodeURIComponent(id)}&module=vat&tab=Settings`);
+        return;
+      }
       load();
     } catch (e) {
       toast.error(formatApiError(e));

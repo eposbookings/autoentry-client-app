@@ -210,16 +210,17 @@ function ActionRow({ icon, title, subtitle, active, onClick, testid }) {
   return (
     <button
       onClick={onClick}
-      className={`w-full text-left rounded-2xl border p-5 flex items-center gap-4 transition-all ${active ? "border-[var(--brand)] bg-[var(--brand)]/5" : "border-stone-200 bg-white card-hover"}`}
+      className={`group flex w-full items-center gap-4 rounded-xl border p-5 text-left shadow-[0_3px_12px_rgba(28,25,23,0.06)] transition duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2 ${active ? "border-emerald-400 bg-emerald-50/50" : "border-stone-200 bg-white hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-[0_10px_26px_rgba(6,78,59,0.12)]"}`}
       data-testid={testid}
     >
-      <div className={`h-12 w-12 rounded-xl flex items-center justify-center ${active ? "text-white" : "text-stone-700 bg-stone-100"}`}
+      <div className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-full ring-1 ${active ? "text-white ring-emerald-600" : "bg-emerald-50 text-emerald-700 ring-emerald-100"}`}
         style={active ? { background: "var(--brand)" } : undefined}>
         {icon}
       </div>
       <div className="flex-1">
-        <div className="font-semibold text-stone-900">{title}</div>
-        <div className="text-sm text-stone-500">{subtitle}</div>
+        <div className="font-display font-bold text-stone-950">{title}</div>
+        <div className="mt-1 text-sm text-stone-500">{subtitle}</div>
+        <div className="mt-1.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700">{active ? "Selected" : "Choose option"}</div>
       </div>
       {active && <CheckCircle2 className="h-5 w-5" style={{ color: "var(--brand)" }} />}
     </button>

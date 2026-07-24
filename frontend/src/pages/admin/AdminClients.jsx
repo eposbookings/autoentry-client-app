@@ -244,31 +244,35 @@ export default function AdminClients() {
             <button
               key={c._id}
               onClick={() => nav(`/admin/clients/${c._id}`)}
-              className="text-left bg-white border border-stone-200 rounded-md p-4 card-hover"
+              className="group flex min-h-[220px] flex-col rounded-xl border border-stone-200 bg-white p-4 text-left shadow-[0_3px_12px_rgba(28,25,23,0.07)] transition duration-150 hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-[0_10px_26px_rgba(6,78,59,0.13)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2"
               data-testid={`client-card-${c._id}`}
             >
               <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="font-display font-semibold text-base text-stone-900 leading-tight">{c.business_name}</div>
-                  <div className="text-sm text-stone-500">{c.first_name} {c.last_name}</div>
+                <div className="flex min-w-0 items-start gap-3">
+                  <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100">
+                    <Building2 className="h-6 w-6" />
+                  </span>
+                  <div className="min-w-0 pt-0.5">
+                    <div className="truncate font-display text-base font-bold leading-tight text-stone-950">{c.business_name}</div>
+                    <div className="mt-1 truncate text-xs text-stone-500">{c.first_name} {c.last_name}</div>
+                    <div className="mt-1.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700">Practice client</div>
+                  </div>
                 </div>
                 <Badge variant={c.status === "active" ? "default" : "secondary"} className={c.status === "active" ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-100" : ""}>
                   {c.status}
                 </Badge>
               </div>
-              {c.is_vat_client && (
-                <Badge className="mt-3 bg-sky-100 text-sky-800 hover:bg-sky-100">VAT client</Badge>
-              )}
-              {c.ai_analysis_enabled && (
-                <Badge className="mt-3 ml-2 bg-violet-100 text-violet-800 hover:bg-violet-100">AI analysis</Badge>
-              )}
-              <div className="mt-4 grid grid-cols-2 gap-2">
+              <div className="mt-3 min-h-6">
+                {c.is_vat_client && <Badge className="bg-sky-100 text-sky-800 hover:bg-sky-100">VAT client</Badge>}
+                {c.ai_analysis_enabled && <Badge className="ml-2 bg-violet-100 text-violet-800 hover:bg-violet-100">AI analysis</Badge>}
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2 border-t border-stone-200 pt-3">
                 <Stat label="Purchase" value={c.purchase_outstanding} />
                 <Stat label="Sales" value={c.sales_outstanding} />
               </div>
-              <div className="mt-4 flex items-center justify-between text-sm">
-                <span className="text-stone-500 truncate">{c.email}</span>
-                <span className="inline-flex items-center gap-1 text-[var(--brand)] font-medium">Manage <ArrowRight className="h-3.5 w-3.5" /></span>
+              <div className="mt-auto flex items-center justify-between border-t border-stone-100 pt-3 text-sm">
+                <span className="truncate text-xs text-stone-500">{c.email}</span>
+                <span className="inline-flex items-center gap-1 font-semibold text-emerald-700">Manage <ArrowRight className="h-3.5 w-3.5 transition group-hover:translate-x-1" /></span>
               </div>
             </button>
           ))}

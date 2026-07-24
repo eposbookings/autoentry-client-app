@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Download, FileText, Printer, Search, Upload } from "lucide-react";
+import { Download, FileText, Landmark, Printer, Search, Upload } from "lucide-react";
 import { toast } from "sonner";
 import {
   AccountCodeSelect,
@@ -23,6 +23,7 @@ import {
   normalisePageSize,
   statusBadgeClass,
   vatCodeOptionsFromWorkspace,
+  vatActiveForDate,
 } from "./shared";
 
 const bankTabs = ["Reconciliation", "Bank Statements", "Account Transactions", "Audit Trail"];
@@ -44,6 +45,8 @@ function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy,
   const vatCodes = useMemo(() => vatCodeOptionsFromWorkspace(workspace), [workspace]);
   const usingBankingFallback = !supportsBankingAccountFlag && (banking.bank_accounts || []).length > 0;
   const postingAccounts = accounts.filter((account) => account.active && account.purpose !== "Bank Account" && String(account.account_type || "").toLowerCase() !== "bank");
+  const suppliers = workspace.accounts_payable?.suppliers || [];
+  const customers = workspace.accounts_receivable?.customers || [];
   const baseUrl = `/admin/accounting/clients/${workspace.client.id}`;
 
   const [saving, setSaving] = useState(false);
@@ -372,6 +375,17 @@ function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy,
     setSelectedTransaction(null);
   }
 
+  async function createSupplierOrCustomerTransaction(transaction, payload) {
+    const moneyIn = Number(transaction.money_in || 0) > 0;
+    const endpoint = moneyIn ? "create-customer-receipt" : "create-supplier-payment";
+    const saved = await run(
+      async () => api.post(`${baseUrl}/bank-transactions/${transaction.id}/${endpoint}`, payload),
+      moneyIn ? "Customer receipt posted on account" : "Supplier expense and payment posted"
+    );
+    if (saved) setSelectedTransaction(null);
+    return saved;
+  }
+
   async function ignoreTransaction(transaction, reason = "") {
     await run(async () => api.post(`${baseUrl}/bank-transactions/${transaction.id}/ignore`, { reason }), "Transaction excluded");
     setSelectedTransaction(null);
@@ -482,7 +496,7 @@ function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy,
         {usingBankingFallback ? <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">Backend required: persist banking_enabled/show_in_banking on accounting accounts and use it to populate Banking cards. Showing existing Banking records for now.</div> : null}
         <Panel title="Bank accounts">
           {bankAccounts.length ? (
-            <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
               {bankAccounts.map((account) => (
                 <BankAccountCard
                   key={account.id || bankCode(account)}
@@ -533,7 +547,11 @@ function BankingWorkspace({ workspace, tab = "Dashboard", reloadWorkspace, busy,
           selectedBankId={selectedBankId}
           postingAccounts={postingAccounts}
           vatCodes={vatCodes}
+          vatStatus={workspace}
+          suppliers={suppliers}
+          customers={customers}
           matchSuggestion={matchSuggestion}
+          createSupplierOrCustomerTransaction={createSupplierOrCustomerTransaction}
           reconcileToAccount={reconcileToAccount}
           reconcileSplitToAccounts={reconcileSplitToAccounts}
           ignoreTransaction={ignoreTransaction}
@@ -609,25 +627,31 @@ function BankAuditTrail({ data, loading, error, search, setSearch, setPage, setP
 
 function BankAccountCard({ account, unreconciledCount, lastImport, onOpen }) {
   return (
-    <button type="button" onClick={onOpen} className="rounded-md border border-stone-200 bg-white p-4 text-left shadow-sm transition hover:border-emerald-300 hover:shadow-md">
+    <button type="button" onClick={onOpen} className="group flex min-h-[220px] flex-col rounded-xl border border-stone-200 bg-white p-4 text-left shadow-[0_3px_12px_rgba(28,25,23,0.07)] transition duration-150 hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-[0_10px_26px_rgba(6,78,59,0.13)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2">
       <div className="flex items-start justify-between gap-3">
-        <div>
-          <h4 className="font-display text-base font-semibold text-stone-900">{bankName(account) || "Unnamed bank account"}</h4>
-          <p className="mt-0.5 text-xs text-stone-500">{account.bank_name || "Bank"} {account.sort_code || account.account_number ? `- ${[account.sort_code, account.account_number].filter(Boolean).join(" / ")}` : ""}</p>
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100">
+            <Landmark className="h-6 w-6" />
+          </span>
+          <div className="min-w-0 pt-0.5">
+            <h4 className="truncate font-display text-base font-bold leading-tight text-stone-950">{bankName(account) || "Unnamed bank account"}</h4>
+            <p className="mt-1 truncate text-xs text-stone-500">{account.bank_name || "Bank"} {account.sort_code || account.account_number ? `- ${[account.sort_code, account.account_number].filter(Boolean).join(" / ")}` : ""}</p>
+            <p className="mt-1.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700">Bank account</p>
+          </div>
         </div>
         <Badge className={statusBadgeClass(account.active === false ? "inactive" : "active")}>{account.active === false ? "Inactive" : "Active"}</Badge>
       </div>
-      <div className="mt-4 grid grid-cols-2 gap-2">
-        <div className="rounded-md bg-emerald-50 px-3 py-2">
-          <div className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">Current balance</div>
-          <div className="mt-1 font-display text-lg font-bold text-emerald-900">{formatMoney(account.current_balance)}</div>
+      <div className="mt-4 grid grid-cols-2 gap-3 border-t border-stone-200 pt-3">
+        <div className="min-w-0">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-stone-500">Current balance</div>
+          <div className="mt-1 truncate font-display text-base font-bold text-emerald-800">{formatMoney(account.current_balance)}</div>
         </div>
-        <div className="rounded-md bg-sky-50 px-3 py-2">
-          <div className="text-[11px] font-semibold uppercase tracking-wide text-sky-700">Reconciled</div>
-          <div className="mt-1 font-display text-lg font-bold text-sky-900">{formatMoney(account.reconciled_balance)}</div>
+        <div className="min-w-0">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-stone-500">Reconciled</div>
+          <div className="mt-1 truncate font-display text-base font-bold text-sky-800">{formatMoney(account.reconciled_balance)}</div>
         </div>
       </div>
-      <div className="mt-3 grid gap-1 text-xs text-stone-500">
+      <div className="mt-auto grid gap-1 border-t border-stone-100 pt-3 text-xs text-stone-500">
         <div className="flex items-center justify-between gap-2"><span>Nominal account</span><span className="font-medium text-stone-700">{bankCode(account) || "-"}</span></div>
         <div className="flex items-center justify-between gap-2"><span>Unreconciled</span><span className="font-medium text-stone-700">{unreconciledCount}</span></div>
         <div className="flex items-center justify-between gap-2"><span>Last statement/import</span><span className="font-medium text-stone-700">{lastImport ? formatDate(lastImport) : "-"}</span></div>
@@ -636,7 +660,7 @@ function BankAccountCard({ account, unreconciledCount, lastImport, onOpen }) {
   );
 }
 
-function ReconciliationTab({ transactions, outstandingTransactions, totalRows, totalPages, page, pageSize, loading, error, onPageChange, onPageSizeChange, bankAccounts, selectedBankId, postingAccounts, vatCodes, matchSuggestion, reconcileToAccount, reconcileSplitToAccounts, ignoreTransaction, sendToClientOutstandingItems, bulkAction, saving }) {
+function ReconciliationTab({ transactions, outstandingTransactions, totalRows, totalPages, page, pageSize, loading, error, onPageChange, onPageSizeChange, bankAccounts, selectedBankId, postingAccounts, vatCodes, vatStatus, suppliers, customers, matchSuggestion, createSupplierOrCustomerTransaction, reconcileToAccount, reconcileSplitToAccounts, ignoreTransaction, sendToClientOutstandingItems, bulkAction, saving }) {
   const [expanded, setExpanded] = useState(null);
   const [selectedIds, setSelectedIds] = useState([]);
   const [bulkMessage, setBulkMessage] = useState("");
@@ -747,11 +771,15 @@ function ReconciliationTab({ transactions, outstandingTransactions, totalRows, t
                           action={expanded.action}
                           transaction={transaction}
                           outstandingRows={rows}
+                          suppliers={suppliers}
+                          customers={customers}
                           bankAccounts={bankAccounts}
                           selectedBankId={selectedBankId}
                           postingAccounts={postingAccounts}
-                          vatCodes={vatCodes}
+                          vatCodes={vatActiveForDate(vatStatus, transactionDate(transaction)) ? vatCodes : vatCodes.filter((option) => String(option.value).toUpperCase() === "NO VAT")}
+                          outsideVatPeriod={!vatActiveForDate(vatStatus, transactionDate(transaction))}
                           matchSuggestion={matchSuggestion}
+                          createSupplierOrCustomerTransaction={createSupplierOrCustomerTransaction}
                           reconcileToAccount={reconcileToAccount}
                           reconcileSplitToAccounts={reconcileSplitToAccounts}
                           ignoreTransaction={ignoreTransaction}
@@ -783,10 +811,10 @@ function ReconciliationTab({ transactions, outstandingTransactions, totalRows, t
   );
 }
 
-function ReconciliationInlineWorkflow({ action, transaction, outstandingRows, bankAccounts, selectedBankId, postingAccounts, vatCodes, matchSuggestion, reconcileToAccount, reconcileSplitToAccounts, ignoreTransaction, sendToClientOutstandingItems, saving }) {
+function ReconciliationInlineWorkflow({ action, transaction, outstandingRows, suppliers, customers, bankAccounts, selectedBankId, postingAccounts, vatCodes, outsideVatPeriod, matchSuggestion, createSupplierOrCustomerTransaction, reconcileToAccount, reconcileSplitToAccounts, ignoreTransaction, sendToClientOutstandingItems, saving }) {
   if (action === "match") return <MatchWorkflow transaction={transaction} rows={outstandingRows} matchSuggestion={matchSuggestion} saving={saving} />;
-  if (action === "contact") return <SupplierCustomerWorkflow transaction={transaction} rows={outstandingRows} postingAccounts={postingAccounts} vatCodes={vatCodes} saving={saving} />;
-  if (action === "direct") return <DirectNominalWorkflow transaction={transaction} postingAccounts={postingAccounts} vatCodes={vatCodes} reconcileToAccount={reconcileToAccount} reconcileSplitToAccounts={reconcileSplitToAccounts} saving={saving} />;
+  if (action === "contact") return <SupplierCustomerWorkflow transaction={transaction} suppliers={suppliers} customers={customers} postingAccounts={postingAccounts} vatCodes={vatCodes} outsideVatPeriod={outsideVatPeriod} createSupplierOrCustomerTransaction={createSupplierOrCustomerTransaction} saving={saving} />;
+  if (action === "direct") return <DirectNominalWorkflow transaction={transaction} postingAccounts={postingAccounts} vatCodes={vatCodes} outsideVatPeriod={outsideVatPeriod} reconcileToAccount={reconcileToAccount} reconcileSplitToAccounts={reconcileSplitToAccounts} saving={saving} />;
   if (action === "transfer") return <TransferWorkflow transaction={transaction} bankAccounts={bankAccounts} selectedBankId={selectedBankId} />;
   if (action === "send") return <SendClientWorkflow transaction={transaction} sendToClientOutstandingItems={sendToClientOutstandingItems} saving={saving} />;
   if (action === "exclude") return <ExcludeWorkflow transaction={transaction} ignoreTransaction={ignoreTransaction} saving={saving} />;
@@ -870,57 +898,73 @@ function MatchWorkflow({ transaction, rows, matchSuggestion, saving }) {
   );
 }
 
-function SupplierCustomerWorkflow({ transaction, rows, postingAccounts, vatCodes, saving }) {
+function SupplierCustomerWorkflow({ transaction, suppliers, customers, postingAccounts, vatCodes, outsideVatPeriod, createSupplierOrCustomerTransaction, saving }) {
   const moneyIn = Number(transaction.money_in || 0) > 0;
-  const [contact, setContact] = useState(transaction.suggested_contact_name || transaction.customer_name || transaction.supplier_name || "");
+  const contactOptions = moneyIn ? customers : suppliers;
+  const [contactId, setContactId] = useState(transaction.customer_id || transaction.supplier_id || "");
   const [description, setDescription] = useState(transaction.description || "");
   const [amount, setAmount] = useState(Math.abs(transactionAmount(transaction)));
   const [vatCode, setVatCode] = useState(transaction.suggested_vat_code || "");
   const [vatAmount, setVatAmount] = useState(transaction.suggested_vat_amount || "");
   const [nominalAccount, setNominalAccount] = useState(transaction.suggested_account_code || transaction.nominal_account_code || "");
-  const outstandingLabel = moneyIn ? "Open sales invoices for allocation" : "Open supplier bills for allocation";
-  const endpointMessage = moneyIn
-    ? "Backend endpoint required: create customer receipt from bank reconciliation."
-    : "Backend endpoint required: create supplier expense/payment from bank reconciliation.";
+  useEffect(() => {
+    if (outsideVatPeriod) {
+      setVatCode("NO VAT");
+      setVatAmount("0.00");
+    }
+  }, [outsideVatPeriod]);
+  const gross = Number(amount || 0);
+  const vat = Number(vatAmount || 0);
+  const canSubmit = Boolean(contactId) && gross > 0 && (moneyIn || (nominalAccount && vatCodes.length));
+
+  function submit() {
+    const payload = {
+      description,
+      reference: transaction.reference || description,
+      gross_amount: gross,
+      amount: gross,
+      net_amount: gross - vat,
+      vat_amount: vat,
+      vat_code: canonicalVatCodeValue(vatCode, vatCodes),
+      nominal_account_code: nominalAccount,
+      allocations: [],
+      ...(moneyIn ? { customer_id: contactId } : { supplier_id: contactId }),
+    };
+    createSupplierOrCustomerTransaction(transaction, payload);
+  }
 
   return (
     <div className="space-y-3 rounded-md border border-stone-200 bg-white p-3">
       <div className="text-sm font-semibold text-stone-900">{moneyIn ? "Customer receipt" : "Supplier expense"}</div>
+      {outsideVatPeriod && !moneyIn ? <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">Outside VAT registration period. NO VAT applied.</p> : null}
       <div className="grid gap-2 md:grid-cols-4">
-        <Field label={moneyIn ? "Customer" : "Supplier"} value={contact} onChange={setContact} />
+        <label className="block">
+          <span className="text-xs font-semibold text-stone-700">{moneyIn ? "Customer" : "Supplier"}</span>
+          <select value={contactId} onChange={(event) => setContactId(event.target.value)} className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm">
+            <option value="">Select {moneyIn ? "customer" : "supplier"}</option>
+            {contactOptions.map((contact) => {
+              const id = contact.id || contact.customer_id || contact.supplier_id;
+              const code = contact.customer_code || contact.supplier_code || contact.account_code || "";
+              const name = contact.name || contact.business_name || contact.trading_name || "";
+              return <option key={id} value={id}>{[code, name].filter(Boolean).join(" - ")}</option>;
+            })}
+          </select>
+        </label>
         <Field label={moneyIn ? "Description/reference" : "Description"} value={description} onChange={setDescription} />
         <Field label="Amount" value={amount} onChange={setAmount} />
         {!moneyIn ? <AccountCodeSelect label="Nominal account" accounts={postingAccounts} value={nominalAccount} onChange={setNominalAccount} /> : null}
         {!moneyIn ? <VatCodeSelect label="VAT code" value={vatCode} options={vatCodes} onChange={setVatCode} /> : null}
         {!moneyIn ? <Field label="VAT amount" value={vatAmount} onChange={setVatAmount} /> : null}
       </div>
-      <div className="rounded-md border border-stone-200 p-3">
-        <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-stone-500">{outstandingLabel}</div>
-        {rows.length ? (
-          <div className="max-h-40 overflow-auto">
-            {rows.slice(0, 5).map((row) => (
-              <div key={row.id || row.reference} className="flex items-center justify-between gap-3 border-t border-stone-100 py-2 first:border-t-0">
-                <div className="text-sm">
-                  <div className="font-medium text-stone-900">{accountTransactionContact(row) || accountTransactionType(row) || "-"}</div>
-                  <div className="text-xs text-stone-500">{row.reference || row.document_number || row.invoice_number || "-"}</div>
-                </div>
-                <div className="text-sm font-semibold text-stone-900">{accountTransactionOutstanding(row) !== "" ? formatMoney(accountTransactionOutstanding(row)) : formatMoney(accountTransactionAmount(row))}</div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="text-sm text-stone-500">No open allocation rows available from the backend.</p>
-        )}
-      </div>
       <div className="flex flex-wrap items-center gap-2">
-        <Button type="button" disabled={saving} variant="outline">{moneyIn ? "Confirm customer receipt" : "Confirm supplier expense/payment"}</Button>
-        <InlineBackendMessage message={endpointMessage} />
+        <Button type="button" disabled={saving || !canSubmit} onClick={submit} style={{ background: "var(--brand)" }}>{moneyIn ? "Confirm customer receipt on account" : "Confirm supplier expense/payment"}</Button>
+        <span className="text-xs text-stone-500">{moneyIn ? "Creates an unallocated customer receipt. Use Match to allocate an existing invoice." : "Creates the supplier expense and allocates the bank payment to that new expense. Use Match for existing bills."}</span>
       </div>
     </div>
   );
 }
 
-function DirectNominalWorkflow({ transaction, postingAccounts, vatCodes, reconcileToAccount, reconcileSplitToAccounts, saving }) {
+function DirectNominalWorkflow({ transaction, postingAccounts, vatCodes, outsideVatPeriod, reconcileToAccount, reconcileSplitToAccounts, saving }) {
   const moneyIn = Number(transaction.money_in || 0) > 0;
   const [accountCode, setAccountCode] = useState(transaction.suggested_account_code || transaction.nominal_account_code || "");
   const [description, setDescription] = useState(transaction.description || "");
@@ -928,6 +972,11 @@ function DirectNominalWorkflow({ transaction, postingAccounts, vatCodes, reconci
   const [amount, setAmount] = useState(Math.abs(transactionAmount(transaction)));
   const [splitMode, setSplitMode] = useState(false);
   const [splitLines, setSplitLines] = useState([{ account_code: "", description: transaction.description || "", amount: Math.abs(transactionAmount(transaction)), vat_code: "", vat_amount: "" }]);
+  useEffect(() => {
+    if (!outsideVatPeriod) return;
+    setVatCode("NO VAT");
+    setSplitLines((current) => current.map((line) => ({ ...line, vat_code: "NO VAT", vat_amount: "0.00" })));
+  }, [outsideVatPeriod]);
   const bankAmount = Math.abs(transactionAmount(transaction));
   const splitTotal = splitLines.reduce((total, line) => total + Number(line.amount || 0), 0);
   const splitBalanced = Math.abs(splitTotal - bankAmount) < 0.01;
@@ -945,6 +994,7 @@ function DirectNominalWorkflow({ transaction, postingAccounts, vatCodes, reconci
 
   return (
     <div className="space-y-3">
+      {outsideVatPeriod ? <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">Outside VAT registration period. NO VAT applied.</p> : null}
       <label className="flex items-center gap-2 text-sm font-semibold text-stone-700"><input type="checkbox" checked={splitMode} onChange={(event) => setSplitMode(event.target.checked)} /> Split transaction</label>
       {!splitMode ? (
         <div className="grid gap-2 md:grid-cols-4">

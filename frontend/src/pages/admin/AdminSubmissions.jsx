@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { AlertTriangle, Archive, ArrowLeft, CheckCircle2, Download, FileText, Inbox, RotateCcw, Search, Sparkles, Trash2, Wand2 } from "lucide-react";
+import { AlertTriangle, Archive, ArrowLeft, Building2, CheckCircle2, Download, FileText, Inbox, RotateCcw, Search, Sparkles, Trash2, Wand2 } from "lucide-react";
 import { toast } from "sonner";
 import { DEFAULT_PAGE_SIZE, PaginationFooter, normalisePageSize, pageSlice } from "./accountancy-software/shared";
 
@@ -88,6 +88,7 @@ export default function AdminSubmissions() {
   const previewUrl = previewObjectUrl;
   const selectedDocumentFlow = submittedDocumentFlow(selected);
   const selectedKnownDocumentFlow = !isCompletedSubmission(selected) && (selectedDocumentFlow === "sales" || selectedDocumentFlow === "purchase") ? selectedDocumentFlow : "";
+  const selectedCompleted = isCompletedSubmission(selected);
   const listDocumentType = tab === "sales" || tab === "purchase" ? tab : "";
   const activeCodingContext = submissionCodingContext || clientCodingContext || emptyCodingContext;
   const codingOptions = useMemo(() => buildCodingContextOptions(activeCodingContext), [activeCodingContext]);
@@ -135,6 +136,20 @@ export default function AdminSubmissions() {
     setDraft(makeDraft(selected));
     setActiveField(submittedDocumentFlow(selected) === "sales" ? "customer_name" : "vendor_name");
   }, [selected]);
+
+  useEffect(() => {
+    if (!selectedId || selectedKnownDocumentFlow !== "sales" || selectedCompleted) return undefined;
+    let cancelled = false;
+    api.get(`/admin/submissions/${selectedId}/sales-invoice-review`)
+      .then(({ data }) => {
+        if (cancelled) return;
+        const hydrated = { ...(data?.submission || {}), coding_fields: data?.review || data?.submission?.coding_fields };
+        setDraft(makeDraft(hydrated));
+        setSubmissions((current) => current.map((row) => row.id === selectedId ? { ...row, ...(data?.submission || {}), coding_fields: data?.review || row.coding_fields, customer_match: data?.customer_match, duplicate_warning: data?.duplicate_warning } : row));
+      })
+      .catch((error) => { if (!cancelled) toast.error(formatApiError(error)); });
+    return () => { cancelled = true; };
+  }, [selectedCompleted, selectedId, selectedKnownDocumentFlow]);
 
   useEffect(() => {
     let objectUrl = "";
@@ -207,7 +222,7 @@ export default function AdminSubmissions() {
     try {
       const { data } = await api.patch(`/admin/submissions/${selected.id}/review-status`, { review_status: reviewStatus, coding_fields: codingFields });
       if (isPublishStatus && isSalesInvoice) {
-        const arPublish = data?.accounts_receivable_publish || data?.accounts_receivable_invoice || data?.ar_sales_invoice;
+        const arPublish = data?.accounting_publish || data?.accounts_receivable_publish || data?.accounts_receivable_invoice || data?.ar_sales_invoice || data?.invoice;
         if (arPublish) {
           setDraft((current) => ({
             ...current,
@@ -240,6 +255,26 @@ export default function AdminSubmissions() {
     }
   }
 
+  async function moveSelectedRoute(targetRoute) {
+    if (!selected) return;
+    const label = targetRoute === "sales" ? "Sales / Accounts Receivable" : "Purchase / Accounts Payable";
+    if (!window.confirm(`Move this document to ${label}? Incompatible supplier/customer matching will be cleared, but the original file and extracted content will be preserved.`)) return;
+    setBusy(true);
+    try {
+      const { data } = await api.post(`/admin/submissions/${selected.id}/move-route`, { route: targetRoute });
+      const updated = data?.submission || {};
+      setSubmissions((current) => current.map((row) => row.id === selected.id ? { ...row, ...updated } : row));
+      setSubmissionCodingContext(data?.coding_context || null);
+      setDraft(makeDraft(updated));
+      setActiveField(targetRoute === "sales" ? "customer_name" : "vendor_name");
+      toast.success(`Moved to ${label}`);
+    } catch (e) {
+      toast.error(formatApiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function prefillSelected() {
     if (!selected) return;
     setBusy(true);
@@ -248,7 +283,7 @@ export default function AdminSubmissions() {
       const fields = data?.ai_extracted_fields || data?.ai_review?.coding_fields || {};
       const updated = { ...selected, ai_extracted_fields: fields, coding_fields: null, ai_review_status: data?.ai_review?.status || selected.ai_review_status };
       setSubmissions((current) => current.map((row) => (row.id === selected.id ? { ...row, ...updated } : row)));
-      setDraft(makeDraft(updated));
+      setDraft((current) => mergeAiPrefillIntoDraft(current, makeDraft(updated)));
       toast.success("AI fields populated");
     } catch (e) {
       toast.error(formatApiError(e));
@@ -468,6 +503,7 @@ export default function AdminSubmissions() {
           prefillSelected={prefillSelected}
           suggestLinesFromPattern={suggestLinesFromPattern}
           moveSelected={moveSelected}
+          moveSelectedRoute={moveSelectedRoute}
           createSupplierFromDraft={createSupplierFromDraft}
           createCustomerFromDraft={createCustomerFromDraft}
           codingContext={activeCodingContext}
@@ -502,18 +538,24 @@ function ClientsLayer({ clients, counts, q, setQ, openClient }) {
           {clients.map((client) => {
             const count = counts[client._id] || { active: 0, purchase: 0, sales: 0, archived: 0 };
             return (
-              <div key={client._id} className="rounded-md border border-stone-200 bg-white p-4 shadow-sm">
+              <div key={client._id} className="flex min-h-[250px] flex-col rounded-xl border border-stone-200 bg-white p-4 shadow-[0_3px_12px_rgba(28,25,23,0.07)]">
                 <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="truncate font-display text-base font-semibold text-stone-900">{client.business_name}</div>
-                    <div className="text-sm text-stone-500">{client.first_name} {client.last_name}</div>
+                  <div className="flex min-w-0 items-start gap-3">
+                    <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100">
+                      <Building2 className="h-6 w-6" />
+                    </span>
+                    <div className="min-w-0 pt-0.5">
+                      <div className="truncate font-display text-base font-bold text-stone-950">{client.business_name}</div>
+                      <div className="mt-1 truncate text-xs text-stone-500">{client.first_name} {client.last_name}</div>
+                      <div className="mt-1.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700">Submitted items</div>
+                    </div>
                   </div>
                   <Badge variant={client.status === "active" ? "default" : "secondary"} className={client.status === "active" ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-100" : ""}>
                     {client.status}
                   </Badge>
                 </div>
 
-                <div className="mt-4 grid grid-cols-2 gap-2">
+                <div className="mt-4 grid flex-1 grid-cols-2 gap-2 border-t border-stone-200 pt-3">
                   <button
                     type="button"
                     onClick={() => openClient(client, "active")}
@@ -721,6 +763,7 @@ function DetailLayer({
   prefillSelected,
   suggestLinesFromPattern,
   moveSelected,
+  moveSelectedRoute,
   createSupplierFromDraft,
   createCustomerFromDraft,
   codingContext,
@@ -735,6 +778,7 @@ function DetailLayer({
     );
   }
   const flow = submittedDocumentFlow(row);
+  const routingWarning = row?.coding_fields?.routing_warning || row?.ai_extracted_fields?.routing_warning || "";
   if (isCompletedSubmission(row)) {
     return (
       <ArchivedDetailLayer
@@ -774,6 +818,7 @@ function DetailLayer({
         prefillSelected={prefillSelected}
         suggestLinesFromPattern={suggestLinesFromPattern}
         moveSelected={moveSelected}
+        moveSelectedRoute={moveSelectedRoute}
         createCustomerFromDraft={createCustomerFromDraft}
         codingContext={codingContext}
         codingOptions={codingOptions}
@@ -783,6 +828,7 @@ function DetailLayer({
   }
   return (
     <div className="flex h-[calc(100vh-1.5rem)] min-h-[660px] flex-col overflow-hidden">
+      {routingWarning ? <div className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900"><AlertTriangle className="mr-2 inline h-4 w-4" />{routingWarning}</div> : null}
       <header className="mb-2 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex min-w-0 items-center gap-3">
           <Button type="button" variant="outline" onClick={backToList} className="h-8 gap-2 px-3">
@@ -795,6 +841,9 @@ function DetailLayer({
           <CodingSourceBadge context={codingContext} />
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button type="button" variant="outline" onClick={() => moveSelectedRoute("sales")} disabled={busy} className="h-8 gap-2 px-3">
+            Move to Sales
+          </Button>
           <Button type="button" variant="outline" onClick={prefillSelected} disabled={busy} className="h-8 gap-2 px-3">
             <Sparkles className="h-4 w-4" /> AI prefill
           </Button>
@@ -1030,12 +1079,14 @@ function SalesInvoiceDetailLayer({
   prefillSelected,
   suggestLinesFromPattern,
   moveSelected,
+  moveSelectedRoute,
   createCustomerFromDraft,
   codingContext,
   codingOptions,
   busy,
 }) {
   const [confirmPublish, setConfirmPublish] = useState(false);
+  const routingWarning = row?.coding_fields?.routing_warning || row?.ai_extracted_fields?.routing_warning || "";
   const publishProblems = salesReviewProblems(draft, codingOptions);
   const publishSalesInvoice = async () => {
     if (publishProblems.length) {
@@ -1051,6 +1102,7 @@ function SalesInvoiceDetailLayer({
 
   return (
     <div className="flex h-[calc(100vh-1.5rem)] min-h-[660px] flex-col overflow-hidden">
+      {routingWarning ? <div className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900"><AlertTriangle className="mr-2 inline h-4 w-4" />{routingWarning}</div> : null}
       <header className="mb-2 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex min-w-0 items-center gap-3">
           <Button type="button" variant="outline" onClick={backToList} className="h-8 gap-2 px-3">
@@ -1068,6 +1120,9 @@ function SalesInvoiceDetailLayer({
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button type="button" variant="outline" onClick={() => moveSelectedRoute("purchase")} disabled={busy} className="h-8 gap-2 px-3">
+            Move to Purchase
+          </Button>
           <Button type="button" variant="outline" onClick={prefillSelected} disabled={busy} className="h-8 gap-2 px-3">
             <Sparkles className="h-4 w-4" /> AI prefill
           </Button>
@@ -1151,7 +1206,11 @@ function SalesInvoiceDetailLayer({
 
 function SalesInvoiceReviewForm({ row, draft, setDraft, activeField, setActiveField, suggestLinesFromPattern, createCustomerFromDraft, codingOptions, codingContext, busy }) {
   const [patternLineIndex, setPatternLineIndex] = useState(0);
-  const options = codingOptions || {};
+  const vatActive = submittedItemVatActiveForDate(codingContext, draft.invoice_date || draft.date);
+  const options = {
+    ...(codingOptions || {}),
+    vatOptions: vatActive ? (codingOptions?.vatOptions || []) : (codingOptions?.vatOptions || []).filter((option) => String(option.value || "").toUpperCase() === "NO VAT"),
+  };
   const salesNominalOptions = options.salesAccountOptions?.length ? options.salesAccountOptions : options.categoryOptions || [];
   const hasVatOptions = (options.vatOptions || []).length > 0;
   const nativeContext = codingContext?.source === "epos_native";
@@ -1164,8 +1223,14 @@ function SalesInvoiceReviewForm({ row, draft, setDraft, activeField, setActiveFi
   const duplicateWarning = salesDuplicateWarning(row, draft);
   const set = (key, value) => setDraftValue(key, value, setDraft);
   const setDate = (value) => {
-    setDraft((current) => ({ ...current, invoice_date: value, date: value }));
+    setDraft((current) => {
+      const next = { ...current, invoice_date: value, date: value };
+      return submittedItemVatActiveForDate(codingContext, value) ? next : normalizeSubmittedItemOutsideVatPeriod(next);
+    });
   };
+  useEffect(() => {
+    if (!vatActive) setDraft((current) => normalizeSubmittedItemOutsideVatPeriod(current));
+  }, [vatActive, setDraft]);
   const setLine = (index, key, value) => {
     setDraft((current) => ({
       ...current,
@@ -1251,7 +1316,7 @@ function SalesInvoiceReviewForm({ row, draft, setDraft, activeField, setActiveFi
             )}
           </div>
           {salesNominalOptions.length ? (
-            <SelectOptionField id="sales_nominal" label="Sales nominal / category" value={draft.sales_nominal || draft.category} options={salesNominalOptions} onChange={(v) => setDraft((current) => ({ ...current, sales_nominal: v, category: v }))} activeField={activeField} setActiveField={setActiveField} placeholder="Select sales nominal" />
+            <SelectOptionField id="sales_nominal" label="Sales nominal / category" value={draft.sales_nominal || draft.category} options={salesNominalOptions} onChange={(v) => setDraft((current) => ({ ...current, sales_nominal: v, category: v }))} activeField={activeField} setActiveField={setActiveField} placeholder="Select sales nominal" displayOptionLabel={nativeContext} />
           ) : (
             <DatalistField id="sales_nominal" label="Sales nominal / category" value={draft.sales_nominal || draft.category} options={salesNominalOptions} onChange={(v) => setDraft((current) => ({ ...current, sales_nominal: v, category: v }))} activeField={activeField} setActiveField={setActiveField} />
           )}
@@ -1267,6 +1332,7 @@ function SalesInvoiceReviewForm({ row, draft, setDraft, activeField, setActiveFi
         </div>
 
         <div className="mt-2 grid gap-2 border-t border-stone-200 pt-2 lg:grid-cols-4">
+          {!vatActive ? <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800 lg:col-span-4">Outside VAT registration period. NO VAT applied.</p> : null}
           <TextField id="net" label="Net" value={draft.net} onChange={(v) => set("net", v)} activeField={activeField} setActiveField={setActiveField} />
           <TextField id="vat" label="VAT" value={draft.vat} onChange={(v) => set("vat", v)} activeField={activeField} setActiveField={setActiveField} />
           <TextField id="total" label="Total" value={draft.total} onChange={(v) => set("total", v)} activeField={activeField} setActiveField={setActiveField} />
@@ -1284,10 +1350,6 @@ function SalesInvoiceReviewForm({ row, draft, setDraft, activeField, setActiveFi
           <div className="mb-1.5 flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
             <div className="font-display text-sm font-semibold text-stone-900">Line Items ({draft.line_items.length})</div>
             <div className="flex flex-wrap gap-2">
-              <select className="h-7 rounded-md border border-stone-200 bg-white px-2 text-xs" value={draft.price_is} onChange={(e) => set("price_is", e.target.value)}>
-                <option>Tax Exclusive</option>
-                <option>Tax Inclusive</option>
-              </select>
               <Button type="button" variant="outline" size="sm" onClick={clearLines} className="h-7 gap-1.5 px-2 text-xs">
                 <RotateCcw className="h-3.5 w-3.5" /> Clear
               </Button>
@@ -1348,6 +1410,7 @@ function SalesInvoiceReviewForm({ row, draft, setDraft, activeField, setActiveFi
                             value={line[key] || ""}
                             options={salesNominalOptions}
                             placeholder="Select nominal"
+                            displayOptionLabel={nativeContext}
                             onChange={(value) => setLine(index, key, value)}
                             onFocus={() => setActiveField(`line_items.${index}.${key}`)}
                             active={activeField === `line_items.${index}.${key}`}
@@ -1449,6 +1512,14 @@ function ReviewSection({ title, children }) {
 }
 
 function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLinesFromPattern, createSupplierFromDraft, codingContext, codingOptions, busy }) {
+  const vatActive = submittedItemVatActiveForDate(codingContext, draft.date || draft.invoice_date);
+  codingOptions = {
+    ...(codingOptions || {}),
+    vatOptions: vatActive ? (codingOptions?.vatOptions || []) : (codingOptions?.vatOptions || []).filter((option) => String(option.value || "").toUpperCase() === "NO VAT"),
+  };
+  useEffect(() => {
+    if (!vatActive) setDraft((current) => normalizeSubmittedItemOutsideVatPeriod(current));
+  }, [vatActive, setDraft]);
   const [patternLineIndex, setPatternLineIndex] = useState(0);
   const options = codingOptions || {};
   const nativeContext = codingContext?.source === "epos_native";
@@ -1531,12 +1602,12 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
             )}
           </div>
           {hasCategoryOptions ? (
-            <SelectOptionField id="category" label="Purchase nominal" value={draft.category} options={options.categoryOptions} onChange={(v) => set("category", v)} activeField={activeField} setActiveField={setActiveField} placeholder="Select purchase nominal" />
+            <SelectOptionField id="category" label="Purchase nominal" value={draft.category} options={options.categoryOptions} onChange={(v) => set("category", v)} activeField={activeField} setActiveField={setActiveField} placeholder="Select purchase nominal" displayOptionLabel={nativeContext} />
           ) : (
             <DatalistField id="category" label="Category" value={draft.category} options={options.categoryOptions} onChange={(v) => set("category", v)} activeField={activeField} setActiveField={setActiveField} />
           )}
           <TextField id="reference" label="Reference" value={draft.reference} onChange={(v) => set("reference", v)} activeField={activeField} setActiveField={setActiveField} />
-          <TextField id="date" label="Date" value={draft.date} onChange={(v) => set("date", v)} activeField={activeField} setActiveField={setActiveField} />
+          <TextField id="date" label="Date" value={draft.date} onChange={(value) => setDraft((current) => submittedItemVatActiveForDate(codingContext, value) ? { ...current, date: value } : normalizeSubmittedItemOutsideVatPeriod({ ...current, date: value }))} activeField={activeField} setActiveField={setActiveField} />
           <TextField id="due_date" label="Due Date" value={draft.due_date} onChange={(v) => set("due_date", v)} activeField={activeField} setActiveField={setActiveField} />
           <TextField id="payment_method" label="Payment Method" value={draft.payment_method} onChange={(v) => set("payment_method", v)} activeField={activeField} setActiveField={setActiveField} />
           <TextField id="currency" label="Currency" value={draft.currency} onChange={(v) => set("currency", v)} activeField={activeField} setActiveField={setActiveField} />
@@ -1547,6 +1618,7 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
         </div>
 
         <div className="mt-2 grid gap-2 border-t border-stone-200 pt-2 lg:grid-cols-4">
+          {!vatActive ? <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800 lg:col-span-4">Outside VAT registration period. NO VAT applied.</p> : null}
           <TextField id="net" label="Net" value={draft.net} onChange={(v) => set("net", v)} activeField={activeField} setActiveField={setActiveField} />
           <TextField id="vat" label="VAT" value={draft.vat} onChange={(v) => set("vat", v)} activeField={activeField} setActiveField={setActiveField} />
           <TextField id="total" label="Total" value={draft.total} onChange={(v) => set("total", v)} activeField={activeField} setActiveField={setActiveField} />
@@ -1558,23 +1630,29 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
               <p className="mt-1 text-xs text-amber-700">VAT code list unavailable. Free text is enabled until VAT codes are returned.</p>
             </div>
           )}
-          <label className="flex h-8 items-center gap-2 text-sm font-medium text-stone-700">
-            <input type="checkbox" checked={draft.mark_as_paid} onChange={(e) => set("mark_as_paid", e.target.checked)} />
-            Mark as Paid
-          </label>
-          {draft.mark_as_paid && (
-            <DatalistField id="bank_account" label="Bank account" value={draft.bank_account} options={options.bankAccountOptions} onChange={(v) => set("bank_account", v)} activeField={activeField} setActiveField={setActiveField} />
-          )}
+          {!nativeContext ? (
+            <>
+              <label className="flex h-8 items-center gap-2 text-sm font-medium text-stone-700">
+                <input type="checkbox" checked={draft.mark_as_paid} onChange={(e) => set("mark_as_paid", e.target.checked)} />
+                Mark as Paid
+              </label>
+              {draft.mark_as_paid && (
+                <DatalistField id="bank_account" label="Bank account" value={draft.bank_account} options={options.bankAccountOptions} onChange={(v) => set("bank_account", v)} activeField={activeField} setActiveField={setActiveField} />
+              )}
+            </>
+          ) : null}
         </div>
 
         <div className="mt-2 border-t border-stone-200 pt-2">
           <div className="mb-1.5 flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
             <div className="font-display text-sm font-semibold text-stone-900">Line Items ({draft.line_items.length})</div>
             <div className="flex flex-wrap gap-2">
-              <select className="h-7 rounded-md border border-stone-200 bg-white px-2 text-xs" value={draft.price_is} onChange={(e) => set("price_is", e.target.value)}>
-                <option>Tax Exclusive</option>
-                <option>Tax Inclusive</option>
-              </select>
+              {!nativeContext ? (
+                <select className="h-7 rounded-md border border-stone-200 bg-white px-2 text-xs" value={draft.price_is} onChange={(e) => set("price_is", e.target.value)}>
+                  <option>Tax Exclusive</option>
+                  <option>Tax Inclusive</option>
+                </select>
+              ) : null}
               <Button type="button" variant="outline" size="sm" onClick={clearLines} className="h-7 gap-1.5 px-2 text-xs">
                 <RotateCcw className="h-3.5 w-3.5" /> Clear
               </Button>
@@ -1626,6 +1704,7 @@ function ReviewForm({ draft, setDraft, activeField, setActiveField, suggestLines
                             value={line[key] || ""}
                             options={options.categoryOptions}
                             placeholder="Select category"
+                            displayOptionLabel={nativeContext}
                             onChange={(value) => setLine(index, key, value)}
                             onFocus={() => setActiveField(`line_items.${index}.${key}`)}
                             active={activeField === `line_items.${index}.${key}`}
@@ -1759,9 +1838,26 @@ function DatalistField({ id, label, value, options = [], onChange, activeField, 
   );
 }
 
-function SelectOptionField({ id, label, value, options = [], onChange, activeField, setActiveField, placeholder = "Select" }) {
+function SelectOptionField({ id, label, value, options = [], onChange, activeField, setActiveField, placeholder = "Select", displayOptionLabel = false }) {
   const active = activeField === id;
   const listId = `${id}-search-options`;
+  const canonicalValue = canonicalOptionValue(value, options);
+  if (displayOptionLabel) {
+    return (
+      <div>
+        <Label className="text-xs font-semibold text-stone-700">{label}</Label>
+        <select
+          value={canonicalValue}
+          onChange={(e) => onChange(e.target.value)}
+          onFocus={() => setActiveField(id)}
+          className={`mt-0.5 h-8 w-full rounded-md border border-stone-200 bg-white px-2 text-sm ${active ? "border-emerald-500 ring-2 ring-emerald-100" : ""}`}
+        >
+          <option value="">{placeholder}</option>
+          {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+      </div>
+    );
+  }
   return (
     <div>
       <Label className="text-xs font-semibold text-stone-700">{label}</Label>
@@ -1778,8 +1874,22 @@ function SelectOptionField({ id, label, value, options = [], onChange, activeFie
   );
 }
 
-function LineSelect({ value, options = [], placeholder = "Select", onChange, onFocus, active }) {
+function LineSelect({ value, options = [], placeholder = "Select", onChange, onFocus, active, displayOptionLabel = false }) {
   const listId = `line-${String(placeholder).toLowerCase().replace(/[^a-z0-9]+/g, "-")}-options`;
+  const canonicalValue = canonicalOptionValue(value, options);
+  if (displayOptionLabel) {
+    return (
+      <select
+        value={canonicalValue}
+        onChange={(e) => onChange(e.target.value)}
+        onFocus={onFocus}
+        className={`h-7 min-w-44 rounded-md border border-stone-200 bg-white px-1.5 text-xs ${active ? "border-emerald-500 ring-2 ring-emerald-100" : ""}`}
+      >
+        <option value="">{placeholder}</option>
+        {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select>
+    );
+  }
   return (
     <>
     <Input
@@ -1930,7 +2040,9 @@ function makeDraft(row) {
     customer_match_status: suggested.customer_match_status || suggested.suggested_customer || "",
     create_new_customer: Boolean(suggested.create_new_customer),
     customer_email: suggested.customer_email || suggested.email || "",
-    customer_account_code: suggested.customer_account_code || suggested.customer_reference || suggested.customer_account || "",
+    customer_account_code: suggested.customer_account_code || suggested.customer_code || suggested.customer_reference || suggested.customer_account || "",
+    customer_code: suggested.customer_code || suggested.customer_account_code || suggested.customer_reference || "",
+    sales_nominal: suggested.sales_nominal || suggested.sales_nominal_code || suggested.sales_account_code || suggested.nominal_account_code || suggested.category || "",
     sales_invoice_number: suggested.sales_invoice_number || suggested.invoice_number || suggested.bill_number || "",
     invoice_date: suggested.invoice_date || suggested.date || row?.date || "",
     payment_terms: suggested.payment_terms || suggested.payment_terms_days || "",
@@ -1941,7 +2053,7 @@ function makeDraft(row) {
     line_items: lineItems.map((line) => ({
       description: line.description || "",
       category: line.category || line.nominal_account_code || line.purchase_account_code || "",
-      sales_nominal: line.sales_nominal || line.sales_account || line.sales_account_code || line.nominal_account_code || line.category || "",
+      sales_nominal: line.sales_nominal || line.sales_nominal_code || line.sales_account || line.sales_account_code || line.nominal_account_code || line.category || "",
       vat_code: line.vat_code || "",
       units: line.units || line.quantity || "1",
       quantity: line.quantity || line.units || "1",
@@ -1952,6 +2064,26 @@ function makeDraft(row) {
       total: line.total ?? line.gross ?? line.gross_amount ?? "",
     })),
   });
+}
+
+function mergeAiPrefillIntoDraft(current = {}, extracted = {}) {
+  const merged = { ...current };
+  Object.entries(extracted).forEach(([key, value]) => {
+    if (key === "line_items") return;
+    const existing = current[key];
+    if ((existing === "" || existing === null || existing === undefined) && value !== "" && value !== null && value !== undefined) merged[key] = value;
+  });
+  const currentLines = Array.isArray(current.line_items) ? current.line_items : [];
+  const extractedLines = Array.isArray(extracted.line_items) ? extracted.line_items : [];
+  merged.line_items = extractedLines.map((line, index) => {
+    const existing = currentLines[index] || {};
+    return Object.fromEntries(Object.keys({ ...line, ...existing }).map((key) => {
+      const existingValue = existing[key];
+      return [key, existingValue === "" || existingValue === null || existingValue === undefined ? line[key] ?? "" : existingValue];
+    }));
+  });
+  if (!merged.line_items.length) merged.line_items = currentLines;
+  return reconcileDraftTotals(merged);
 }
 
 function setDraftValue(key, value, setDraft) {
@@ -2000,7 +2132,7 @@ function formatMoney(value) {
 }
 
 function submittedDocumentFlow(row) {
-  const direction = normaliseRouteValue(row?.document_direction || row?.route || row?.destination || row?.coding_fields?.document_direction || row?.coding_fields?.route);
+  const direction = normaliseRouteValue(row?.source_route || row?.document_direction || row?.route || row?.destination || row?.coding_fields?.document_direction || row?.coding_fields?.route);
   if (direction === "sales" || direction === "ar" || direction === "accounts_receivable") return "sales";
   if (direction === "purchase" || direction === "ap" || direction === "accounts_payable") return "purchase";
   const type = normaliseRouteValue(row?.document_type || row?.type || row?.coding_fields?.document_type);
@@ -2046,6 +2178,33 @@ function purchaseReviewReady(draft, codingContext) {
   );
 }
 
+function submittedItemVatActiveForDate(context = {}, rawDate = "") {
+  const date = String(rawDate || "").slice(0, 10);
+  const start = String(context.vat_start_date || "").slice(0, 10);
+  const end = String(context.vat_end_date || "").slice(0, 10);
+  return Boolean(context.vat_client && context.vat_configured && date && start && date >= start && (!end || date <= end));
+}
+
+function normalizeSubmittedItemOutsideVatPeriod(draft = {}) {
+  const alreadyNormalised = draft.vat_code === "NO VAT"
+    && Number(draft.vat || 0) === 0
+    && (draft.line_items || []).every((line) => line.vat_code === "NO VAT" && Number(line.vat || 0) === 0 && String(line.total || "") === String(line.net || line.total || ""));
+  if (alreadyNormalised) return draft;
+  const lines = (draft.line_items || []).map((line) => ({
+    ...line,
+    vat_code: "NO VAT",
+    vat: "0.00",
+    total: line.net || line.total || "",
+  }));
+  return {
+    ...draft,
+    vat_code: "NO VAT",
+    vat: "0.00",
+    total: draft.net || draft.total || "",
+    line_items: lines,
+  };
+}
+
 function salesReviewProblems(draft, codingOptions = {}) {
   const problems = [];
   const hasVatOptions = (codingOptions.vatOptions || []).length > 0;
@@ -2069,7 +2228,7 @@ function salesReviewProblems(draft, codingOptions = {}) {
 function normalisePurchaseReviewDraftForPayload(draft = {}, codingOptions = {}) {
   const accountOptions = codingOptions.categoryOptions || [];
   const vatOptions = codingOptions.vatOptions || [];
-  return {
+  const payload = {
     ...draft,
     category: canonicalOptionValue(draft.category, accountOptions),
     vat_code: canonicalOptionValue(draft.vat_code, vatOptions),
@@ -2079,15 +2238,32 @@ function normalisePurchaseReviewDraftForPayload(draft = {}, codingOptions = {}) 
       vat_code: canonicalOptionValue(line.vat_code, vatOptions),
     })),
   };
+  if (codingOptions.isNative) {
+    delete payload.price_is;
+    delete payload.tax_mode;
+    delete payload.tax_basis;
+    delete payload.tax_inclusive;
+    delete payload.mark_as_paid;
+    delete payload.bank_account;
+  }
+  return payload;
 }
 
 function normaliseSalesReviewDraftForPayload(draft = {}, codingOptions = {}) {
   const vatOptions = codingOptions.vatOptions || [];
   const salesOptions = codingOptions.salesAccountOptions?.length ? codingOptions.salesAccountOptions : codingOptions.categoryOptions || [];
   const salesNominal = canonicalOptionValue(draft.sales_nominal || draft.category, salesOptions);
-  return {
+  const payload = {
     ...draft,
+    document_direction: "sales",
+    customer_code: draft.customer_code || draft.customer_account_code || "",
+    invoice_number: draft.sales_invoice_number || draft.reference || "",
+    net_amount: draft.net,
+    vat_amount: draft.vat,
+    gross_amount: draft.total,
     sales_nominal: salesNominal,
+    sales_nominal_code: salesNominal,
+    sales_account_code: salesNominal,
     category: salesNominal,
     vat_code: canonicalOptionValue(draft.vat_code, vatOptions),
     line_items: (draft.line_items || []).map((line) => {
@@ -2095,11 +2271,24 @@ function normaliseSalesReviewDraftForPayload(draft = {}, codingOptions = {}) {
       return {
         ...line,
         sales_nominal: lineSalesNominal,
+        sales_nominal_code: lineSalesNominal,
+        sales_account_code: lineSalesNominal,
+        nominal_account_code: lineSalesNominal,
+        net_amount: line.net,
+        vat_amount: line.vat,
+        gross_amount: line.total,
         category: lineSalesNominal,
         vat_code: canonicalOptionValue(line.vat_code, vatOptions),
       };
     }),
   };
+  if (codingOptions.isNative) {
+    delete payload.price_is;
+    delete payload.tax_mode;
+    delete payload.tax_basis;
+    delete payload.tax_inclusive;
+  }
+  return payload;
 }
 
 function submittedDocumentTypeLabel(row) {
@@ -2466,6 +2655,7 @@ function buildCodingContextOptions(context = {}) {
     bankAccountOptions,
     vatOptions,
     vatSource: context.source || "",
+    isNative: native,
     defaultCurrency: context.default_currency || context.currency || context.client_currency || "GBP",
   };
 }

@@ -13,18 +13,23 @@ import {
   ReceiptText,
   Save,
   Search,
+  UsersRound,
   WalletCards,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
   AccountCodeSelect,
+  AccountTransactionsAllocationModal,
+  ActionDropdown,
+  AllocationModal,
   BankReportLine,
   DEFAULT_PAGE_SIZE,
   Field,
   Panel,
   PaginationFooter,
   SummaryCard,
+  TransactionAllocationsModal,
   VatCodeSelect,
   canonicalVatCodeValue,
   formatDate,
@@ -33,7 +38,9 @@ import {
   normalisePaginatedResponse,
   normalisePageSize,
   statusBadgeClass,
+  usePersistentTableLayout,
   vatCodeOptionsFromWorkspace,
+  vatActiveForDate,
 } from "./shared";
 
 const arTabs = ["Customers", "Create customer", "General Settings"];
@@ -45,9 +52,10 @@ const ledgerColumnDefinitions = [
   { key: "reference", label: "Reference" },
   { key: "description", label: "Description" },
   { key: "invoice_value", label: "Invoice value" },
-  { key: "allocated", label: "Paid / allocated" },
-  { key: "balance", label: "Invoice balance" },
+  { key: "allocated", label: "Payment" },
+  { key: "balance", label: "Line balance" },
   { key: "status", label: "Status" },
+  { key: "allocations", label: "Allocations" },
   { key: "attachment", label: "Attachment" },
 ];
 const defaultLedgerColumnWidths = {
@@ -59,8 +67,10 @@ const defaultLedgerColumnWidths = {
   allocated: 160,
   balance: 170,
   status: 170,
+  allocations: 150,
   attachment: 140,
 };
+const AR_LEDGER_LAYOUT_STORAGE_KEY = "epos-native-accounting.ar-ledger-layout.v1";
 const editableStatuses = ["draft", "awaiting approval", "awaiting_approval"];
 const customerNumberingOptions = [
   { value: "manual", label: "Manual" },
@@ -301,8 +311,12 @@ function arAllocatedValue(row = {}) {
   return asNumber(row.paid_allocated);
 }
 
+function arPaymentValue(row = {}) {
+  return asNumber(row.payment_value ?? row.receipt_amount ?? row.payment_amount);
+}
+
 function arInvoiceBalance(row = {}) {
-  return asNumber(row.invoice_balance);
+  return asNumber(row.line_balance ?? row.invoice_balance ?? row.account_balance);
 }
 
 function normaliseArLedgerType(type = "") {
@@ -361,7 +375,7 @@ function emptyTransactionDraft(type, customer, bankAccountCode) {
     net_amount: "",
     vat_amount: "",
     gross_amount: "",
-    bank_account_code: bankAccountCode || "1200",
+    bank_account_code: bankAccountCode || "",
     payment_method: "Bank Transfer",
     allocation_target: isReceipt ? "oldest" : "",
     invoice_id: "",
@@ -394,6 +408,22 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
   const [customerEditMode, setCustomerEditMode] = useState(false);
   const [customerDraft, setCustomerDraft] = useState(normaliseCustomerDraft());
   const [transactionDraft, setTransactionDraft] = useState(null);
+  const transactionDate = transactionDraft?.invoice_date || transactionDraft?.credit_note_date || transactionDraft?.date;
+  const transactionVatActive = !transactionDraft || isReceiptDocument(transactionDraft.type) || vatActiveForDate(workspace, transactionDate);
+  const transactionVatCodes = transactionVatActive ? vatCodes : vatCodes.filter((option) => String(option.value).toUpperCase() === "NO VAT");
+  useEffect(() => {
+    if (!transactionDraft || isReceiptDocument(transactionDraft.type) || transactionVatActive) return;
+    setTransactionDraft((current) => {
+      if (!current || (current.vat_code === "NO VAT" && asNumber(current.vat_amount) === 0 && (current.lines || []).every((line) => line.vat_code === "NO VAT" && asNumber(line.vat_amount) === 0))) return current;
+      return {
+        ...current,
+        vat_code: "NO VAT",
+        vat_amount: "0.00",
+        gross_amount: current.net_amount,
+        lines: (current.lines || []).map((line) => ({ ...line, vat_code: "NO VAT", vat_amount: "0.00", gross_amount: line.net_amount })),
+      };
+    });
+  }, [transactionDraft, transactionVatActive]);
   const [transactionEntryMode, setTransactionEntryMode] = useState("");
   const [transactionEditMode, setTransactionEditMode] = useState(false);
   const [transactionErrors, setTransactionErrors] = useState({});
@@ -415,13 +445,28 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
   const [openLedgerFilter, setOpenLedgerFilter] = useState("");
   const [selectedLedgerKeys, setSelectedLedgerKeys] = useState([]);
   const [columnSelectorOpen, setColumnSelectorOpen] = useState(false);
-  const [visibleLedgerColumns, setVisibleLedgerColumns] = useState(() => ledgerColumnDefinitions.map((column) => column.key));
-  const [ledgerColumnWidths, setLedgerColumnWidths] = useState(defaultLedgerColumnWidths);
+  const {
+    visibleColumns: visibleLedgerColumns,
+    setVisibleColumns: setVisibleLedgerColumns,
+    columnWidths: ledgerColumnWidths,
+    setColumnWidths: setLedgerColumnWidths,
+  } = usePersistentTableLayout(AR_LEDGER_LAYOUT_STORAGE_KEY, ledgerColumnDefinitions, defaultLedgerColumnWidths);
   const [ledgerPage, setLedgerPage] = useState(1);
   const [ledgerPageSize, setLedgerPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [ledgerData, setLedgerData] = useState(() => normalisePaginatedResponse({ rows: [], page_size: DEFAULT_PAGE_SIZE }));
   const [ledgerLoading, setLedgerLoading] = useState(false);
   const [ledgerError, setLedgerError] = useState("");
+  const [allocationRow, setAllocationRow] = useState(null);
+  const [allocationData, setAllocationData] = useState(null);
+  const [allocationLoading, setAllocationLoading] = useState(false);
+  const [allocationSaving, setAllocationSaving] = useState(false);
+  const [allocationError, setAllocationError] = useState("");
+  const [accountAllocationOpen, setAccountAllocationOpen] = useState(false);
+  const [accountAllocationData, setAccountAllocationData] = useState({ credits: [], debits: [], summary: {} });
+  const [accountAllocationLoading, setAccountAllocationLoading] = useState(false);
+  const [accountAllocationSaving, setAccountAllocationSaving] = useState(false);
+  const [accountAllocationError, setAccountAllocationError] = useState("");
+  const [viewAllocationRow, setViewAllocationRow] = useState(null);
   const [auditSearch, setAuditSearch] = useState("");
   const [auditPage, setAuditPage] = useState(1);
   const [auditPageSize, setAuditPageSize] = useState(DEFAULT_PAGE_SIZE);
@@ -597,18 +642,15 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
       description: row.description || row.customer_name || "Customer ledger item",
       status: row.status || "Open",
       debit: row.debit ?? arInvoiceValue(row),
-      credit: row.credit ?? arAllocatedValue(row),
+      credit: row.credit ?? arPaymentValue(row),
       invoice_value: arInvoiceValue(row),
       paid_allocated: arAllocatedValue(row),
+      payment_value: arPaymentValue(row),
       invoice_balance: arInvoiceBalance(row),
       outstanding: asNumber(row.outstanding_amount ?? row.unallocated_amount),
       raw: row,
     }));
-    let runningBalance = 0;
-    return rows.map((row) => {
-      runningBalance += row.debit - row.credit;
-      return { ...row, runningBalance };
-    });
+    return rows;
   }, [ledgerData.rows]);
 
   const selectedLedgerRows = useMemo(() => selectedCustomer ? customerLedgerRows(selectedCustomer.id) : [], [customerLedgerRows, selectedCustomer]);
@@ -650,7 +692,7 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
       const descriptionOk = !descriptionNeedle || String(row.description || "").toLowerCase().includes(descriptionNeedle);
       const attachmentOk = attachmentMode === "All" || (attachmentMode === "Attached" ? hasAttachment(row) : !hasAttachment(row));
       const invoiceValueOk = inRange(arInvoiceValue(row), ledgerInvoiceValueMin, ledgerInvoiceValueMax);
-      const allocatedOk = inRange(arAllocatedValue(row), ledgerAllocatedMin, ledgerAllocatedMax);
+      const allocatedOk = inRange(arPaymentValue(row), ledgerAllocatedMin, ledgerAllocatedMax);
       const balanceOk = inRange(arInvoiceBalance(row), ledgerBalanceMin, ledgerBalanceMax);
       return refOk && descriptionOk && attachmentOk && invoiceValueOk && allocatedOk && balanceOk;
     });
@@ -659,7 +701,7 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
       const key = ledgerSort.key;
       if (key === "date") return (new Date(a.date || 0) - new Date(b.date || 0)) * direction;
       if (key === "invoice_value") return (arInvoiceValue(a) - arInvoiceValue(b)) * direction;
-      if (key === "allocated") return (arAllocatedValue(a) - arAllocatedValue(b)) * direction;
+      if (key === "allocated") return (arPaymentValue(a) - arPaymentValue(b)) * direction;
       if (key === "balance") return (arInvoiceBalance(a) - arInvoiceBalance(b)) * direction;
       if (key === "attachment") return ((hasAttachment(a) ? 1 : 0) - (hasAttachment(b) ? 1 : 0)) * direction;
       return String(a[key] || "").localeCompare(String(b[key] || "")) * direction;
@@ -728,7 +770,7 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
     setTransactionErrors({});
     setTransactionEditMode(false);
     const customer = selectedCustomer || customers.find((item) => item.id === row?.customer_id);
-    const next = emptyTransactionDraft(type || row?.type || "Sales Invoice", customer, bankAccounts[0]?.code);
+    const next = emptyTransactionDraft(type || row?.type || "Sales Invoice", customer, "");
     const raw = row?.raw || row || {};
     const gross = raw.gross_amount || raw.amount || row?.debit || row?.credit || "";
     const draft = {
@@ -780,7 +822,7 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
     if (!transactionDraft?.type) errors.type = "Type is required";
     if (isReceiptDocument(transactionDraft?.type)) {
       if (!transactionDraft.receipt_date) errors.date = "Receipt date is required";
-      if (asNumber(transactionDraft.amount) <= 0) errors.amount = "Receipt amount is required";
+      if (asNumber(transactionDraft.amount) === 0) errors.amount = "Receipt amount must not be zero";
       if (!transactionDraft.bank_account_code) errors.bank = "Bank account is required";
     } else {
       if (!transactionDraft.document_number?.trim()) errors.document_number = "Document number is required";
@@ -832,7 +874,17 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
     setSaving(true);
     setTransactionErrors({});
     try {
-      const { data } = await postJson(`/ar/invoices/${invoice.id}/approve`, {});
+      let response;
+      try {
+        response = await postJson(`/ar/invoices/${invoice.id}/approve`, {});
+      } catch (error) {
+        const detail = error?.response?.data?.detail;
+        if (error?.response?.status !== 409 || detail?.code !== "prior_period_vat_adjustment_confirmation") throw error;
+        const confirmed = window.confirm(`${detail.message}\n\nOriginal period: ${detail.original_period?.label || "closed period"}\nReport in: ${detail.reported_period?.label || "current open period"}\nVAT amount: ${formatMoney(detail.vat_amount)}\n\nThe invoice date will be preserved and no duplicate VAT-control journal will be created.`);
+        if (!confirmed) return;
+        response = await postJson(`/ar/invoices/${invoice.id}/approve`, { confirm_prior_period_vat_adjustment: true });
+      }
+      const { data } = response;
       const detailResponse = data?.detail || data;
       const detail = detailResponse?.invoice || data?.invoice_or_transaction || data?.invoice || detailResponse;
       const detailLines = detailResponse?.lines || data?.lines || detail?.lines || [];
@@ -863,12 +915,152 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
     if (!allocations.length || !window.confirm(`Unallocate ${allocations.length === 1 ? "this allocation" : `all ${allocations.length} allocations`}? The customer receipt will be preserved.`)) return;
     const saved = await run(async () => {
       for (const allocation of allocations) {
+        if (allocation.allocation_kind === "credit_note") {
+          await postJson(`/ar/customers/${selectedCustomerId}/credit-allocations/${allocation.id}/unallocate`, {});
+          continue;
+        }
         const receiptId = allocation.receipt_id || (row.source === "receipt" ? row.id : "");
         if (!receiptId) throw new Error("The allocation is missing its customer receipt reference.");
         await postJson(`/ar/receipts/${receiptId}/allocations/${allocation.id}/unallocate`, {});
       }
     }, "Invoice allocation removed");
     if (saved) await refreshCustomerLedger();
+  }
+
+  async function unallocateLedgerAllocation(allocation) {
+    if (!allocation?.id || !window.confirm(`Unallocate ${formatMoney(allocation.amount)}? The underlying receipt or credit note will remain posted.`)) return;
+    setAllocationSaving(true);
+    setAllocationError("");
+    try {
+      if (allocation.allocation_kind === "credit_note") {
+        await postJson(`/ar/customers/${selectedCustomerId}/credit-allocations/${allocation.id}/unallocate`, {});
+      } else {
+        if (!allocation.receipt_id) throw new Error("The allocation is missing its customer receipt reference.");
+        await postJson(`/ar/receipts/${allocation.receipt_id}/allocations/${allocation.id}/unallocate`, {});
+      }
+      toast.success("Transaction allocation removed");
+      setViewAllocationRow(null);
+      await Promise.all([refreshCustomerLedger(), reloadWorkspace?.()]);
+    } catch (error) {
+      setAllocationError(formatApiError(error));
+    } finally {
+      setAllocationSaving(false);
+    }
+  }
+
+  async function loadArAllocation(receiptId) {
+    setAllocationLoading(true);
+    setAllocationError("");
+    try {
+      const { data } = await api.get(`/admin/accounting/clients/${clientId}/ar/receipts/${receiptId}/allocation-options`);
+      setAllocationData(data || {});
+    } catch (error) {
+      setAllocationError(formatApiError(error));
+    } finally {
+      setAllocationLoading(false);
+    }
+  }
+
+  async function approveCreditNote(creditNote) {
+    setSaving(true);
+    setTransactionErrors({});
+    try {
+      const { data } = await postJson(`/ar/credit-notes/${creditNote.id}/approve`, {});
+      const detailResponse = data?.detail || data;
+      const detail = detailResponse?.credit_note || data?.invoice_or_transaction || data?.credit_note || detailResponse;
+      const detailLines = detailResponse?.lines || data?.lines || detail?.lines || [];
+      setTransactionDraft((current) => current?.id === creditNote.id ? {
+        ...current,
+        ...detail,
+        source: "credit_note",
+        type: "Customer Credit Note",
+        status: "posted",
+        lines: detailLines,
+        audit_trail: detailResponse?.audit_trail || data?.audit_trail || [],
+        ledger_effect: detailResponse?.ledger_effect || data?.ledger_impact,
+      } : current);
+      toast.success("Customer credit note approved and posted");
+      await reloadWorkspace?.();
+      await refreshCustomerLedger();
+    } catch (error) {
+      const message = formatApiError(error);
+      setTransactionErrors((current) => ({ ...current, backend: message }));
+      toast.error(message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function openArAllocation(row) {
+    setAllocationRow(row);
+    setAllocationData(null);
+    loadArAllocation(row.id);
+  }
+
+  async function saveArAllocations(allocations) {
+    if (!allocationRow?.id) return;
+    setAllocationSaving(true);
+    setAllocationError("");
+    try {
+      await postJson(`/ar/receipts/${allocationRow.id}/allocations`, { allocations });
+      toast.success("Customer receipt allocations saved");
+      await Promise.all([loadArAllocation(allocationRow.id), refreshCustomerLedger()]);
+    } catch (error) {
+      setAllocationError(formatApiError(error));
+    } finally {
+      setAllocationSaving(false);
+    }
+  }
+
+  async function unallocateArFromModal(allocation) {
+    if (!allocationRow?.id || !window.confirm(`Unallocate ${formatMoney(allocation.amount)} from ${allocation.invoice_number || "this invoice"}?`)) return;
+    setAllocationSaving(true);
+    setAllocationError("");
+    try {
+      await postJson(`/ar/receipts/${allocationRow.id}/allocations/${allocation.id}/unallocate`, {});
+      toast.success("Customer receipt allocation removed");
+      await Promise.all([loadArAllocation(allocationRow.id), refreshCustomerLedger()]);
+    } catch (error) {
+      setAllocationError(formatApiError(error));
+    } finally {
+      setAllocationSaving(false);
+    }
+  }
+
+  async function loadAccountAllocationWorkspace() {
+    if (!selectedCustomerId) return;
+    setAccountAllocationLoading(true);
+    setAccountAllocationError("");
+    try {
+      const { data } = await api.get(`/admin/accounting/clients/${clientId}/ar/customers/${selectedCustomerId}/allocation-workspace`);
+      setAccountAllocationData(data || { credits: [], debits: [], summary: {} });
+    } catch (error) {
+      setAccountAllocationError(formatApiError(error));
+    } finally {
+      setAccountAllocationLoading(false);
+    }
+  }
+
+  function openAccountAllocation() {
+    setAccountAllocationOpen(true);
+    setAccountAllocationData({ credits: [], debits: [], summary: {} });
+    loadAccountAllocationWorkspace();
+  }
+
+  async function saveAccountAllocation(payload) {
+    if (!selectedCustomerId) return;
+    setAccountAllocationSaving(true);
+    setAccountAllocationError("");
+    try {
+      await postJson(`/ar/customers/${selectedCustomerId}/allocate-transactions`, payload);
+      toast.success("Customer transactions allocated");
+      setAccountAllocationOpen(false);
+      await Promise.all([refreshCustomerLedger(), reloadWorkspace?.()]);
+    } catch (error) {
+      setAccountAllocationError(formatApiError(error));
+    } finally {
+      setAccountAllocationSaving(false);
+    }
   }
 
   async function archiveInvoice(invoice) {
@@ -907,7 +1099,8 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
   async function createReceiptFromDraft(e) {
     e.preventDefault();
     if (!validateTransaction()) return;
-    const allocations = transactionDraft.allocation_target === "selected" && transactionDraft.invoice_id
+    const isRefundReceipt = asNumber(transactionDraft.amount) < 0;
+    const allocations = !isRefundReceipt && transactionDraft.allocation_target === "selected" && transactionDraft.invoice_id
       ? [{ invoice_id: transactionDraft.invoice_id, amount: transactionDraft.amount }]
       : [];
     const payload = {
@@ -918,6 +1111,7 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
       bank_account_code: transactionDraft.bank_account_code,
       amount: transactionDraft.amount,
       allocations,
+      allocation_target: isRefundReceipt ? "on_account" : (transactionDraft.allocation_target || "on_account"),
     };
     const saved = await run(async () => postJson("/ar/receipts", payload), "Customer receipt posted");
     if (saved) {
@@ -1022,12 +1216,6 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
       tabs: customerRecordTabs,
       activeTab: customerRecordTab,
       onTabChange: setCustomerRecordTab,
-      actions: customerRecordTab === "Ledger" ? [
-        { label: "Add sales invoice", onClick: () => openTransaction("Sales Invoice") },
-        { label: "Add customer credit note", onClick: () => openTransaction("Customer Credit Note") },
-        { label: "Add receipt", onClick: () => openTransaction("Receipt") },
-        { label: "Select Columns", icon: false, onClick: () => setColumnSelectorOpen((open) => !open) },
-      ] : [],
     });
     return () => setHeaderContext(null);
     // Header action callbacks intentionally use the current workspace handlers without forcing the header context to churn every render.
@@ -1128,7 +1316,20 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
           ) : null}
 
           {customerRecordTab === "Ledger" ? (
-            <Panel title="Customer ledger">
+            <Panel
+              title="Customer ledger"
+              action={(
+                <ActionDropdown
+                  actions={[
+                    { label: "Add sales invoice", onClick: () => openTransaction("Sales Invoice") },
+                    { label: "Add customer credit note", onClick: () => openTransaction("Customer Credit Note") },
+                    { label: "Add receipt", onClick: () => openTransaction("Receipt") },
+                    { label: "Allocate transactions", onClick: openAccountAllocation },
+                    { label: "Select Columns", onClick: () => setColumnSelectorOpen((open) => !open) },
+                  ]}
+                />
+              )}
+            >
               {columnSelectorOpen ? (
                 <ColumnSelectorPanel
                   columns={ledgerColumnDefinitions}
@@ -1165,7 +1366,10 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
                   setLedgerPage(1);
                 }}
                 onOpen={(row) => openTransaction(row.type, row)}
-                onUnallocate={unallocateArRow}
+                onViewAllocation={(row) => {
+                  setAllocationError("");
+                  setViewAllocationRow(row);
+                }}
                 rowKey={ledgerRowKey}
                 selectedKeys={selectedLedgerKeys}
                 setSelectedKeys={setSelectedLedgerKeys}
@@ -1217,7 +1421,8 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
                     customers={customers}
                     invoices={invoices}
                     incomeAccounts={incomeAccounts}
-                    vatCodes={vatCodes}
+                    vatCodes={transactionVatCodes}
+                    outsideVatPeriod={!transactionVatActive}
                     approvalRequired={Boolean(settingsForm.approval_required)}
                     bankAccounts={bankAccounts}
                     onClose={() => {
@@ -1227,6 +1432,7 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
                     onSave={saveTransactionDraft}
                     onPost={primaryPostAction}
                     onApproveInvoice={approveInvoice}
+                    onApproveCreditNote={approveCreditNote}
                     onPostInvoice={postInvoice}
                     onArchiveInvoice={archiveInvoice}
                     editMode={transactionEditMode}
@@ -1265,7 +1471,8 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
                 customers={customers}
                 invoices={invoices}
                 incomeAccounts={incomeAccounts}
-                vatCodes={vatCodes}
+                vatCodes={transactionVatCodes}
+                outsideVatPeriod={!transactionVatActive}
                 approvalRequired={Boolean(settingsForm.approval_required)}
                 bankAccounts={bankAccounts}
                 onClose={() => {
@@ -1275,6 +1482,7 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
                 onSave={saveTransactionDraft}
                 onPost={primaryPostAction}
                 onApproveInvoice={approveInvoice}
+                onApproveCreditNote={approveCreditNote}
                 onPostInvoice={postInvoice}
                 onArchiveInvoice={archiveInvoice}
                 editMode={transactionEditMode}
@@ -1284,6 +1492,45 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
               />
             </TransactionEntryModal>
           ) : null}
+          <AllocationModal
+            open={Boolean(allocationRow)}
+            title="Customer receipt allocation"
+            accountName={selectedCustomer?.name || allocationRow?.customer_name}
+            source={allocationData?.receipt || {}}
+            sourceLabel="Receipt"
+            invoices={allocationData?.invoices || []}
+            existingAllocations={allocationData?.existing_allocations || []}
+            loading={allocationLoading}
+            saving={allocationSaving}
+            error={allocationError}
+            onClose={() => { if (!allocationSaving) { setAllocationRow(null); setAllocationData(null); setAllocationError(""); } }}
+            onAllocate={saveArAllocations}
+            onUnallocate={unallocateArFromModal}
+          />
+          <AccountTransactionsAllocationModal
+            open={accountAllocationOpen}
+            accountName={selectedCustomer?.name || selectedCustomer?.business_name}
+            credits={accountAllocationData.credits || []}
+            debits={accountAllocationData.debits || []}
+            summary={accountAllocationData.summary || {}}
+            loading={accountAllocationLoading}
+            saving={accountAllocationSaving}
+            error={accountAllocationError}
+            onClose={() => {
+              if (!accountAllocationSaving) setAccountAllocationOpen(false);
+            }}
+            onSave={saveAccountAllocation}
+          />
+          <TransactionAllocationsModal
+            open={Boolean(viewAllocationRow)}
+            transaction={viewAllocationRow || {}}
+            saving={allocationSaving}
+            error={allocationError}
+            onClose={() => {
+              if (!allocationSaving) setViewAllocationRow(null);
+            }}
+            onUnallocate={unallocateLedgerAllocation}
+          />
 
         </div>
       );
@@ -1298,7 +1545,7 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
               <Input value={customerQuery} onChange={(e) => setCustomerQuery(e.target.value)} placeholder="Search customer cards" className="h-9 pl-9" />
             </div>
           </div>
-          <div className="grid gap-2 md:grid-cols-2 2xl:grid-cols-3">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
             {visibleCustomers.map((customer) => (
               <CustomerCard
                 key={customer.id}
@@ -1351,7 +1598,8 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
                 customers={customers}
                 invoices={invoices}
                 incomeAccounts={incomeAccounts}
-                vatCodes={vatCodes}
+                vatCodes={transactionVatCodes}
+                outsideVatPeriod={!transactionVatActive}
                 approvalRequired={Boolean(settingsForm.approval_required)}
                 bankAccounts={bankAccounts}
                 onClose={() => {
@@ -1361,6 +1609,7 @@ export default function AccountsReceivableWorkspace({ workspace, tab, setTab, re
                 onSave={saveTransactionDraft}
                 onPost={primaryPostAction}
                 onApproveInvoice={approveInvoice}
+                onApproveCreditNote={approveCreditNote}
                 onPostInvoice={postInvoice}
                 onArchiveInvoice={archiveInvoice}
                 editMode={transactionEditMode}
@@ -1413,25 +1662,37 @@ function Section({ title, children }) {
 
 function CustomerCard({ customer, outstanding, receiptsOnAccount, lastActivity, onOpen }) {
   return (
-    <button type="button" onClick={onOpen} className="rounded-md border border-stone-200 bg-white p-2.5 text-left shadow-sm transition hover:border-emerald-300 hover:shadow-md">
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <h4 className="truncate font-display text-sm font-semibold text-stone-900">{customer.name || customer.business_name || "Unnamed customer"}</h4>
-          <p className="mt-0.5 truncate text-[11px] text-stone-500">{customer.customer_code || customer.email || "No customer code"}</p>
+    <button type="button" onClick={onOpen} className="group flex min-h-[190px] flex-col overflow-hidden rounded-xl border border-stone-200 bg-white p-4 text-left shadow-[0_3px_12px_rgba(28,25,23,0.07)] transition duration-150 hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-[0_10px_26px_rgba(6,78,59,0.13)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100">
+            <UsersRound className="h-6 w-6" />
+          </span>
+          <div className="min-w-0 pt-0.5">
+            <h4 className="truncate font-display text-base font-bold leading-tight text-stone-950">{customer.name || customer.business_name || "Unnamed customer"}</h4>
+            <p className="mt-1 truncate text-xs font-medium text-stone-500">{customer.customer_code || customer.email || "No customer code"}</p>
+            <p className="mt-1.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700">Customer account</p>
+          </div>
         </div>
-        <Badge className={`${statusBadgeClass(customer.status || "active")} shrink-0`}>{customer.status || "Active"}</Badge>
+        <Badge className={`${statusBadgeClass(customer.status || "active")} mt-1 shrink-0 shadow-sm`}>{customer.status || "Active"}</Badge>
       </div>
-      <div className="mt-2 grid grid-cols-2 gap-1.5">
-        <div className="min-w-0 rounded-md bg-amber-50 px-2 py-1">
-          <div className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-amber-700"><ReceiptText className="h-3 w-3 shrink-0" /> Outstanding</div>
-          <div className="mt-0.5 truncate font-display text-sm font-bold text-amber-900">{formatMoney(outstanding)}</div>
+      <div className="mt-4 grid flex-1 grid-cols-2 gap-3 border-t border-stone-200 pt-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-50 text-amber-700"><ReceiptText className="h-4 w-4" /></span>
+          <div className="min-w-0">
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-stone-500">Outstanding</div>
+            <div className="mt-0.5 truncate font-display text-sm font-bold text-amber-900">{formatMoney(outstanding)}</div>
+          </div>
         </div>
-        <div className="min-w-0 rounded-md bg-sky-50 px-2 py-1">
-          <div className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-sky-700"><WalletCards className="h-3 w-3 shrink-0" /> On account</div>
-          <div className="mt-0.5 truncate font-display text-sm font-bold text-sky-900">{formatMoney(receiptsOnAccount)}</div>
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sky-50 text-sky-700"><WalletCards className="h-4 w-4" /></span>
+          <div className="min-w-0">
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-stone-500">On account</div>
+            <div className="mt-0.5 truncate font-display text-sm font-bold text-sky-900">{formatMoney(receiptsOnAccount)}</div>
+          </div>
         </div>
       </div>
-      <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px] text-stone-500">
+      <div className="mt-3 flex items-center justify-between gap-2 border-t border-stone-100 pt-2 text-[11px] text-stone-500">
         <span className="inline-flex min-w-0 items-center gap-1"><FileText className="h-3 w-3 shrink-0" /> <span className="truncate">Last transaction</span></span>
         <span className="shrink-0 font-medium text-stone-700">{lastActivity ? formatDate(lastActivity) : "-"}</span>
       </div>
@@ -1449,7 +1710,7 @@ function LedgerTable({
   loading = false,
   onPageChange,
   onPageSizeChange,
-  onUnallocate = () => {},
+  onViewAllocation = () => {},
   renderExpanded,
   rowKey = (row) => row.ledgerKey || row.id,
   selectedKeys = [],
@@ -1561,7 +1822,7 @@ function LedgerTable({
               </div>
               <ClearFilterButton onClick={() => { safeSetters.invoiceValueMin(""); safeSetters.invoiceValueMax(""); }} />
             </LedgerColumnHeader> : null}
-            {isVisible("allocated") ? <LedgerColumnHeader label="Paid / allocated" sortKey="allocated" sort={sort} onSort={onSort} openKey={activeFilterOpenKey} setOpenKey={activeSetFilterOpenKey} align="right" activeFilter={Boolean(safeFilters.allocatedMin || safeFilters.allocatedMax)} width={columnWidths.allocated} onResize={(width) => resizeColumn("allocated", width)}>
+            {isVisible("allocated") ? <LedgerColumnHeader label="Payment" sortKey="allocated" sort={sort} onSort={onSort} openKey={activeFilterOpenKey} setOpenKey={activeSetFilterOpenKey} align="right" activeFilter={Boolean(safeFilters.allocatedMin || safeFilters.allocatedMax)} width={columnWidths.allocated} onResize={(width) => resizeColumn("allocated", width)}>
               <SortControls sortKey="allocated" onSort={onSort} />
               <div className="mt-2 grid grid-cols-2 gap-1">
                 <Input type="number" step="0.01" value={safeFilters.allocatedMin} onChange={(e) => safeSetters.allocatedMin(e.target.value)} placeholder="Min" className="h-8 text-xs" />
@@ -1569,7 +1830,7 @@ function LedgerTable({
               </div>
               <ClearFilterButton onClick={() => { safeSetters.allocatedMin(""); safeSetters.allocatedMax(""); }} />
             </LedgerColumnHeader> : null}
-            {isVisible("balance") ? <LedgerColumnHeader label="Invoice balance" sortKey="balance" sort={sort} onSort={onSort} openKey={activeFilterOpenKey} setOpenKey={activeSetFilterOpenKey} align="right" activeFilter={Boolean(safeFilters.balanceMin || safeFilters.balanceMax)} width={columnWidths.balance} onResize={(width) => resizeColumn("balance", width)}>
+            {isVisible("balance") ? <LedgerColumnHeader label="Line balance" sortKey="balance" sort={sort} onSort={onSort} openKey={activeFilterOpenKey} setOpenKey={activeSetFilterOpenKey} align="right" activeFilter={Boolean(safeFilters.balanceMin || safeFilters.balanceMax)} width={columnWidths.balance} onResize={(width) => resizeColumn("balance", width)}>
               <SortControls sortKey="balance" onSort={onSort} />
               <div className="mt-2 grid grid-cols-2 gap-1">
                 <Input type="number" step="0.01" value={safeFilters.balanceMin} onChange={(e) => safeSetters.balanceMin(e.target.value)} placeholder="Min" className="h-8 text-xs" />
@@ -1584,6 +1845,7 @@ function LedgerTable({
               </select>
               <ClearFilterButton onClick={() => safeSetters.status("All")} />
             </LedgerColumnHeader> : null}
+            {isVisible("allocations") ? <th className="px-2 py-1.5 text-left" style={cellStyle("allocations")}>Allocations</th> : null}
             {isVisible("attachment") ? <LedgerColumnHeader label="Attachment" sortKey="attachment" sort={sort} onSort={onSort} openKey={activeFilterOpenKey} setOpenKey={activeSetFilterOpenKey} align="right" activeFilter={safeFilters.attachment !== "All"} width={columnWidths.attachment} onResize={(width) => resizeColumn("attachment", width)}>
               <SortControls sortKey="attachment" onSort={onSort} />
               <select value={safeFilters.attachment} onChange={(e) => safeSetters.attachment(e.target.value)} className="mt-2 h-8 w-full rounded-md border border-stone-200 bg-white px-2 text-xs normal-case">
@@ -1622,13 +1884,13 @@ function LedgerTable({
                   {isVisible("reference") ? <td className="px-2 py-1.5" style={cellStyle("reference")}>{row.reference || "-"}</td> : null}
                   {isVisible("description") ? <td className="px-2 py-1.5 text-stone-600" style={cellStyle("description")}>{row.description}</td> : null}
                   {isVisible("invoice_value") ? <td className="px-2 py-1.5 text-right" style={cellStyle("invoice_value")}>{arInvoiceValue(row) ? formatMoney(arInvoiceValue(row)) : "-"}</td> : null}
-                  {isVisible("allocated") ? <td className="px-2 py-1.5 text-right" style={cellStyle("allocated")}>{arAllocatedValue(row) ? formatMoney(arAllocatedValue(row)) : "-"}</td> : null}
+                  {isVisible("allocated") ? <td className="px-2 py-1.5 text-right" style={cellStyle("allocated")}>{arPaymentValue(row) ? formatMoney(arPaymentValue(row)) : "-"}</td> : null}
                   {isVisible("balance") ? <td className="px-2 py-1.5 text-right font-semibold" style={cellStyle("balance")}>{arInvoiceBalance(row) ? formatMoney(arInvoiceBalance(row)) : "-"}</td> : null}
                   {isVisible("status") ? <td className="px-2 py-1.5" style={cellStyle("status")}>
                     <Badge className={row.is_over_allocated ? "bg-red-100 text-red-800" : statusBadgeClass(row.status)}>{row.display_status || displayStatus(row.status || "Open")}</Badge>
                     {row.is_over_allocated ? <div className="mt-1 text-xs font-medium text-red-700">Allocation exceeds invoice value</div> : null}
-                    {row.can_unallocate ? <Button type="button" variant="outline" size="sm" className="mt-1" onClick={(event) => { event.stopPropagation(); onUnallocate(row); }}>Unallocate</Button> : null}
                   </td> : null}
+                  {isVisible("allocations") ? <td className="px-2 py-1.5" style={cellStyle("allocations")}>{(row.allocation_summary?.allocations || []).length ? <Button type="button" variant="outline" size="sm" onClick={(event) => { event.stopPropagation(); onViewAllocation(row); }}>View Allocation</Button> : "-"}</td> : null}
                   {isVisible("attachment") ? <td className="px-2 py-1.5" style={cellStyle("attachment")}>{hasAttachment(row) ? <Badge className="bg-emerald-100 text-emerald-800">Attached</Badge> : "-"}</td> : null}
                 </tr>
                 {expanded ? (
@@ -1864,7 +2126,7 @@ function ClearFilterButton({ children = "Clear filter", onClick }) {
   );
 }
 
-function ManualSalesDocumentDrawer({ draft, setDraft, errors, customer, customers, invoices, incomeAccounts, vatCodes, approvalRequired, bankAccounts, onClose, onSave, onPost, onApproveInvoice, onPostInvoice, onArchiveInvoice, editMode, setEditMode, onCopyInvoice, saving }) {
+function ManualSalesDocumentDrawer({ draft, setDraft, errors, customer, customers, invoices, incomeAccounts, vatCodes, outsideVatPeriod, approvalRequired, bankAccounts, onClose, onSave, onPost, onApproveInvoice, onApproveCreditNote, onPostInvoice, onArchiveInvoice, editMode, setEditMode, onCopyInvoice, saving }) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const readOnly = isReadOnlyTransaction(draft);
   const existingLedgerRecord = Boolean(draft.id) && draft.source !== "frontend";
@@ -1884,6 +2146,7 @@ function ManualSalesDocumentDrawer({ draft, setDraft, errors, customer, customer
   const setLine = (index, key, value) => setDraft((current) => ({ ...current, lines: current.lines.map((line, lineIndex) => lineIndex === index ? { ...line, [key]: value } : line) }));
   const existingInvoiceStatus = String(draft.status || "").trim().toLowerCase().replaceAll(" ", "_");
   const canApproveExistingInvoice = draft.source === "invoice" && !draft.posted_journal_id && ["draft", "awaiting_approval"].includes(existingInvoiceStatus);
+  const canApproveExistingCreditNote = draft.source === "credit_note" && !draft.posted_journal_id && ["draft", "awaiting_approval"].includes(existingInvoiceStatus);
   const canPostExistingInvoice = draft.source === "invoice" && !draft.posted_journal_id && existingInvoiceStatus === "approved";
   const canArchiveExistingInvoice = draft.source === "invoice" && ["posted", "paid", "part_paid"].includes(String(draft.status || "").toLowerCase());
   const sourceUrl = attachmentUrl(draft);
@@ -1917,6 +2180,7 @@ function ManualSalesDocumentDrawer({ draft, setDraft, errors, customer, customer
               {!formReadOnly && !isReceipt ? <Button type="button" variant="outline" disabled={saving} onClick={(event) => onSave(event)}>{approvalRequired ? "Submit for approval" : "Post to AR"}</Button> : null}
               {!formReadOnly && !existingLedgerRecord ? <Button type="button" disabled={saving} onClick={onPost} style={{ background: "var(--brand)" }}>{isReceipt ? "Post receipt" : "Post to AR"}</Button> : null}
               {canApproveExistingInvoice ? <Button type="button" disabled={saving} onClick={() => onApproveInvoice(draft)} style={{ background: "var(--brand)" }}>Approve</Button> : null}
+              {canApproveExistingCreditNote ? <Button type="button" disabled={saving} onClick={() => onApproveCreditNote(draft)} style={{ background: "var(--brand)" }}>Approve</Button> : null}
               {canPostExistingInvoice ? <Button type="button" disabled={saving} onClick={() => onPostInvoice(draft)} style={{ background: "var(--brand)" }}>Post</Button> : null}
               {canArchiveExistingInvoice ? <Button type="button" variant="outline" disabled={saving} onClick={() => onArchiveInvoice(draft)}>Archive</Button> : null}
               <Button type="button" variant="outline" size="sm" onClick={onClose}><X className="h-4 w-4" /></Button>
@@ -1932,12 +2196,13 @@ function ManualSalesDocumentDrawer({ draft, setDraft, errors, customer, customer
             {errors.customer ? <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{errors.customer}</div> : null}
             <div className="grid gap-4">
               <Section title="Coding / accounting fields">
+                {outsideVatPeriod && !isReceipt ? <p className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">Outside VAT registration period. NO VAT applied.</p> : null}
                 <div className="grid gap-3 md:grid-cols-3">
                   <ReadOnlyField label="Customer ID" value={draft.customer_id} />
                   <ReadOnlyField label="Customer name" value={customer?.name || customer?.business_name || draft.customer_name} />
                   <ReadOnlyField label="Customer code" value={customer?.customer_code || draft.customer_code} />
                   <FieldControl label="Type" error={errors.type}>
-                    <select value={draft.type} disabled={formReadOnly || !!draft.originalKey} onChange={(e) => setDraft((current) => ({ ...emptyTransactionDraft(e.target.value, customer, bankAccounts[0]?.code), customer_id: current.customer_id, customer_name: current.customer_name, customer_code: current.customer_code }))} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm disabled:bg-stone-50">
+                    <select value={draft.type} disabled={formReadOnly || !!draft.originalKey} onChange={(e) => setDraft((current) => ({ ...emptyTransactionDraft(e.target.value, customer, ""), customer_id: current.customer_id, customer_name: current.customer_name, customer_code: current.customer_code }))} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm disabled:bg-stone-50">
                       {transactionTypes.map((type) => <option key={type} value={type}>{type}</option>)}
                     </select>
                   </FieldControl>
@@ -1946,10 +2211,11 @@ function ManualSalesDocumentDrawer({ draft, setDraft, errors, customer, customer
                       <FieldControl label="Receipt date" error={errors.date}><Input type="date" value={draft.receipt_date || ""} disabled={formReadOnly} onChange={(e) => set("receipt_date", e.target.value)} className="h-9" /></FieldControl>
                       <FieldControl label="Reference"><Input value={draft.reference || ""} disabled={formReadOnly} onChange={(e) => set("reference", e.target.value)} className="h-9" /></FieldControl>
                       <FieldControl label="Payment method"><select value={draft.payment_method || ""} disabled={formReadOnly} onChange={(e) => set("payment_method", e.target.value)} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm disabled:bg-stone-50">{["Bank Transfer", "Card", "Cash", "Cheque", "Direct Debit"].map((method) => <option key={method} value={method}>{method}</option>)}</select></FieldControl>
-                      <FieldControl label="Bank account" error={errors.bank}><select value={draft.bank_account_code || ""} disabled={formReadOnly} onChange={(e) => set("bank_account_code", e.target.value)} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm disabled:bg-stone-50">{bankAccounts.map((account) => <option key={account.code} value={account.code}>{account.code} - {account.name}</option>)}</select></FieldControl>
+                      <FieldControl label="Bank account" error={errors.bank}><select value={draft.bank_account_code || ""} disabled={formReadOnly} onChange={(e) => set("bank_account_code", e.target.value)} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm disabled:bg-stone-50"><option value="">Select bank account</option>{bankAccounts.map((account) => <option key={account.code} value={account.code}>{account.code} - {account.name}</option>)}</select></FieldControl>
                       <FieldControl label="Amount" error={errors.amount}><Input value={draft.amount || ""} disabled={formReadOnly} onChange={(e) => set("amount", e.target.value)} className="h-9" /></FieldControl>
                       <FieldControl label="Allocation target"><select value={draft.allocation_target || "oldest"} disabled={formReadOnly} onChange={(e) => set("allocation_target", e.target.value)} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm disabled:bg-stone-50"><option value="oldest">Oldest invoices automatically</option><option value="selected">Selected invoice</option><option value="on_account">Leave as payment on account</option></select></FieldControl>
                       {draft.allocation_target === "selected" ? <FieldControl label="Selected invoice"><select value={draft.invoice_id || ""} disabled={formReadOnly} onChange={(e) => set("invoice_id", e.target.value)} className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm disabled:bg-stone-50"><option value="">Select invoice</option>{customerInvoices.map((invoice) => <option key={invoice.id} value={invoice.id}>{invoice.invoice_number} - {formatMoney(invoice.outstanding_amount)}</option>)}</select></FieldControl> : null}
+                      <p className="col-span-full text-xs text-stone-500">{asNumber(draft.amount) < 0 ? "A negative amount records a customer refund on account. After posting, allocate it to one or more customer credit notes." : "Receipts reduce the customer account balance; allocation only links the receipt to invoices."}</p>
                     </>
                   ) : (
                     <>
@@ -2200,16 +2466,17 @@ function ArReports({ ar }) {
 }
 
 function exportRows(rows, filename) {
-  const header = "Date,Type,Reference,Description,Invoice value,Paid / allocated,Invoice balance,Status,Attachment";
+  const header = "Date,Type,Reference,Description,Invoice value,Payment,Line balance,Status,Allocations,Attachment";
   const lines = rows.map((row) => [
     formatDate(row.date),
     row.type,
     row.reference,
     row.description,
     arInvoiceValue(row).toFixed(2),
-    arAllocatedValue(row).toFixed(2),
+    arPaymentValue(row).toFixed(2),
     arInvoiceBalance(row).toFixed(2),
     row.status,
+    (row.allocation_summary?.allocations || []).length,
     hasAttachment(row) ? "Yes" : "No",
   ].map((value) => `"${String(value || "").replaceAll("\"", "\"\"")}"`).join(","));
   const blob = new Blob([[header, ...lines].join("\n")], { type: "text/csv;charset=utf-8" });

@@ -61,19 +61,21 @@ function statusClass(status) {
 
 function KpiCard({ label, value, icon: Icon, tone = "emerald" }) {
   const tones = {
-    emerald: "bg-emerald-50 text-emerald-900 border-emerald-100",
-    amber: "bg-amber-50 text-amber-900 border-amber-100",
-    red: "bg-red-50 text-red-900 border-red-100",
-    stone: "bg-stone-50 text-stone-900 border-stone-100",
+    emerald: "bg-emerald-50 text-emerald-700 ring-emerald-100",
+    amber: "bg-amber-50 text-amber-700 ring-amber-100",
+    red: "bg-red-50 text-red-700 ring-red-100",
+    stone: "bg-stone-100 text-stone-600 ring-stone-200",
   };
   return (
-    <div className={`rounded-lg border p-4 shadow-sm ${tones[tone] || tones.stone}`}>
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-wide opacity-70">{label}</p>
-          <p className="mt-2 font-display text-2xl font-bold">{value ?? 0}</p>
+    <div className="rounded-xl border border-stone-200 bg-white p-4 shadow-[0_3px_12px_rgba(28,25,23,0.06)]">
+      <div className="flex items-center gap-3">
+        <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full ring-1 ${tones[tone] || tones.stone}`}>
+          <Icon className="h-5 w-5" />
+        </span>
+        <div className="min-w-0">
+          <p className="truncate text-[10px] font-semibold uppercase tracking-wide text-stone-500">{label}</p>
+          <p className="mt-1 truncate font-display text-xl font-bold text-stone-950">{value ?? 0}</p>
         </div>
-        <Icon className="h-5 w-5 opacity-70" />
       </div>
     </div>
   );
@@ -422,16 +424,22 @@ export default function AdminAutomation() {
             <Panel title="Automation Rules">
               <div className="grid gap-3 xl:grid-cols-2">
                 {workflows.length ? workflows.map((workflow) => (
-                  <div key={workflow.id} className="rounded-lg border border-stone-200 bg-white p-4 shadow-sm">
+                  <div key={workflow.id} className="flex min-h-[230px] flex-col rounded-xl border border-stone-200 bg-white p-4 shadow-[0_3px_12px_rgba(28,25,23,0.07)]">
                     <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <h3 className="font-display text-lg font-bold text-stone-950">{workflow.name}</h3>
-                        <p className="text-sm text-stone-500">{workflow.description || "No description"}</p>
+                      <div className="flex min-w-0 items-start gap-3">
+                        <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100">
+                          <Workflow className="h-6 w-6" />
+                        </span>
+                        <div className="min-w-0 pt-0.5">
+                          <h3 className="truncate font-display text-base font-bold text-stone-950">{workflow.name}</h3>
+                          <p className="mt-1 line-clamp-2 text-sm text-stone-500">{workflow.description || "No description"}</p>
+                          <p className="mt-1.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700">Automation rule</p>
+                        </div>
                       </div>
                       <Badge className={statusClass(workflow.status)}>{workflow.status}</Badge>
                     </div>
-                    <div className="mt-3"><WorkflowMiniMap workflow={workflow} /></div>
-                    <div className="mt-4 flex flex-wrap gap-2">
+                    <div className="mt-4 border-t border-stone-200 pt-3"><WorkflowMiniMap workflow={workflow} /></div>
+                    <div className="mt-auto flex flex-wrap gap-2 border-t border-stone-100 pt-3">
                       <Button variant="outline" className="gap-2" onClick={() => updateWorkflow(workflow, { status: workflow.status === "active" ? "paused" : "active" })}>
                         {workflow.status === "active" ? "Pause" : "Enable"}
                       </Button>
@@ -512,16 +520,22 @@ export default function AdminAutomation() {
             <Panel title="Templates">
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                 {templates.map((template) => (
-                  <div key={template.id} className="rounded-lg border border-stone-200 bg-white p-4 shadow-sm">
+                  <div key={template.id} className="flex min-h-[230px] flex-col rounded-xl border border-stone-200 bg-white p-4 shadow-[0_3px_12px_rgba(28,25,23,0.07)]">
                     <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <Badge className="bg-stone-100 text-stone-700">{template.category}</Badge>
-                        <h3 className="mt-2 font-display text-lg font-bold text-stone-950">{template.name}</h3>
+                      <div className="flex min-w-0 items-start gap-3">
+                        <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100">
+                          <Copy className="h-6 w-6" />
+                        </span>
+                        <div className="min-w-0 pt-0.5">
+                          <h3 className="truncate font-display text-base font-bold text-stone-950">{template.name}</h3>
+                          <p className="mt-1.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700">Workflow template</p>
+                          <Badge className="mt-2 bg-stone-100 text-stone-700">{template.category}</Badge>
+                        </div>
                       </div>
                       <Button size="sm" variant="outline" onClick={() => duplicateTemplate(template)} className="gap-2"><Copy className="h-4 w-4" /> Copy</Button>
                     </div>
-                    <p className="mt-2 text-sm text-stone-600">{template.description}</p>
-                    <div className="mt-3"><WorkflowMiniMap workflow={template} /></div>
+                    <p className="mt-3 line-clamp-2 text-sm text-stone-600">{template.description}</p>
+                    <div className="mt-auto border-t border-stone-200 pt-3"><WorkflowMiniMap workflow={template} /></div>
                   </div>
                 ))}
               </div>

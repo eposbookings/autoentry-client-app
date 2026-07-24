@@ -62,23 +62,25 @@ function BigButton({ title, desc, count, icon, onClick, testid }) {
   return (
     <button
       onClick={onClick}
-      className="text-left p-6 sm:p-7 rounded-2xl border border-stone-200 bg-white card-hover w-full"
+      className="group flex min-h-[220px] w-full flex-col rounded-xl border border-stone-200 bg-white p-5 text-left shadow-[0_3px_12px_rgba(28,25,23,0.07)] transition duration-150 hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-[0_10px_26px_rgba(6,78,59,0.13)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2 sm:p-6"
       data-testid={testid}
     >
-      <div className="flex items-start justify-between">
-        <div className="h-11 w-11 rounded-xl flex items-center justify-center"
-          style={{ background: has ? "var(--outstanding-bg)" : "#f5f5f4", color: has ? "var(--outstanding)" : "#a8a29e" }}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100">
           {icon}
         </div>
-        <ArrowRight className="h-5 w-5 text-stone-400" />
+        <ArrowRight className="mt-3 h-5 w-5 text-stone-400 transition group-hover:translate-x-1 group-hover:text-emerald-700" />
       </div>
-      <div className="mt-6">
-        <div className="text-xs uppercase tracking-wider text-stone-500 font-semibold">{desc}</div>
-        <div className="font-display text-xl font-semibold text-stone-900 mt-0.5">{title}</div>
+      <div className="mt-5 flex-1">
+        <div className="font-display text-xl font-bold text-stone-950">{title}</div>
+        <div className="mt-1 text-xs font-bold uppercase tracking-wider text-emerald-700">{desc}</div>
       </div>
-      <div className="mt-4 flex items-baseline gap-2">
-        <span className="count-xl" style={{ color: has ? "var(--outstanding)" : "#a8a29e" }}>{count}</span>
-        <span className="text-sm text-stone-500">outstanding</span>
+      <div className="mt-4 flex items-center gap-3 border-t border-stone-200 pt-3">
+        <span className="flex h-8 w-8 items-center justify-center rounded-full bg-amber-50 text-sm font-bold text-amber-800">{count}</span>
+        <span>
+          <span className="block text-[10px] font-semibold uppercase tracking-wide text-stone-500">Outstanding items</span>
+          <span className={`font-display text-base font-bold ${has ? "text-amber-900" : "text-stone-400"}`}>{count} awaiting documents</span>
+        </span>
       </div>
     </button>
   );

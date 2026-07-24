@@ -76,6 +76,7 @@ const EMPTY_ACCOUNT_FORM = {
 };
 
 export default function AdminAccountancySoftware() {
+  const initialRoute = useMemo(() => new URLSearchParams(window.location.search), []);
   const [clients, setClients] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [workspace, setWorkspace] = useState(null);
@@ -125,6 +126,16 @@ export default function AdminAccountancySoftware() {
 
   useEffect(() => { loadClients(); }, [loadClients]);
   useEffect(() => { loadWorkspace(selectedId); }, [selectedId, loadWorkspace]);
+  useEffect(() => {
+    const clientId = initialRoute.get("client_id");
+    const moduleKey = initialRoute.get("module");
+    if (!clientId) return;
+    setSelectedId(clientId);
+    if (moduleKey && MODULE_DETAILS[moduleKey]) {
+      setModule(moduleKey);
+      setModuleTab(initialRoute.get("tab") || MODULE_DETAILS[moduleKey].tabs?.[0] || "");
+    }
+  }, [initialRoute]);
 
   const filteredClients = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -549,16 +560,27 @@ function AccountingClientCards({ clients, q, setQ, openClient, refresh, busy }) 
                 key={client.id}
                 type="button"
                 onClick={() => openClient(client.id)}
-                className="group flex min-h-48 flex-col justify-between rounded-md border border-stone-200 bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-md"
+                className="group flex min-h-[210px] flex-col rounded-xl border border-stone-200 bg-white p-4 text-left shadow-[0_3px_12px_rgba(28,25,23,0.07)] transition duration-150 hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-[0_10px_26px_rgba(6,78,59,0.13)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2"
               >
-                <span>
-                  <span className="block truncate font-display text-lg font-bold text-stone-900">{client.business_name}</span>
-                  <span className="mt-1 block truncate text-sm text-stone-500">{client.email}</span>
-                  <Badge className="mt-4 bg-emerald-100 text-emerald-800 hover:bg-emerald-100">Native Accounting Enabled</Badge>
+                <span className="flex items-start justify-between gap-3">
+                  <span className="flex min-w-0 items-start gap-3">
+                    <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100">
+                      <Building2 className="h-6 w-6" />
+                    </span>
+                    <span className="min-w-0 pt-0.5">
+                      <span className="block truncate font-display text-base font-bold text-stone-950">{client.business_name}</span>
+                      <span className="mt-1 block truncate text-xs text-stone-500">{client.email}</span>
+                      <span className="mt-1.5 block text-[10px] font-bold uppercase tracking-wide text-emerald-700">Native accounting client</span>
+                    </span>
+                  </span>
+                  <ArrowRight className="mt-3 h-4 w-4 shrink-0 text-stone-400 transition group-hover:translate-x-1 group-hover:text-emerald-700" />
                 </span>
-                <span className="mt-5 flex items-center justify-between border-t border-stone-100 pt-3 text-sm font-semibold text-emerald-800">
-                  Open Accounting Software
-                  <ArrowRight className="h-4 w-4 transition group-hover:translate-x-1" />
+                <span className="mt-auto flex items-center gap-3 border-t border-stone-200 pt-3">
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-700"><CheckCircle2 className="h-4 w-4" /></span>
+                  <span>
+                    <span className="block text-[10px] font-semibold uppercase tracking-wide text-stone-500">Accounting status</span>
+                    <span className="font-display text-sm font-bold text-emerald-800">Native Accounting Enabled</span>
+                  </span>
                 </span>
               </button>
             ))}
@@ -590,12 +612,12 @@ function ClientAccountingHome({ workspace, openModule, backToClients, refresh, b
         </Button>
       </header>
 
-      <section className="rounded-md border border-stone-200 bg-white p-2.5">
-        <div className="mb-2">
-          <h2 className="font-display text-lg font-bold text-stone-900">Accounting Software</h2>
-          <p className="mt-0.5 text-xs text-stone-600">Choose the module you want to work in.</p>
+      <section className="rounded-lg border border-stone-200 bg-stone-50/40 p-4">
+        <div className="mb-4">
+          <h2 className="font-display text-xl font-bold text-stone-900">Accounting Software</h2>
+          <p className="mt-1 text-sm text-stone-600">Choose the module you want to work in.</p>
         </div>
-        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           {MODULES.map((item) => (
             <AccountingModuleCard
               key={item.key}
@@ -614,26 +636,50 @@ function ClientAccountingHome({ workspace, openModule, backToClients, refresh, b
 function AccountingModuleCard({ moduleKey, icon: Icon, workspace, onOpen }) {
   const detail = MODULE_DETAILS[moduleKey];
   const statValue = detail?.stat ? detail.stat(workspace) : "-";
+  const healthScore = moduleKey === "ai_workspace"
+    ? Math.max(0, Math.min(100, Number.parseFloat(statValue) || 0))
+    : null;
   return (
     <button
       type="button"
       onClick={onOpen}
-      className="group flex min-h-36 flex-col rounded-md border border-stone-200 bg-white p-2.5 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-md"
+      className="group relative flex min-h-[220px] flex-col overflow-hidden rounded-xl border border-stone-200 bg-white p-4 text-left shadow-[0_3px_12px_rgba(28,25,23,0.07)] transition duration-150 hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-[0_10px_26px_rgba(6,78,59,0.13)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2"
     >
-      <span className="flex items-start justify-between gap-2">
-        <span className="rounded-md bg-emerald-50 p-1 text-emerald-800">
-          <Icon className="h-3.5 w-3.5" />
+      <span className="flex items-start justify-between gap-3">
+        <span className="flex min-w-0 items-start gap-3">
+          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100">
+            <Icon className="h-6 w-6" />
+          </span>
+          <span className="min-w-0 pt-1">
+            <span className="block truncate font-display text-base font-bold leading-tight text-stone-950">{detail.title}</span>
+            <span className="mt-1.5 block text-[11px] font-bold uppercase tracking-wide text-emerald-700">Manage</span>
+          </span>
         </span>
-        <ArrowRight className="h-3 w-3 text-stone-400 transition group-hover:translate-x-1 group-hover:text-emerald-800" />
+        <ArrowRight className="mt-3 h-4 w-4 shrink-0 text-stone-500 transition group-hover:translate-x-1 group-hover:text-emerald-800" />
       </span>
-      <span className="mt-2 block font-display text-sm font-bold text-stone-900">{detail.title}</span>
-      <span className="mt-1 block text-[9px] font-semibold uppercase tracking-wide text-stone-500">Manage</span>
-      <span className="mt-0.5 grid grid-cols-2 gap-x-2 gap-y-0.5 text-[11px] text-stone-600">
-        {detail.manage.map((item) => <span key={item} className="truncate">- {item}</span>)}
+
+      <span className="mt-4 grid flex-1 grid-cols-2 content-start gap-x-4 gap-y-1.5 text-xs leading-4 text-stone-600">
+        {detail.manage.map((item) => (
+          <span key={item} className="flex min-w-0 items-start gap-1.5">
+            <span className="mt-[6px] h-1 w-1 shrink-0 rounded-full bg-stone-400" />
+            <span className="truncate">{item}</span>
+          </span>
+        ))}
       </span>
-      <span className="mt-1.5 border-t border-stone-100 pt-1.5">
-        <span className="block text-[9px] font-semibold uppercase tracking-wide text-stone-500">{detail.statLabel}</span>
-        <span className="mt-0.5 block font-display text-sm font-bold text-stone-900">{statValue}</span>
+
+      <span className="mt-4 flex items-center gap-3 border-t border-stone-200 pt-3">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-700">
+          <Icon className="h-4 w-4" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-[10px] font-semibold uppercase tracking-wide text-stone-500">{detail.statLabel}</span>
+          <span className="mt-0.5 block truncate font-display text-base font-bold text-emerald-800">{statValue}</span>
+        </span>
+        {healthScore !== null ? (
+          <span className="h-1.5 w-24 overflow-hidden rounded-full bg-stone-200">
+            <span className="block h-full rounded-full bg-emerald-500" style={{ width: `${healthScore}%` }} />
+          </span>
+        ) : null}
       </span>
     </button>
   );
@@ -691,7 +737,7 @@ function ModuleWorkspace(props) {
   const [recordActionMenuOpen, setRecordActionMenuOpen] = useState(false);
   const detail = MODULE_DETAILS[module];
   const isBankingModule = module === "banking";
-  const suppressGlobalFilterBar = isBankingModule || module === "payables" || module === "receivables";
+  const suppressGlobalFilterBar = isBankingModule || module === "payables" || module === "receivables" || (module === "vat" && ["VAT Periods", "VAT Returns"].includes(moduleTab));
 
   useEffect(() => {
     setRecordHeaderContext(null);
@@ -850,8 +896,46 @@ function ModuleWorkspace(props) {
             </div>
             {recordHeaderContext?.title ? (
               <div className="border-l border-stone-200 pl-4">
-                <h2 className="font-display text-xl font-semibold text-stone-900">{recordHeaderContext.title}</h2>
+                <div className="flex flex-wrap items-center gap-2">
+                  {recordHeaderContext.titlePrefix ? <span className="text-xl" aria-hidden="true">{recordHeaderContext.titlePrefix}</span> : null}
+                  <h2 className="font-display text-xl font-semibold text-stone-900">{recordHeaderContext.title}</h2>
+                  {recordHeaderContext.badges?.map((badge) => (
+                    <Badge key={badge.label} className={badge.className}>{badge.label}</Badge>
+                  ))}
+                </div>
                 <p className="mt-1 text-sm text-stone-500">{recordHeaderContext.subtitle}</p>
+              </div>
+            ) : null}
+            {recordHeaderContext?.actionsLeft && recordHeaderContext?.actionMenu?.length ? (
+              <div className="relative">
+                <Button type="button" variant="outline" onClick={() => setRecordActionMenuOpen((open) => !open)}>
+                  Action
+                </Button>
+                {recordActionMenuOpen ? (
+                  <div className="absolute left-0 z-40 mt-2 w-64 rounded-md border border-stone-200 bg-white p-1 shadow-lg">
+                    {recordHeaderContext.actionMenu.map((action) => (
+                      <button
+                        key={action.label}
+                        type="button"
+                        onClick={() => {
+                          setRecordActionMenuOpen(false);
+                          action.onClick?.();
+                        }}
+                        className="block w-full rounded px-3 py-2 text-left text-sm font-semibold text-stone-700 hover:bg-stone-100"
+                      >
+                        {action.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : recordHeaderContext?.actionsLeft && recordHeaderContext?.actions?.length ? (
+              <div className="flex flex-wrap items-center gap-2">
+                {recordHeaderContext.actions.map((action) => (
+                  <Button key={action.label} type="button" variant="outline" className="gap-2" onClick={action.onClick}>
+                    {action.icon === false ? null : <Plus className="h-4 w-4" />} {action.label}
+                  </Button>
+                ))}
               </div>
             ) : null}
           </div>
@@ -881,11 +965,11 @@ function ModuleWorkspace(props) {
                   ) : null}
                 </div>
               ) : null}
-              {recordHeaderContext.actions?.map((action) => (
+              {!recordHeaderContext.actionsLeft ? recordHeaderContext.actions?.map((action) => (
                 <Button key={action.label} type="button" variant="outline" className="gap-2" onClick={action.onClick}>
                   {action.icon === false ? null : <Plus className="h-4 w-4" />} {action.label}
                 </Button>
-              ))}
+              )) : null}
             </div>
           ) : recordHeaderContext?.tabs?.length ? (
             <div className="flex flex-wrap gap-2">
@@ -899,11 +983,11 @@ function ModuleWorkspace(props) {
                   {tab}
                 </button>
               ))}
-              {recordHeaderContext.actions?.map((action) => (
+              {!recordHeaderContext.actionsLeft ? recordHeaderContext.actions?.map((action) => (
                 <Button key={action.label} type="button" variant="outline" className="gap-2" onClick={action.onClick}>
                   {action.icon === false ? null : <Plus className="h-4 w-4" />} {action.label}
                 </Button>
-              ))}
+              )) : null}
             </div>
           ) : recordHeaderContext?.actions?.length ? (
             <div className="flex flex-wrap gap-2">
@@ -2187,14 +2271,16 @@ function BankTransactionRow({ transaction, accounts, onReconcile, busy }) {
 }
 
 function VatEngineWorkspace({ workspace, tab, filters, reloadWorkspace, busy }) {
-  const vat = useMemo(() => workspace?.vat_engine || {}, [workspace?.vat_engine]);
+  const sourceVat = useMemo(() => workspace?.vat_engine || {}, [workspace?.vat_engine]);
   const clientId = workspace?.client?.id;
+  const [refreshedVat, setRefreshedVat] = useState(null);
+  const vat = refreshedVat || sourceVat;
   const settings = useMemo(() => vat.settings || {}, [vat.settings]);
+  const vatClient = workspace?.vat_status?.vat_client ?? workspace?.client?.is_vat_client ?? false;
   const codes = vat.codes || [];
   const activeCodes = codes.filter((code) => code.active !== false);
   const periods = vat.periods || [];
   const transactions = vat.transactions || [];
-  const returns = vat.returns || [];
   const dashboard = vat.dashboard || {};
   const currentBoxes = vat.current_boxes || {};
   const currentPeriod = periods.find((period) => period.id === dashboard.current_period_id) || periods.find((period) => period.status === "open") || periods[0];
@@ -2210,10 +2296,15 @@ function VatEngineWorkspace({ workspace, tab, filters, reloadWorkspace, busy }) 
   const [vatPageLoading, setVatPageLoading] = useState(false);
   const [vatPageError, setVatPageError] = useState("");
   const [vatRefreshKey, setVatRefreshKey] = useState(0);
+  const [showCreateCode, setShowCreateCode] = useState(false);
 
   useEffect(() => {
     setSettingsForm(settings || {});
   }, [settings]);
+
+  useEffect(() => {
+    setRefreshedVat(null);
+  }, [clientId]);
 
   useEffect(() => {
     if (!adjustmentForm.vat_period_id && currentPeriod?.id) {
@@ -2240,23 +2331,24 @@ function VatEngineWorkspace({ workspace, tab, filters, reloadWorkspace, busy }) 
 
   async function runVatAction(action, successMessage) {
     try {
-      await action();
+      const result = await action();
       toast.success(successMessage);
-      await reloadWorkspace();
+      const [{ data }] = await Promise.all([
+        api.get(`/admin/accounting/clients/${clientId}/vat/workspace`),
+        reloadWorkspace?.(),
+      ]);
+      setRefreshedVat(data || {});
       setVatRefreshKey((key) => key + 1);
+      return result;
     } catch (e) {
       toast.error(formatApiError(e));
+      return null;
     }
   }
 
-  const prepareReturn = (period) => runVatAction(
-    () => api.post(`/admin/accounting/clients/${clientId}/vat-returns/prepare`, { period_id: period?.id }),
-    "VAT return generated"
-  );
-
-  const updatePeriod = (period, action) => runVatAction(
-    () => api.post(`/admin/accounting/clients/${clientId}/vat/periods/${period.id}/${action}`),
-    `VAT period ${action} complete`
+  const submitPeriod = (period) => runVatAction(
+    () => api.post(`/admin/accounting/clients/${clientId}/vat/periods/${period.id}/submit`),
+    "VAT return submitted and the next period opened"
   );
 
   const createCode = (event) => {
@@ -2264,11 +2356,32 @@ function VatEngineWorkspace({ workspace, tab, filters, reloadWorkspace, busy }) 
     return runVatAction(
       () => api.post(`/admin/accounting/clients/${clientId}/vat/codes`, codeForm),
       "VAT code created"
-    ).then(() => setCodeForm({ code: "", description: "", percentage: "20", purchase_behavior: "input", sales_behavior: "output", return_box_net: "7", return_box_vat: "4", active: true }));
+    ).then(() => {
+      setCodeForm({ code: "", description: "", percentage: "20", purchase_behavior: "input", sales_behavior: "output", return_box_net: "7", return_box_vat: "4", active: true });
+      setShowCreateCode(false);
+    });
   };
+
+  const updateCode = (code, values) => runVatAction(
+    () => api.put(`/admin/accounting/clients/${clientId}/vat/codes/${code.id}`, values),
+    "VAT code updated"
+  );
+
+  const deleteCode = (code) => runVatAction(
+    () => api.delete(`/admin/accounting/clients/${clientId}/vat/codes/${code.id}`),
+    "VAT code removed"
+  );
 
   const saveSettings = (event) => {
     event.preventDefault();
+    if (vatClient && (!settingsForm.vat_start_date || !settingsForm.vat_scheme || !settingsForm.vat_frequency)) {
+      toast.error("VAT start date, scheme and frequency are required before VAT treatment can be applied.");
+      return;
+    }
+    if (settingsForm.vat_start_date && settingsForm.vat_end_date && settingsForm.vat_end_date < settingsForm.vat_start_date) {
+      toast.error("VAT end date cannot be before VAT start date.");
+      return;
+    }
     return runVatAction(
       () => api.put(`/admin/accounting/clients/${clientId}/vat/settings`, settingsForm),
       "VAT settings saved"
@@ -2288,7 +2401,7 @@ function VatEngineWorkspace({ workspace, tab, filters, reloadWorkspace, busy }) 
       <div className="space-y-4">
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
           <SummaryCard label="Current VAT Liability" value={formatMoney(dashboard.current_vat_liability)} />
-          <SummaryCard label="VAT Due to HMRC" value={formatMoney(dashboard.vat_due_hmrc)} tone="warning" />
+          <SummaryCard label="VAT Due to HMRC" value={formatMoney(dashboard.vat_due_to_hmrc)} tone="warning" />
           <SummaryCard label="VAT Recoverable" value={formatMoney(dashboard.vat_recoverable)} tone="success" />
           <SummaryCard label="Current VAT Period" value={currentPeriod ? `${formatDate(currentPeriod.start_date)} - ${formatDate(currentPeriod.end_date)}` : "-"} />
           <SummaryCard label="Next Return Due" value={formatDate(dashboard.next_return_due)} />
@@ -2325,44 +2438,9 @@ function VatEngineWorkspace({ workspace, tab, filters, reloadWorkspace, busy }) 
 
   if (tab === "VAT Returns") {
     return (
-      <div className="grid gap-4 xl:grid-cols-[1fr_420px]">
-        <Panel title="VAT returns">
-          <div className="space-y-3">
-            {periods.map((period) => (
-              <div key={period.id} className="grid gap-3 rounded-md border border-stone-200 p-3 lg:grid-cols-[1fr_repeat(4,120px)_auto] lg:items-center">
-                <Info label="Period" value={`${formatDate(period.start_date)} - ${formatDate(period.end_date)}`} />
-                <Info label="Output VAT" value={formatMoney(period.output_vat)} />
-                <Info label="Input VAT" value={formatMoney(period.input_vat)} />
-                <Info label="Net VAT" value={formatMoney(period.net_vat)} />
-                <Info label="Status" value={period.status} />
-                <Button variant="outline" disabled={busy || period.status === "closed"} onClick={() => prepareReturn(period)}>Generate</Button>
-              </div>
-            ))}
-            {periods.length === 0 && <p className="py-10 text-center text-sm text-stone-500">No VAT periods available yet.</p>}
-          </div>
-        </Panel>
-        <Panel title="Generated returns">
-          <div className="space-y-2">
-            {returns.map((vatReturn) => (
-              <div key={vatReturn.id} className="rounded-md border border-stone-200 p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="font-semibold text-stone-900">{formatDate(vatReturn.period_start)} - {formatDate(vatReturn.period_end)}</p>
-                    <p className="text-xs text-stone-500">Generated {formatDateTime(vatReturn.created_at)}</p>
-                  </div>
-                  <Badge variant="outline" className="capitalize">{vatReturn.status}</Badge>
-                </div>
-                <div className="mt-3 grid grid-cols-3 gap-2 text-sm">
-                  <Info label="Box 1" value={formatMoney(vatReturn.box1)} />
-                  <Info label="Box 4" value={formatMoney(vatReturn.box4)} />
-                  <Info label="Box 5" value={formatMoney(vatReturn.box5)} />
-                </div>
-              </div>
-            ))}
-            {returns.length === 0 && <p className="py-8 text-center text-sm text-stone-500">No VAT returns generated yet.</p>}
-          </div>
-        </Panel>
-      </div>
+      <Panel title="VAT returns">
+        <VatPeriodTable periods={periods} clientId={clientId} onSubmit={submitPeriod} busy={busy} />
+      </Panel>
     );
   }
 
@@ -2383,18 +2461,21 @@ function VatEngineWorkspace({ workspace, tab, filters, reloadWorkspace, busy }) 
 
   if (tab === "VAT Codes") {
     return (
-      <div className="grid gap-4 xl:grid-cols-[1fr_360px]">
-        <Panel title="VAT codes">
-          <VatCodeTable codes={codes} />
-        </Panel>
-        <Panel title="Create VAT code">
+      <div className="space-y-4">
+        <div className="flex justify-end">
+          <Button type="button" onClick={() => setShowCreateCode((shown) => !shown)} style={{ background: "var(--brand)" }}>
+            {showCreateCode ? "Cancel create" : "Create VAT code"}
+          </Button>
+        </div>
+        {showCreateCode && <Panel title="Create VAT code">
           <form onSubmit={createCode} className="space-y-3">
-            <Field label="Code" value={codeForm.code} onChange={(value) => setCodeForm((current) => ({ ...current, code: value }))} />
-            <Field label="Description" value={codeForm.description} onChange={(value) => setCodeForm((current) => ({ ...current, description: value }))} />
-            <Field label="Percentage" type="number" value={codeForm.percentage} onChange={(value) => setCodeForm((current) => ({ ...current, percentage: value }))} />
-            <VatSelect label="Purchase behaviour" value={codeForm.purchase_behavior} onChange={(value) => setCodeForm((current) => ({ ...current, purchase_behavior: value }))} options={["input", "none", "reverse_charge", "outside_scope"]} />
-            <VatSelect label="Sales behaviour" value={codeForm.sales_behavior} onChange={(value) => setCodeForm((current) => ({ ...current, sales_behavior: value }))} options={["output", "none", "reverse_charge", "outside_scope"]} />
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid gap-3 md:grid-cols-3">
+              <Field label="Code" value={codeForm.code} onChange={(value) => setCodeForm((current) => ({ ...current, code: value }))} />
+              <Field label="Display name / description" value={codeForm.description} onChange={(value) => setCodeForm((current) => ({ ...current, description: value }))} />
+              <Field label="Rate %" type="number" value={codeForm.percentage} onChange={(value) => setCodeForm((current) => ({ ...current, percentage: value }))} />
+              <VatSelect label="Direction / category" value={codeForm.category || "both"} onChange={(value) => setCodeForm((current) => ({ ...current, category: value }))} options={["purchase", "sales", "both", "other"]} />
+              <VatSelect label="Purchase behaviour" value={codeForm.purchase_behavior} onChange={(value) => setCodeForm((current) => ({ ...current, purchase_behavior: value }))} options={["recoverable", "zero", "exempt", "reverse_charge", "outside_scope"]} />
+              <VatSelect label="Sales behaviour" value={codeForm.sales_behavior} onChange={(value) => setCodeForm((current) => ({ ...current, sales_behavior: value }))} options={["output", "zero", "exempt", "reverse_charge", "outside_scope"]} />
               <Field label="Net box" value={codeForm.return_box_net} onChange={(value) => setCodeForm((current) => ({ ...current, return_box_net: value }))} />
               <Field label="VAT box" value={codeForm.return_box_vat} onChange={(value) => setCodeForm((current) => ({ ...current, return_box_vat: value }))} />
             </div>
@@ -2402,8 +2483,11 @@ function VatEngineWorkspace({ workspace, tab, filters, reloadWorkspace, busy }) 
               <input type="checkbox" checked={!!codeForm.active} onChange={(e) => setCodeForm((current) => ({ ...current, active: e.target.checked }))} />
               Active
             </label>
-            <Button disabled={busy} className="w-full" style={{ background: "var(--brand)" }}>Create code</Button>
+            <div className="flex justify-end"><Button disabled={busy} style={{ background: "var(--brand)" }}>Create code</Button></div>
           </form>
+        </Panel>}
+        <Panel title="VAT codes">
+          <VatCodeTable codes={codes} busy={busy} onUpdate={updateCode} onDelete={deleteCode} />
         </Panel>
       </div>
     );
@@ -2412,7 +2496,7 @@ function VatEngineWorkspace({ workspace, tab, filters, reloadWorkspace, busy }) 
   if (tab === "VAT Periods") {
     return (
       <Panel title="VAT periods">
-        <VatPeriodTable periods={periods} onAction={updatePeriod} busy={busy} />
+        <VatPeriodTable periods={periods} clientId={clientId} onSubmit={submitPeriod} busy={busy} />
       </Panel>
     );
   }
@@ -2462,9 +2546,14 @@ function VatEngineWorkspace({ workspace, tab, filters, reloadWorkspace, busy }) 
         <form onSubmit={saveSettings} className="space-y-4">
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <Field label="VAT registration number" value={settingsForm.vat_registration_number || ""} onChange={(value) => setSettingsForm((current) => ({ ...current, vat_registration_number: value }))} />
-            <VatSelect label="VAT scheme" value={settingsForm.vat_scheme || "standard"} onChange={(value) => setSettingsForm((current) => ({ ...current, vat_scheme: value }))} options={["standard", "cash", "flat_rate"]} />
-            <VatSelect label="VAT frequency" value={settingsForm.vat_frequency || "quarterly"} onChange={(value) => setSettingsForm((current) => ({ ...current, vat_frequency: value }))} options={["monthly", "quarterly", "annual"]} />
-            <Field label="VAT start date" type="date" value={settingsForm.vat_start_date || ""} onChange={(value) => setSettingsForm((current) => ({ ...current, vat_start_date: value }))} />
+            <VatSelect label={`VAT scheme${vatClient ? " *" : ""}`} value={settingsForm.vat_scheme || "standard"} onChange={(value) => setSettingsForm((current) => ({ ...current, vat_scheme: value }))} options={["standard", "cash", "flat_rate"]} />
+            <VatSelect label={`VAT frequency${vatClient ? " *" : ""}`} value={settingsForm.vat_frequency || "quarterly"} onChange={(value) => setSettingsForm((current) => ({ ...current, vat_frequency: value }))} options={["monthly", "quarterly", "annual"]} />
+            <Field label={`VAT start date${vatClient ? " *" : ""}`} type="date" value={settingsForm.vat_start_date || ""} onChange={(value) => setSettingsForm((current) => ({ ...current, vat_start_date: value }))} />
+            <Field label="VAT end date" type="date" value={settingsForm.vat_end_date || ""} onChange={(value) => setSettingsForm((current) => ({ ...current, vat_end_date: value }))} />
+            <Field label="Return due: months after period" type="number" value={settingsForm.return_due_months_after_period ?? 1} onChange={(value) => setSettingsForm((current) => ({ ...current, return_due_months_after_period: value }))} />
+            <Field label="Return due: additional days" type="number" value={settingsForm.return_due_days_after_month ?? 7} onChange={(value) => setSettingsForm((current) => ({ ...current, return_due_days_after_month: value }))} />
+            <Field label="Payment due: months after period" type="number" value={settingsForm.payment_due_months_after_period ?? 1} onChange={(value) => setSettingsForm((current) => ({ ...current, payment_due_months_after_period: value }))} />
+            <Field label="Payment due: additional days" type="number" value={settingsForm.payment_due_days_after_month ?? 7} onChange={(value) => setSettingsForm((current) => ({ ...current, payment_due_days_after_month: value }))} />
             <VatSelect label="Default purchase VAT code" value={settingsForm.default_purchase_vat_code || ""} onChange={(value) => setSettingsForm((current) => ({ ...current, default_purchase_vat_code: value }))} options={activeCodes.map((code) => ({ value: code.code, label: `${code.code} - ${code.description}` }))} />
             <VatSelect label="Default sales VAT code" value={settingsForm.default_sales_vat_code || ""} onChange={(value) => setSettingsForm((current) => ({ ...current, default_sales_vat_code: value }))} options={activeCodes.map((code) => ({ value: code.code, label: `${code.code} - ${code.description}` }))} />
             <VatSelect label="Default bank VAT code" value={settingsForm.default_bank_vat_code || ""} onChange={(value) => setSettingsForm((current) => ({ ...current, default_bank_vat_code: value }))} options={activeCodes.map((code) => ({ value: code.code, label: `${code.code} - ${code.description}` }))} />
@@ -2508,13 +2597,22 @@ function VatBoxGrid({ boxes = {}, transactions = [], onOpenBox }) {
     return { box, label: vatBoxLabel(box), value, count };
   });
   return (
-    <div className="grid gap-2 md:grid-cols-3">
+    <div className="grid gap-3 md:grid-cols-3">
       {rows.map((row) => (
-        <button key={row.box} type="button" onClick={() => onOpenBox(row.box)} className="rounded-md border border-stone-200 bg-white p-3 text-left shadow-sm transition hover:border-emerald-300 hover:shadow-md">
-          <p className="text-xs font-semibold uppercase tracking-wide text-stone-500">{row.box.toUpperCase()}</p>
-          <p className="mt-1 text-sm font-medium text-stone-700">{row.label}</p>
-          <p className="mt-3 font-display text-xl font-bold text-stone-900">{formatMoney(row.value)}</p>
-          <p className="text-xs text-stone-500">{row.count} source transaction{row.count === 1 ? "" : "s"}</p>
+        <button key={row.box} type="button" onClick={() => onOpenBox(row.box)} className="group flex min-h-[180px] flex-col rounded-xl border border-stone-200 bg-white p-4 text-left shadow-[0_3px_12px_rgba(28,25,23,0.07)] transition duration-150 hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-[0_10px_26px_rgba(6,78,59,0.13)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2">
+          <span className="flex items-start justify-between gap-3">
+            <span className="flex h-11 w-11 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100"><ClipboardCheck className="h-5 w-5" /></span>
+            <ArrowRight className="mt-3 h-4 w-4 text-stone-400 transition group-hover:translate-x-1 group-hover:text-emerald-700" />
+          </span>
+          <span className="mt-3 text-[10px] font-bold uppercase tracking-wide text-emerald-700">{row.box.toUpperCase()}</span>
+          <span className="mt-1 line-clamp-2 text-sm font-semibold text-stone-800">{row.label}</span>
+          <span className="mt-auto flex items-end justify-between gap-3 border-t border-stone-200 pt-3">
+            <span>
+              <span className="block text-[10px] font-semibold uppercase tracking-wide text-stone-500">Box value</span>
+              <span className="mt-0.5 block font-display text-lg font-bold text-emerald-800">{formatMoney(row.value)}</span>
+            </span>
+            <span className="text-right text-xs text-stone-500">{row.count} transaction{row.count === 1 ? "" : "s"}</span>
+          </span>
         </button>
       ))}
     </div>
@@ -2598,43 +2696,129 @@ function VatTransactionsTable({ transactions = [], compact = false }) {
   );
 }
 
-function VatCodeTable({ codes = [] }) {
+function VatCodeTable({ codes = [], busy, onUpdate, onDelete }) {
+  const [expanded, setExpanded] = useState("");
+  const [selected, setSelected] = useState([]);
+  const [editForm, setEditForm] = useState({});
+  const [visible, setVisible] = useState({ category: true, purchase: true, sales: true, boxes: true, status: true });
   if (!codes.length) {
     return <p className="py-10 text-center text-sm text-stone-500">No VAT codes configured yet.</p>;
   }
+  const toggle = (code) => {
+    const next = expanded === code.id ? "" : code.id;
+    setExpanded(next);
+    setEditForm(next ? { description: code.description || "", percentage: code.percentage || "0", purchase_behavior: code.purchase_behavior || "", sales_behavior: code.sales_behavior || "", active: code.active !== false } : {});
+  };
+  const exportSelected = () => {
+    const rows = codes.filter((code) => selected.includes(code.id));
+    if (!rows.length) return toast.error("Select at least one VAT code to export.");
+    const csv = ["Code,Description,Rate,Purchase,Sales,Purchase boxes,Sales boxes,Status", ...rows.map((code) => [code.code, code.description, code.percentage, code.purchase_behavior, code.sales_behavior, (code.purchase_boxes || []).join(" "), (code.sales_boxes || []).join(" "), code.active ? "Active" : "Inactive"].map((value) => `"${String(value || "").replaceAll('"', '""')}"`).join(","))].join("\n");
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    link.download = "vat-codes.csv";
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
   return (
-    <div className="overflow-auto rounded-md border border-stone-200 bg-white">
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap gap-3 text-xs text-stone-600">
+          {Object.keys(visible).map((key) => <label key={key} className="flex items-center gap-1 capitalize"><input type="checkbox" checked={visible[key]} onChange={(e) => setVisible((current) => ({ ...current, [key]: e.target.checked }))} />{key}</label>)}
+        </div>
+        <Button type="button" size="sm" variant="outline" onClick={exportSelected}>Export selected ({selected.length})</Button>
+      </div>
+      <div className="overflow-auto rounded-md border border-stone-200 bg-white">
       <table className="min-w-full text-left text-sm">
         <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
           <tr>
+            <th className="w-10 px-3 py-2"><input type="checkbox" checked={selected.length === codes.length} onChange={(e) => setSelected(e.target.checked ? codes.map((code) => code.id) : [])} /></th>
             <th className="px-3 py-2">Code</th>
             <th className="px-3 py-2">Description</th>
             <th className="px-3 py-2 text-right">Rate</th>
-            <th className="px-3 py-2">Purchase</th>
-            <th className="px-3 py-2">Sales</th>
-            <th className="px-3 py-2">Boxes</th>
-            <th className="px-3 py-2">Status</th>
+            {visible.category && <th className="px-3 py-2">Category</th>}
+            {visible.purchase && <th className="px-3 py-2">Purchase</th>}
+            {visible.sales && <th className="px-3 py-2">Sales</th>}
+            {visible.boxes && <th className="px-3 py-2">Return boxes</th>}
+            {visible.status && <th className="px-3 py-2">Status</th>}
           </tr>
         </thead>
         <tbody>
-          {codes.map((code) => (
-            <tr key={code.id || code.code} className="border-t border-stone-100">
+          {codes.map((code) => (<React.Fragment key={code.id || code.code}>
+            <tr className="cursor-pointer border-t border-stone-100 hover:bg-stone-50" onClick={() => toggle(code)}>
+              <td className="px-3 py-2" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={selected.includes(code.id)} onChange={(e) => setSelected((current) => e.target.checked ? [...current, code.id] : current.filter((id) => id !== code.id))} /></td>
               <td className="px-3 py-2 font-semibold text-stone-900">{code.code}</td>
               <td className="px-3 py-2 text-stone-700">{code.description}</td>
               <td className="px-3 py-2 text-right">{Number(code.percentage || 0).toFixed(2)}%</td>
-              <td className="px-3 py-2 text-stone-600">{code.purchase_behavior}</td>
-              <td className="px-3 py-2 text-stone-600">{code.sales_behavior}</td>
-              <td className="px-3 py-2 text-stone-600">Net {code.return_box_net || "-"} / VAT {code.return_box_vat || "-"}</td>
-              <td className="px-3 py-2"><Badge className={code.active ? "bg-emerald-100 text-emerald-800" : "bg-stone-200 text-stone-700"}>{code.active ? "Active" : "Inactive"}</Badge></td>
+              {visible.category && <td className="px-3 py-2 capitalize text-stone-600">{code.category || "both"}</td>}
+              {visible.purchase && <td className="px-3 py-2 text-stone-600">{code.purchase_behavior}</td>}
+              {visible.sales && <td className="px-3 py-2 text-stone-600">{code.sales_behavior}</td>}
+              {visible.boxes && <td className="px-3 py-2 text-stone-600">Purchase {(code.purchase_boxes || []).join(", ") || "—"} / Sales {(code.sales_boxes || []).join(", ") || "—"}</td>}
+              {visible.status && <td className="px-3 py-2"><Badge className={code.active ? "bg-emerald-100 text-emerald-800" : "bg-stone-200 text-stone-700"}>{code.active ? "Active" : "Inactive"}</Badge></td>}
             </tr>
-          ))}
+            {expanded === code.id && <tr className="border-t border-stone-100 bg-stone-50"><td colSpan="10" className="p-4">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                <Field label="Description" value={editForm.description || ""} onChange={(value) => setEditForm((current) => ({ ...current, description: value }))} />
+                <Field label="Rate %" type="number" value={editForm.percentage || ""} onChange={(value) => setEditForm((current) => ({ ...current, percentage: value }))} />
+                <VatSelect label="Purchase behaviour" value={editForm.purchase_behavior || ""} onChange={(value) => setEditForm((current) => ({ ...current, purchase_behavior: value }))} options={["recoverable", "zero", "exempt", "reverse_charge", "outside_scope"]} />
+                <VatSelect label="Sales behaviour" value={editForm.sales_behavior || ""} onChange={(value) => setEditForm((current) => ({ ...current, sales_behavior: value }))} options={["output", "zero", "exempt", "reverse_charge", "outside_scope"]} />
+                <VatCheckbox label="Active" checked={editForm.active !== false} onChange={(value) => setEditForm((current) => ({ ...current, active: value }))} />
+              </div>
+              <div className="mt-3 flex justify-end gap-2">
+                {!code.system_code && <Button type="button" variant="outline" disabled={busy} onClick={() => window.confirm(`Delete ${code.code}? Codes with history will be made inactive.`) && onDelete(code)}>Delete</Button>}
+                <Button type="button" disabled={busy} onClick={() => onUpdate(code, editForm)} style={{ background: "var(--brand)" }}>Save changes</Button>
+              </div>
+              {code.system_code && <p className="mt-2 text-xs text-stone-500">System code: the code itself cannot be renamed or deleted, but safe behaviour, mapping and active fields can be maintained.</p>}
+            </td></tr>}
+          </React.Fragment>))}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }
 
-function VatPeriodTable({ periods = [], onAction, busy }) {
+function VatPeriodTable({ periods = [], clientId, onSubmit, busy }) {
+  const [expandedPeriodId, setExpandedPeriodId] = useState("");
+  const [detail, setDetail] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState("");
+
+  const loadDetail = useCallback(async (periodId) => {
+    if (!clientId || !periodId) return;
+    setDetailLoading(true);
+    setDetailError("");
+    try {
+      const { data } = await api.get(`/admin/accounting/clients/${clientId}/vat/periods/${periodId}`);
+      setDetail(data || null);
+    } catch (error) {
+      setDetail(null);
+      setDetailError(formatApiError(error));
+    } finally {
+      setDetailLoading(false);
+    }
+  }, [clientId]);
+
+  const togglePeriod = (period) => {
+    if (expandedPeriodId === period.id) {
+      setExpandedPeriodId("");
+      setDetail(null);
+      setDetailError("");
+      return;
+    }
+    setExpandedPeriodId(period.id);
+    setDetail(null);
+    loadDetail(period.id);
+  };
+
+  const submit = async (period) => {
+    const confirmed = window.confirm(
+      `Submit the VAT return for ${formatDate(period.start_date)} - ${formatDate(period.end_date)}? Submitted returns cannot be reopened or unsubmitted.`
+    );
+    if (!confirmed) return;
+    const result = await onSubmit?.(period);
+    if (result) await loadDetail(period.id);
+  };
+
   if (!periods.length) {
     return <p className="py-10 text-center text-sm text-stone-500">No VAT periods configured yet.</p>;
   }
@@ -2645,35 +2829,247 @@ function VatPeriodTable({ periods = [], onAction, busy }) {
           <tr>
             <th className="px-3 py-2">Period</th>
             <th className="px-3 py-2">Due</th>
-            <th className="px-3 py-2">Status</th>
             <th className="px-3 py-2 text-right">Transactions</th>
             <th className="px-3 py-2 text-right">Output VAT</th>
             <th className="px-3 py-2 text-right">Input VAT</th>
             <th className="px-3 py-2 text-right">Net VAT</th>
-            <th className="px-3 py-2">Actions</th>
+            <th className="px-3 py-2 text-right">Status</th>
           </tr>
         </thead>
         <tbody>
           {periods.map((period) => (
-            <tr key={period.id} className="border-t border-stone-100">
-              <td className="px-3 py-2 font-semibold text-stone-900">{formatDate(period.start_date)} - {formatDate(period.end_date)}</td>
-              <td className="px-3 py-2">{formatDate(period.due_date)}</td>
-              <td className="px-3 py-2"><Badge variant="outline" className="capitalize">{period.status}</Badge></td>
-              <td className="px-3 py-2 text-right">{period.transaction_count || 0}</td>
-              <td className="px-3 py-2 text-right">{formatMoney(period.output_vat)}</td>
-              <td className="px-3 py-2 text-right">{formatMoney(period.input_vat)}</td>
-              <td className="px-3 py-2 text-right font-semibold">{formatMoney(period.net_vat)}</td>
-              <td className="px-3 py-2">
-                <div className="flex flex-wrap gap-1">
-                  {["open", "locked", "closed"].filter((action) => action !== period.status).map((action) => (
-                    <Button key={action} type="button" size="sm" variant="outline" disabled={busy} onClick={() => onAction(period, action)} className="capitalize">{action}</Button>
-                  ))}
-                </div>
-              </td>
-            </tr>
+            <React.Fragment key={period.id}>
+              <tr
+                className={`cursor-pointer border-t border-stone-100 hover:bg-stone-50 ${expandedPeriodId === period.id ? "bg-emerald-50/50" : ""}`}
+                onClick={() => togglePeriod(period)}
+              >
+                <td className="px-3 py-2 font-semibold text-stone-900">
+                  <span className="inline-flex items-center gap-2">
+                    <ArrowRight className={`h-4 w-4 transition-transform ${expandedPeriodId === period.id ? "rotate-90" : ""}`} />
+                    {formatDate(period.start_date)} - {formatDate(period.end_date)}
+                  </span>
+                </td>
+                <td className="px-3 py-2">{formatDate(period.due_date)}</td>
+                <td className="px-3 py-2 text-right">{period.transaction_count || 0}</td>
+                <td className="px-3 py-2 text-right">{formatMoney(period.output_vat)}</td>
+                <td className="px-3 py-2 text-right">{formatMoney(period.input_vat)}</td>
+                <td className="px-3 py-2 text-right font-semibold">{formatMoney(period.net_vat)}</td>
+                <td className="px-3 py-2 text-right">
+                  <Badge className={period.status === "submitted" ? "bg-stone-200 text-stone-700" : "bg-emerald-100 text-emerald-800"}>
+                    {period.status === "submitted" ? "Submitted" : "Open"}
+                  </Badge>
+                </td>
+              </tr>
+              {expandedPeriodId === period.id ? (
+                <tr className="border-t border-stone-100 bg-stone-50/60">
+                  <td colSpan="7" className="p-4">
+                    {detailLoading ? <p className="py-10 text-center text-sm text-stone-500">Loading VAT return...</p> : null}
+                    {detailError ? <p className="py-10 text-center text-sm text-red-700">{detailError}</p> : null}
+                    {!detailLoading && detail ? (
+                      <VatPeriodReturnDetail
+                        detail={detail}
+                        clientId={clientId}
+                        period={period}
+                        busy={busy}
+                        onSubmit={() => submit(period)}
+                      />
+                    ) : null}
+                  </td>
+                </tr>
+              ) : null}
+            </React.Fragment>
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function VatPeriodReturnDetail({ detail, clientId, period, busy, onSubmit }) {
+  const [openBox, setOpenBox] = useState(null);
+  const vatReturn = detail.return || {};
+  const status = detail.period?.status || period.status;
+  return (
+    <div className="rounded-md border border-stone-200 bg-white">
+      <div className="flex flex-col gap-4 border-b border-stone-200 p-5 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <p className="text-lg font-semibold text-stone-900">VAT Return</p>
+          <p className="font-display text-xl font-bold text-stone-900">HM Revenue &amp; Customs (VAT)</p>
+          <p className="mt-3 text-base text-stone-700">
+            {detail.client?.business_name || "Client"}
+            {detail.settings?.vat_registration_number ? ` (VAT registration # ${detail.settings.vat_registration_number})` : ""}
+          </p>
+          <p className="mt-1 text-base text-stone-700">{formatDate(detail.period?.start_date)} - {formatDate(detail.period?.end_date)}</p>
+        </div>
+        <div className="flex flex-col items-start gap-2 lg:items-end">
+          <Badge className={status === "submitted" ? "bg-stone-200 text-stone-700" : "bg-emerald-100 text-emerald-800"}>
+            {status === "submitted" ? "Submitted" : "Open"}
+          </Badge>
+          <p className="text-sm capitalize text-stone-600">{detail.settings?.vat_scheme || "standard"} VAT accounting</p>
+          {vatReturn.submitted_at ? <p className="text-sm text-stone-600">Submission date: {formatDateTime(vatReturn.submitted_at)}</p> : null}
+          <div className="mt-1 flex flex-wrap gap-2">
+            <Button type="button" size="sm" variant="outline" onClick={() => window.print()}><Printer className="mr-2 h-4 w-4" />Print</Button>
+            {status === "open" ? (
+              <Button type="button" size="sm" disabled={busy} onClick={onSubmit} style={{ background: "var(--brand)" }}>
+                Submit VAT return
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      </div>
+      <div className="grid gap-2 bg-stone-100/80 p-4">
+        {(detail.boxes || []).map((box) => (
+          <React.Fragment key={box.number}>
+            <button
+              type="button"
+              onClick={() => setOpenBox((current) => current === box.number ? null : box.number)}
+              className={`grid w-full grid-cols-1 items-center gap-4 rounded-lg border px-4 py-3 text-left shadow-sm transition sm:grid-cols-[1fr_auto] ${
+                openBox === box.number
+                  ? "border-emerald-500 bg-emerald-50 ring-2 ring-emerald-100"
+                  : [3, 5].includes(box.number)
+                    ? "border-blue-200 bg-blue-50/70 hover:border-blue-300 hover:bg-blue-50"
+                    : "border-stone-200 bg-white hover:border-emerald-300 hover:bg-emerald-50/30"
+              }`}
+            >
+              <span className="flex min-w-0 items-center gap-3">
+                <span className={`inline-flex h-9 min-w-16 shrink-0 items-center justify-center rounded-md px-2 text-xs font-bold ${
+                  [3, 5].includes(box.number) ? "bg-blue-100 text-blue-800" : "bg-stone-100 text-stone-700"
+                }`}>
+                  Box {box.number}
+                </span>
+                <span>
+                  <span className="block text-sm font-medium text-stone-900">{box.label}</span>
+                  <span className="mt-0.5 block text-xs text-stone-500">
+                    {box.transaction_count || 0} contributing {Number(box.transaction_count || 0) === 1 ? "transaction" : "transactions"}
+                    {[3, 5].includes(box.number) ? " · Calculated total" : ""}
+                  </span>
+                </span>
+              </span>
+              <span className="flex items-center gap-3">
+                <span className={`min-w-28 rounded-md px-3 py-2 text-right font-display text-base font-bold ${
+                  [3, 5].includes(box.number) ? "bg-blue-100 text-blue-800" : "bg-stone-100 text-stone-900"
+                }`}>
+                  {formatMoney(box.value)}
+                </span>
+                <ArrowRight className={`h-4 w-4 text-stone-500 transition-transform ${openBox === box.number ? "rotate-90 text-emerald-700" : ""}`} />
+              </span>
+            </button>
+            {openBox === box.number ? (
+              <VatPeriodBoxDrilldown clientId={clientId} periodId={period.id} box={box} />
+            ) : null}
+          </React.Fragment>
+        ))}
+      </div>
+      {status === "submitted" ? (
+        <div className="border-t border-stone-200 bg-stone-50 px-5 py-3 text-sm text-stone-600">
+          This return is read-only. Corrections must be included in the current open VAT period.
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function VatPeriodBoxDrilldown({ clientId, periodId, box }) {
+  const [data, setData] = useState(() => normalisePaginatedResponse({ page_size: DEFAULT_PAGE_SIZE }));
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+    if (search) params.set("search", search);
+    setLoading(true);
+    setError("");
+    api.get(`/admin/accounting/clients/${clientId}/vat/periods/${periodId}/boxes/${box.number}?${params.toString()}`)
+      .then(({ data: response }) => {
+        if (!cancelled) setData(normalisePaginatedResponse(response, pageSize));
+      })
+      .catch((requestError) => {
+        if (!cancelled) setError(formatApiError(requestError));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [box.number, clientId, page, pageSize, periodId, search]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [pageSize, search]);
+
+  const exportRows = () => {
+    if (!data.rows.length) return;
+    const csv = [
+      "Date,Document,Type,Source,VAT code,Net,VAT,Box amount",
+      ...data.rows.map((row) => [
+        row.date,
+        row.document_number,
+        row.document_type,
+        row.source_module,
+        row.vat_code,
+        row.net,
+        row.vat,
+        row.box_amount,
+      ].map((value) => `"${String(value || "").replaceAll('"', '""')}"`).join(",")),
+    ].join("\n");
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    link.download = `vat-return-box-${box.number}.csv`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+
+  return (
+    <div className="rounded-lg border border-emerald-200 bg-white p-4 shadow-inner">
+      <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="font-semibold text-stone-900">Box {box.number} detail</p>
+          <p className="text-xs text-stone-500">Transactions contributing to this VAT return box.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search transactions" className="h-9 w-56 bg-white" />
+          <Button type="button" size="sm" variant="outline" disabled={!data.rows.length} onClick={exportRows}><Download className="mr-2 h-4 w-4" />Export page</Button>
+        </div>
+      </div>
+      {error ? <p className="py-6 text-center text-sm text-red-700">{error}</p> : null}
+      {!error && loading && !data.rows.length ? <p className="py-6 text-center text-sm text-stone-500">Loading box transactions...</p> : null}
+      {!error && !loading && !data.rows.length ? <p className="py-6 text-center text-sm text-stone-500">No transactions contribute to this box.</p> : null}
+      {data.rows.length ? (
+        <div className="overflow-auto rounded-md border border-stone-200 bg-white">
+          <table className="min-w-full text-left text-sm">
+            <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
+              <tr>
+                <th className="px-3 py-2">Date</th>
+                <th className="px-3 py-2">Document</th>
+                <th className="px-3 py-2">Type</th>
+                <th className="px-3 py-2">Source</th>
+                <th className="px-3 py-2">VAT code</th>
+                <th className="px-3 py-2 text-right">Net</th>
+                <th className="px-3 py-2 text-right">VAT</th>
+                <th className="px-3 py-2 text-right">Box amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.rows.map((row) => (
+                <tr key={`${row.id}-${row.box_number}`} className="border-t border-stone-100">
+                  <td className="px-3 py-2">{formatDate(row.date)}</td>
+                  <td className="px-3 py-2 font-semibold text-stone-900">{row.document_number || "-"}</td>
+                  <td className="px-3 py-2">{row.document_type || "-"}</td>
+                  <td className="px-3 py-2">{row.source_module || "-"}</td>
+                  <td className="px-3 py-2">{row.vat_code || "-"}</td>
+                  <td className="px-3 py-2 text-right">{formatMoney(row.net)}</td>
+                  <td className="px-3 py-2 text-right">{formatMoney(row.vat)}</td>
+                  <td className="px-3 py-2 text-right font-semibold">{formatMoney(row.box_amount)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <PaginationFooter page={data.page} pageSize={data.page_size} totalRows={data.total_rows} totalPages={data.total_pages} onPageChange={setPage} onPageSizeChange={setPageSize} disabled={loading} />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -3798,12 +4194,15 @@ function AIKpiGrid({ kpis }) {
   return (
     <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-5">
       {rows.map((item) => (
-        <button key={item.label} type="button" className="rounded-md border border-stone-200 bg-white p-4 text-left shadow-sm transition hover:border-emerald-200 hover:bg-emerald-50/40">
-          <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-stone-500">
-            <Sparkles className="h-3.5 w-3.5 text-emerald-700" /> {item.module}
+        <button key={item.label} type="button" className="group flex min-h-[150px] flex-col rounded-xl border border-stone-200 bg-white p-4 text-left shadow-[0_3px_12px_rgba(28,25,23,0.06)] transition duration-150 hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-[0_10px_26px_rgba(6,78,59,0.12)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2">
+          <span className="flex items-center gap-3">
+            <span className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100"><Sparkles className="h-4 w-4" /></span>
+            <span className="text-[10px] font-bold uppercase tracking-wide text-emerald-700">{item.module}</span>
           </span>
-          <span className="mt-3 block text-2xl font-bold text-stone-900">{formatMaybeMoney(item.value)}</span>
-          <span className="mt-1 block text-sm text-stone-600">{item.label}</span>
+          <span className="mt-auto border-t border-stone-200 pt-3">
+            <span className="block text-[10px] font-semibold uppercase tracking-wide text-stone-500">{item.label}</span>
+            <span className="mt-1 block truncate font-display text-xl font-bold text-emerald-800">{formatMaybeMoney(item.value)}</span>
+          </span>
         </button>
       ))}
       {!rows.length && <EmptyAIState title="No AI workspace data yet" detail="Open a native accounting client with activity to populate the command centre." />}
