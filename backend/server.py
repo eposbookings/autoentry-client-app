@@ -3953,6 +3953,60 @@ def ap_line_values(raw_line: dict, default_account: str = "5000") -> dict:
     }
 
 
+def submission_lines_with_single_line_header_fallback(
+    header: dict,
+    raw_lines: list[dict],
+    default_account: str,
+) -> list[dict]:
+    """Fill a skeletal single submitted-item line from its reviewed header.
+
+    Submitted Items stores explicit line values, but older/native publishes can
+    contain a single description-only line while the reviewed net/VAT/gross,
+    nominal and VAT code remain on the header.  Applying the fallback only when
+    there is one line avoids copying header totals across genuine multi-line
+    documents.
+    """
+    lines = [dict(line) for line in raw_lines if isinstance(line, dict)]
+    if len(lines) != 1:
+        return lines
+    line = lines[0]
+    net_value = first_present(header, "net_amount", "net")
+    vat_value = first_present(header, "vat_amount", "vat")
+    gross_value = first_present(header, "gross_amount", "gross", "total")
+    skeletal_amounts = (
+        money(first_present(line, "net_amount", "net", "subtotal")) == Decimal("0.00")
+        and money(first_present(line, "gross_amount", "gross", "total", "amount")) == Decimal("0.00")
+        and money(gross_value) != Decimal("0.00")
+    )
+    nominal_value = first_present(
+        header,
+        "nominal_account_code",
+        "purchase_nominal_account_code",
+        "purchase_account_code",
+        "sales_nominal_code",
+        "sales_nominal",
+        "sales_account_code",
+        "account_code",
+        "category_code",
+        "category",
+    ) or default_account
+    if skeletal_amounts or first_present(line, "nominal_account_code", "purchase_nominal_account_code", "purchase_account_code", "sales_nominal_code", "sales_account_code", "account_code", "category_code", "category") in (None, ""):
+        line["nominal_account_code"] = nominal_value
+    if skeletal_amounts or first_present(line, "vat_code", "tax_code", "tax_rate_code") in (None, ""):
+        line["vat_code"] = first_present(header, "vat_code", "tax_code", "tax_rate_code")
+    if skeletal_amounts or first_present(line, "net_amount", "net", "subtotal") in (None, ""):
+        line["net_amount"] = net_value
+    if skeletal_amounts or first_present(line, "vat_amount", "vat", "tax_amount", "tax") in (None, ""):
+        line["vat_amount"] = vat_value
+    if skeletal_amounts or first_present(line, "gross_amount", "gross", "total", "amount") in (None, ""):
+        line["gross_amount"] = gross_value
+    if skeletal_amounts or first_present(line, "unit_price", "price", "rate") in (None, ""):
+        line["unit_price"] = net_value
+    if not str(line.get("description") or "").strip():
+        line["description"] = header.get("description") or ""
+    return [line]
+
+
 def ap_totals(lines: list[dict]) -> dict:
     net = sum((money(line.get("net_amount")) for line in lines), Decimal("0.00"))
     vat = sum((money(line.get("vat_amount")) for line in lines), Decimal("0.00"))
@@ -4409,6 +4463,7 @@ async def backfill_ap_invoice_from_submission(
     fields = purchase_submission_fields(submission)
     line_items = fields.get("line_items") if isinstance(fields.get("line_items"), list) else []
     default_account = first_present(fields, "nominal_account_code", "purchase_nominal_account_code", "purchase_account_code", "account_code", "category_code", "category") or "5000"
+    line_items = submission_lines_with_single_line_header_fallback(fields, line_items, default_account)
     normalized_lines = [ap_line_values(line, default_account) for line in line_items]
     if normalized_lines and lines:
         current_missing = any(
@@ -4469,6 +4524,74 @@ async def backfill_ap_invoice_from_submission(
 
 async def ar_audit_events(session: AsyncSession, client_id: str, record_id: str) -> list[dict]:
     return await ap_audit_events(session, client_id, record_id)
+
+
+async def backfill_ar_invoice_from_submission(
+    session: AsyncSession,
+    client_id: str,
+    invoice: dict,
+    lines: list[dict],
+    actor_id: Optional[str] = None,
+) -> tuple[dict, list[dict], bool]:
+    if not invoice.get("source_submission_id"):
+        return invoice, lines, False
+    lines_incomplete = not lines or any(
+        not line.get("nominal_account_code")
+        or not line.get("vat_code")
+        or (money(line.get("net_amount")) == Decimal("0.00") and money(line.get("gross_amount")) == Decimal("0.00"))
+        for line in lines
+    )
+    if not lines_incomplete:
+        return invoice, lines, False
+    submission_id = str(invoice.get("source_submission_id") or "").strip()
+    submission = await one(session, select(submissions).where(submissions.c.id == submission_id, submissions.c.client_id == client_id))
+    if not submission:
+        return invoice, lines, False
+    fields = sales_submission_fields(submission)
+    default_account = first_present(fields, "sales_account_code", "sales_nominal_code", "nominal_account_code", "category") or "4000"
+    raw_lines = fields.get("lines") if isinstance(fields.get("lines"), list) else []
+    raw_lines = submission_lines_with_single_line_header_fallback(fields, raw_lines, default_account)
+    normalized_lines = [ar_line_values(line, default_account) for line in raw_lines]
+    if not normalized_lines:
+        normalized_lines = [
+            ar_line_values(
+                {
+                    "description": fields.get("description") or invoice.get("description") or invoice.get("invoice_number"),
+                    "nominal_account_code": default_account,
+                    "vat_code": fields.get("vat_code") or invoice.get("vat_code"),
+                    "net_amount": fields.get("net_amount") or invoice.get("net_amount"),
+                    "vat_amount": fields.get("vat_amount") or invoice.get("vat_amount"),
+                    "gross_amount": fields.get("gross_amount") or invoice.get("gross_amount"),
+                },
+                default_account,
+            )
+        ]
+    if not normalized_lines:
+        return invoice, lines, False
+    now = utc_now_iso()
+    await session.execute(delete(accounting_ar_invoice_lines).where(accounting_ar_invoice_lines.c.invoice_id == invoice["id"]))
+    for index, line in enumerate(normalized_lines, start=1):
+        await session.execute(insert(accounting_ar_invoice_lines).values(
+            id=new_id(),
+            client_id=client_id,
+            invoice_id=invoice["id"],
+            line_number=index,
+            created_at=now,
+            updated_at=now,
+            **line,
+        ))
+    await add_accounting_audit(
+        session,
+        client_id,
+        actor_id,
+        "sales_invoice_backfilled_from_submission",
+        "accounts_receivable",
+        invoice["id"],
+        {"source_submission_id": submission_id, "lines_backfilled": True},
+    )
+    await session.flush()
+    fresh_lines = await many(session, select(accounting_ar_invoice_lines).where(accounting_ar_invoice_lines.c.invoice_id == invoice["id"]).order_by(accounting_ar_invoice_lines.c.line_number.asc()))
+    return invoice, fresh_lines, True
 
 
 async def accounting_journal_with_lines(session: AsyncSession, client_id: str, journal_id: Optional[str]) -> dict:
@@ -8228,7 +8351,24 @@ async def vat_engine_workspace(session: AsyncSession, client_id: str) -> dict:
     for period in periods:
         vat_return = returns_by_dates.get((str(period.get("period_start") or ""), str(period.get("period_end") or "")))
         display_status = vat_period_display_status(period, vat_return)
-        payload = serialize_vat_period({**period, "status": display_status})
+        period_values = {**period, "status": display_status}
+        if display_status == "submitted" and vat_return:
+            period_values.update({
+                "transaction_count": int((parse_json_object(vat_return.get("prepared_json")) or {}).get("transaction_count") or period.get("transaction_count") or 0),
+                "output_vat": vat_return.get("vat_due_sales"),
+                "input_vat": vat_return.get("vat_reclaimed_purchases"),
+                "net_vat": vat_return.get("net_vat_due"),
+            })
+        elif display_status == "open":
+            live_transactions = await vat_period_transactions(session, client_id, period)
+            live_boxes = calculate_vat_boxes(live_transactions)
+            period_values.update({
+                "transaction_count": len(live_transactions),
+                "output_vat": money_str(live_boxes["box3"]),
+                "input_vat": money_str(live_boxes["box4"]),
+                "net_vat": money_str(live_boxes["box5"]),
+            })
+        payload = serialize_vat_period(period_values)
         payload["return_id"] = (vat_return or {}).get("id")
         payload["submitted_at"] = (vat_return or {}).get("submitted_at")
         if display_status == "submitted":
@@ -12499,6 +12639,11 @@ def sales_submission_fields(submission: dict, reviewed_fields: Optional[dict] = 
     lines = source.get("lines") if isinstance(source.get("lines"), list) else source.get("line_items")
     if not isinstance(lines, list):
         lines = []
+    lines = submission_lines_with_single_line_header_fallback(
+        source,
+        lines,
+        first_present(source, "sales_account_code", "sales_nominal_code", "sales_nominal", "nominal_account_code", "category") or "4000",
+    )
     normalized_lines = []
     for line in lines[:100]:
         if not isinstance(line, dict):
@@ -14883,6 +15028,9 @@ async def get_ar_invoice_detail(
     contact = await one(session, select(accounting_contacts).where(accounting_contacts.c.id == customer.get("contact_id")))
     serialized_customer = serialize_ar_customer(customer, contact or {})
     lines = await many(session, select(accounting_ar_invoice_lines).where(accounting_ar_invoice_lines.c.invoice_id == invoice_id).order_by(accounting_ar_invoice_lines.c.line_number.asc()))
+    invoice, lines, backfilled = await backfill_ar_invoice_from_submission(session, client_id, invoice, lines, user.get("id"))
+    if backfilled:
+        await session.commit()
     allocations = await many(session, select(accounting_ar_receipt_allocations).where(accounting_ar_receipt_allocations.c.invoice_id == invoice_id))
     journal = await accounting_journal_with_lines(session, client_id, invoice.get("posted_journal_id"))
     item = serialize_ar_invoice(invoice, lines, serialized_customer)
@@ -20019,6 +20167,11 @@ async def publish_submission_to_native_accounting(
                 "already_posted": True,
             }
         line_items = coding_fields.get("line_items") if isinstance(coding_fields.get("line_items"), list) else []
+        line_items = submission_lines_with_single_line_header_fallback(
+            coding_fields,
+            line_items,
+            first_present(coding_fields, "nominal_account_code", "purchase_nominal_account_code", "purchase_account_code", "account_code", "category_code", "category") or "5000",
+        )
         supplier_id = str(coding_fields.get("supplier_id") or "").strip()
         supplier_name = str(coding_fields.get("vendor_name") or coding_fields.get("supplier_name") or "").strip()
         if not supplier_id:

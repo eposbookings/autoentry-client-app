@@ -2257,11 +2257,18 @@ function normalisePurchaseReviewDraftForPayload(draft = {}, codingOptions = {}) 
     vendor_name: supplier?.supplier_name || draft.vendor_name || "",
     category: canonicalOptionValue(draft.category, accountOptions),
     vat_code: canonicalOptionValue(draft.vat_code, vatOptions),
-    line_items: (draft.line_items || []).map((line) => ({
-      ...line,
-      category: canonicalOptionValue(line.category, accountOptions),
-      vat_code: canonicalOptionValue(line.vat_code, vatOptions),
-    })),
+    line_items: (draft.line_items || []).map((line) => {
+      const isOnlyLine = (draft.line_items || []).length === 1;
+      return {
+        ...line,
+        category: canonicalOptionValue(line.category || (isOnlyLine ? draft.category : ""), accountOptions),
+        vat_code: canonicalOptionValue(line.vat_code || (isOnlyLine ? draft.vat_code : ""), vatOptions),
+        net: line.net || (isOnlyLine ? draft.net : ""),
+        vat: line.vat || (isOnlyLine ? draft.vat : ""),
+        total: line.total || (isOnlyLine ? draft.total : ""),
+        price: line.price || (isOnlyLine ? draft.net : ""),
+      };
+    }),
   };
   if (codingOptions.isNative) {
     delete payload.price_is;
@@ -2296,17 +2303,23 @@ function normaliseSalesReviewDraftForPayload(draft = {}, codingOptions = {}) {
     vat_code: canonicalOptionValue(draft.vat_code, vatOptions),
     line_items: (draft.line_items || []).map((line) => {
       const lineSalesNominal = canonicalOptionValue(line.sales_nominal || line.category, salesOptions);
+      const isOnlyLine = (draft.line_items || []).length === 1;
+      const effectiveSalesNominal = lineSalesNominal || (isOnlyLine ? salesNominal : "");
       return {
         ...line,
-        sales_nominal: lineSalesNominal,
-        sales_nominal_code: lineSalesNominal,
-        sales_account_code: lineSalesNominal,
-        nominal_account_code: lineSalesNominal,
-        net_amount: line.net,
-        vat_amount: line.vat,
-        gross_amount: line.total,
-        category: lineSalesNominal,
-        vat_code: canonicalOptionValue(line.vat_code, vatOptions),
+        sales_nominal: effectiveSalesNominal,
+        sales_nominal_code: effectiveSalesNominal,
+        sales_account_code: effectiveSalesNominal,
+        nominal_account_code: effectiveSalesNominal,
+        net: line.net || (isOnlyLine ? draft.net : ""),
+        vat: line.vat || (isOnlyLine ? draft.vat : ""),
+        total: line.total || (isOnlyLine ? draft.total : ""),
+        price: line.price || (isOnlyLine ? draft.net : ""),
+        net_amount: line.net || (isOnlyLine ? draft.net : ""),
+        vat_amount: line.vat || (isOnlyLine ? draft.vat : ""),
+        gross_amount: line.total || (isOnlyLine ? draft.total : ""),
+        category: effectiveSalesNominal,
+        vat_code: canonicalOptionValue(line.vat_code || (isOnlyLine ? draft.vat_code : ""), vatOptions),
       };
     }),
   };

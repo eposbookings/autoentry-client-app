@@ -51,6 +51,101 @@ def test_vat_period_contract_has_consistent_frontend_aliases():
     assert payload["label"] == "01/01/2026 - 31/03/2026"
 
 
+def test_single_submitted_line_inherits_missing_reviewed_header_values():
+    lines = server.submission_lines_with_single_line_header_fallback(
+        {
+            "description": "Startup Hosting",
+            "category": "5000",
+            "vat_code": "20% S",
+            "net": "6.99",
+            "vat": "1.40",
+            "total": "8.39",
+        },
+        [{
+            "description": "Startup Hosting",
+            "category": "",
+            "vat_code": "NO VAT",
+            "net": "0.00",
+            "vat": "0.00",
+            "total": "0.00",
+        }],
+        "5000",
+    )
+    normalized = server.ap_line_values(lines[0], "5000")
+    assert normalized["nominal_account_code"] == "5000"
+    assert normalized["vat_code"] == "20% S"
+    assert normalized["net_amount"] == "6.99"
+    assert normalized["vat_amount"] == "1.40"
+    assert normalized["gross_amount"] == "8.39"
+
+
+def test_multi_line_submission_does_not_copy_header_totals_to_each_line():
+    original = [
+        {"description": "First", "net": ""},
+        {"description": "Second", "net": ""},
+    ]
+    lines = server.submission_lines_with_single_line_header_fallback(
+        {"net": "100.00", "vat": "20.00", "total": "120.00"},
+        original,
+        "5000",
+    )
+    assert lines == original
+
+
+def test_open_vat_period_workspace_uses_live_transaction_summary(monkeypatch):
+    async def settings(_session, _client_id):
+        return {"vat_scheme": "standard", "vat_accounting_basis": "accrual"}
+
+    async def codes(_session, _client_id):
+        return []
+
+    async def periods(_session, _client_id, _settings):
+        return [{
+            "id": "q3",
+            "period_start": "2026-07-01",
+            "period_end": "2026-09-30",
+            "status": "open",
+            "transaction_count": 0,
+            "output_vat": "0.00",
+            "input_vat": "0.00",
+            "net_vat": "0.00",
+        }]
+
+    async def rows(_session, _query):
+        return []
+
+    async def transactions(_session, _client_id, _period):
+        return [{
+            "date": "2026-07-23",
+            "direction": "purchase",
+            "net": "6.99",
+            "vat": "1.40",
+            "box_purchase_vat": "4",
+            "box_purchase_net": "7",
+        }]
+
+    async def history(_session, _client_id, _codes):
+        return {}
+
+    async def activity(_session, _client_id):
+        return {}
+
+    monkeypatch.setattr(server, "ensure_vat_settings", settings)
+    monkeypatch.setattr(server, "ensure_vat_codes", codes)
+    monkeypatch.setattr(server, "ensure_vat_periods", periods)
+    monkeypatch.setattr(server, "many", rows)
+    monkeypatch.setattr(server, "vat_period_transactions", transactions)
+    monkeypatch.setattr(server, "native_vat_code_history_counts", history)
+    monkeypatch.setattr(server, "native_vat_basis_change_summary", activity)
+
+    workspace = asyncio.run(server.vat_engine_workspace(None, "client"))
+    period = workspace["periods"][0]
+    assert period["transaction_count"] == 1
+    assert period["output_vat"] == "0.00"
+    assert period["input_vat"] == "1.40"
+    assert period["net_vat"] == "-1.40"
+
+
 def test_outside_period_document_lines_are_forced_to_no_vat():
     lines = [{"net_amount": "100.00", "vat_amount": "20.00", "gross_amount": "120.00", "vat_code": "20% S"}]
     server.normalize_document_lines_outside_vat_period(lines)
