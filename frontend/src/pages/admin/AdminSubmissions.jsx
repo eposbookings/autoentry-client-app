@@ -2178,10 +2178,20 @@ function purchaseReviewReady(draft, codingContext) {
   );
 }
 
+function submittedItemDateIso(rawDate = "") {
+  const value = String(rawDate || "").trim();
+  if (!value) return "";
+  const isoMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+  const ukMatch = value.match(/^(\d{2})[/-](\d{2})[/-](\d{4})$/);
+  if (ukMatch) return `${ukMatch[3]}-${ukMatch[2]}-${ukMatch[1]}`;
+  return "";
+}
+
 function submittedItemVatActiveForDate(context = {}, rawDate = "") {
-  const date = String(rawDate || "").slice(0, 10);
-  const start = String(context.vat_start_date || "").slice(0, 10);
-  const end = String(context.vat_end_date || "").slice(0, 10);
+  const date = submittedItemDateIso(rawDate);
+  const start = submittedItemDateIso(context.vat_start_date);
+  const end = submittedItemDateIso(context.vat_end_date);
   return Boolean(context.vat_client && context.vat_configured && date && start && date >= start && (!end || date <= end));
 }
 

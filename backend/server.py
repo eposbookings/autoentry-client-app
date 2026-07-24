@@ -7000,6 +7000,33 @@ async def validate_native_vat_code(session: AsyncSession, client_id: str, vat_co
     return match
 
 
+def normalize_accounting_date(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d %b %Y", "%d %B %Y"):
+        try:
+            return datetime.strptime(raw[:32], fmt).date().isoformat()
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(raw[:32]).date().isoformat()
+    except (TypeError, ValueError):
+        return ""
+
+
+def submitted_item_vat_active_for_date(context: Optional[dict], transaction_date: Any, registered: bool = False) -> bool:
+    context = context or {}
+    date_value = normalize_accounting_date(transaction_date)
+    start = normalize_accounting_date(context.get("vat_start_date"))
+    end = normalize_accounting_date(context.get("vat_end_date"))
+    vat_client = bool(context.get("vat_client", registered))
+    if "vat_configured" not in context and not start:
+        return vat_client
+    configured = bool(context.get("vat_configured", vat_client and start))
+    return bool(vat_client and configured and date_value and start and date_value >= start and (not end or date_value <= end))
+
+
 async def native_vat_effective_context(
     session: AsyncSession,
     client_id: str,
@@ -7008,12 +7035,21 @@ async def native_vat_effective_context(
 ) -> dict:
     client = await get_user_by_id(session, client_id)
     settings_row = await ensure_vat_settings(session, client_id)
-    start = str(settings_row.get("vat_start_date") or "")[:10]
-    end = str(settings_row.get("vat_end_date") or "")[:10]
-    date_value = str(transaction_date or "")[:10]
+    start = normalize_accounting_date(settings_row.get("vat_start_date"))
+    end = normalize_accounting_date(settings_row.get("vat_end_date"))
+    date_value = normalize_accounting_date(transaction_date)
     registered = bool((client or {}).get("is_vat_client"))
     configured = registered and bool(start) and bool(settings_row.get("vat_scheme")) and bool(settings_row.get("vat_frequency"))
-    active = bool(configured and date_value and date_value >= start and (not end or date_value <= end))
+    active = submitted_item_vat_active_for_date(
+        {
+            "vat_client": registered,
+            "vat_configured": configured,
+            "vat_start_date": start,
+            "vat_end_date": end,
+        },
+        date_value,
+        registered,
+    )
     default_key = {
         "sales": "default_sales_vat_code",
         "bank": "default_bank_vat_code",
@@ -21911,8 +21947,6 @@ async def get_submitted_items_coding_context(
             "bank_accounts": [bank_account_coding_choice(row) for row in bank_accounts][:200] if route in {"purchase", "sales"} else [],
             **vat_context,
         }
-        if document_date and not vat_context["vat_active_for_date"]:
-            context["vat_codes"] = [choice for choice in context["vat_codes"] if str(choice.get("value") or choice.get("code") or "").upper() == "NO VAT"]
         account_options = context["sales_accounts"] if route == "sales" else context["purchase_accounts"] if route == "purchase" else []
         context["categories"] = coding_choice_texts(account_options)
         context["supplier_names"] = coding_choice_texts(context["suppliers"], True)
@@ -22173,19 +22207,26 @@ async def review_document_with_openai(
     if not api_key:
         raise HTTPException(status_code=400, detail="AI document check is enabled for this client, but OpenAI settings are not configured. Ask your administrator to add an API key.")
 
-    is_vat_client = bool(client_user.get("is_vat_client"))
-    vat_active_for_date = bool((coding_choices or {}).get("vat_active_for_date", is_vat_client))
+    is_vat_client = bool((coding_choices or {}).get("vat_client", client_user.get("is_vat_client")))
+    vat_configured = bool((coding_choices or {}).get("vat_configured", is_vat_client))
+    known_document_date = normalize_accounting_date((coding_choices or {}).get("transaction_date") or item.get("date"))
     invoice_kind = "purchase" if item.get("type") == "purchase" else "sales"
-    vat_instruction = (
-        "This is a VAT client. If the document is an invoice/receipt but VAT evidence is missing "
-        "(VAT number, VAT amount/rate, or net/gross breakdown where expected), use needs_review "
-        "rather than rejected unless it is clearly not an invoice/receipt."
-        if vat_active_for_date
-        else (
-            "This document is outside the client's VAT registration period. Do not reject because VAT details "
-            "are absent. Set header and line VAT to 0.00 and use NO VAT only."
+    if is_vat_client and vat_configured:
+        vat_instruction = (
+            "This is a VAT-registered client. Extract the document date and all visible VAT evidence, including "
+            "VAT number, VAT rate/code, net, VAT and gross amounts. Do not suppress visible VAT merely because the "
+            "document date was not known before extraction. The application will validate VAT registration dates "
+            "against the extracted document date after extraction. If expected VAT evidence is missing, use "
+            "needs_review rather than rejected unless it is clearly not an invoice/receipt. "
+            f"Native VAT effective dates: start {(coding_choices or {}).get('vat_start_date') or 'not configured'}, "
+            f"end {(coding_choices or {}).get('vat_end_date') or 'open-ended'}; "
+            f"known document date before extraction: {known_document_date or 'not known'}."
         )
-    )
+    else:
+        vat_instruction = (
+            "This client is not configured for native VAT. Do not reject because VAT details are absent. "
+            "Set header and line VAT to 0.00 and use NO VAT only."
+        )
     prompt = (
         "Check whether the uploaded document is a valid invoice or receipt for accounting submission. "
         "If it is a valid invoice or receipt, identify whether it appears paid by card, paid by cash, "
@@ -22223,11 +22264,6 @@ async def review_document_with_openai(
         "leave that field blank for the accountant to choose. "
         f"Available accounting choices: {json.dumps(coding_choices or {})[:7000]}. "
         f"Published correction examples for this client/type: {json.dumps(coding_history or [])[:5000]}"
-    )
-    vat_instruction += (
-        f" Native VAT effective dates: start {(coding_choices or {}).get('vat_start_date') or 'not configured'}, "
-        f"end {(coding_choices or {}).get('vat_end_date') or 'open-ended'}; "
-        f"VAT active for this document date: {'yes' if vat_active_for_date else 'no'}."
     )
     line_item_schema = {
         "type": "object",
@@ -22375,7 +22411,28 @@ async def review_document_with_openai(
             if output_text:
                 break
     try:
-        return apply_synced_coding_choices(normalize_ai_review(json.loads(output_text or "{}")), coding_choices, vat_active_for_date)
+        normalized_review = normalize_ai_review(json.loads(output_text or "{}"))
+        extracted_fields = normalized_review.get("coding_fields") or {}
+        extracted_document_date = extracted_fields.get("date") or item.get("date")
+        normalized_extracted_date = normalize_accounting_date(extracted_document_date)
+        if is_vat_client and vat_configured and not normalized_extracted_date:
+            vat_active_for_extracted_date = True
+            normalized_review["status"] = "needs_review"
+            normalized_review["message"] = " ".join(filter(None, [
+                normalized_review.get("message"),
+                "Confirm the document date before publishing so VAT registration dates can be validated.",
+            ]))[:240]
+        else:
+            vat_active_for_extracted_date = submitted_item_vat_active_for_date(
+                coding_choices,
+                normalized_extracted_date,
+                is_vat_client,
+            )
+        return apply_synced_coding_choices(
+            normalized_review,
+            coding_choices,
+            vat_active_for_extracted_date,
+        )
     except json.JSONDecodeError:
         logger.warning("OpenAI invoice check returned non-JSON output: %s", output_text)
         return {"status": "needs_review", "message": "Please check this document before submitting.", "document_type": "unknown", "payment_method": "not_clear", "confidence": "low"}
