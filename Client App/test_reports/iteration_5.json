@@ -1,0 +1,21 @@
+{
+  "summary": "Verified CSV upload normalization (DD/MM/YYYY storage), missing-column 400 error, per-row error messages, and EPOS Accountancy brand across login/admin/client shells. All scenarios pass.",
+  "tested_scope": ["backend", "frontend", "integration", "auth"],
+  "passed": [
+    "Admin login POST /api/auth/login returns token (admin@eposaccountancy.co.uk)",
+    "Happy path: POST /api/admin/clients/{id}/upload-csv with /app/sample_purchase.csv -> {rows_imported:3, errors:[]}",
+    "Missing Date column -> HTTP 400 detail: 'CSV is missing required column(s): Date. Your file must have a header row with: Description, Date, Amount.'",
+    "Unparseable date -> HTTP 200, rows_imported:0, errors:[\"Row 2: Date 'not-a-date' is not a recognised format (expected DD/MM/YYYY)\"]",
+    "Date variants normalised (2025-12-01, 01-12-2025, 01/12/2025) -> all stored as '01/12/2025' via GET /api/client/items",
+    "GET /api/client/items returns date field formatted as DD/MM/YYYY",
+    "Login page renders EPOS Accountancy brand + SVG mark; data-testid login-email-input/login-password-input/login-submit-btn present and functional",
+    "Admin login navigates to /admin and data-testid admin-shell visible; sidebar shows 'EPOS Accountancy / Practice Admin'",
+    "Client login navigates to /portal; data-testid client-shell and brand-link present; brand text 'EPOS Accountancy · Portal'"
+  ],
+  "failed": [],
+  "action_items": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "retest_needed": false,
+  "full_testing_deferred": true,
+  "notes": "Created test client csvtest1782713463@example.com (id 6a420c7815fac58ce2da55c3) for CSV upload + client-items verification. brand-link data-testid only exists on client-shell (ClientLayout.jsx); login and admin pages render brand without that specific testid but display 'EPOS Accountancy' text + SVG."
+}

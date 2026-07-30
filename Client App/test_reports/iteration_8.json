@@ -1,0 +1,37 @@
+{
+  "summary": "Verified the watermark font bundling fix end-to-end. Backend: 5/5 submission regression tests pass (photo+comment, photo w/o comment, no-photo+comment, additional-invoice+photo+comment) plus 3/3 new font-legibility tests pass — server.load_font(True,66) returns a FreeTypeFont with .size==66 and .path ending in DejaVuSans-Bold.ttf (proving a real TTF is loaded, not the tiny PIL default bitmap), stamp_image produces a dark bottom band spanning >15% of image height with >1.5% bright text pixels, and render_document_page draws real dark text on its white page. Frontend: logged in as admin, opened /admin/submissions, clicked Preview on a fresh photo+comment submission — the previewed image shows the timestamp line ('01 Jul 2026 · 07:08 UTC') and the comment ('Add-another watermark check') in HUGE bold white text on a dark band that covers roughly the bottom half of the image. Text is unambiguously legible without zooming; the previous tiny-default-font symptom is gone.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      { "screen": "Admin > Submissions > Preview dialog", "issues": ["A11y warning in console: 'Missing Description or aria-describedby for DialogContent' — non-blocking, but consider adding a DialogDescription for screen readers."] }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_watermark_submit.py",
+    "/app/backend/tests/test_watermark_font.py",
+    "/app/test_reports/pytest/watermark_results.xml",
+    "/app/test_reports/pytest/watermark_font_results.xml"
+  ],
+  "action_items": [
+    "None for the watermark fix — ship it.",
+    "Optional: add DialogDescription to the Submitted-document preview dialog to silence the a11y console warning."
+  ],
+  "critical_code_review_comments": [
+    "load_font() correctly probes /app/backend/assets/fonts/DejaVuSans[-Bold].ttf first and falls back to ImageFont.load_default(), so if the ttf files ever go missing again the behaviour will silently degrade to tiny text — consider logging a WARNING when the fallback path is hit so this failure mode is visible in the logs next time.",
+    "stamp_image() sizes title=max(48, W//18) and body=max(40, W//24). With the actual TTF loaded these produce ~66px and ~44px on 1200-wide test images, which the visual preview confirms is clearly legible (see screenshot). No further tuning needed.",
+    "The bundled fonts add ~1.4 MB to the repo (708KB + 759KB). Acceptable for portability; if repo size becomes an issue, install fonts-dejavu-core via the base image instead.",
+    "server.py is 966 lines (up from 947) — still under the 1000-line rule of thumb but now closer; splitting stamp_image/render_document_page into a submissions/rendering module would improve maintainability."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_watermark_font.py (new — proves TTF is loaded and the band is large + bright)"
+  ],
+  "success_rate": { "backend": "100% (5/5 submit + 3/3 font tests)", "frontend": "100% (admin login + preview visually confirms large legible watermark)" },
+  "test_credentials": "admin@eposaccountancy.co.uk / 12345Sived; testclient@example.com / Client12345",
+  "seed_data_creation": "Reused the existing test_client (6a44ae23b44442303344c749) and re-seeded 4 purchase outstanding items per pytest run via /api/admin/clients/{id}/upload-csv with descriptions prefixed TEST_watermark_. All 5 seeded items were consumed by the 4 test submissions and the additional-invoice test.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "The bundled TTF fonts live at /app/backend/assets/fonts/DejaVuSans[-Bold].ttf. To confirm quickly: `python -c \"import sys;sys.path.insert(0,'/app/backend');import server;print(server.load_font(True,66).size, server.load_font(True,66).path)\"` should print `66 /app/backend/assets/fonts/DejaVuSans-Bold.ttf`. The pytest suites at tests/test_watermark_submit.py and tests/test_watermark_font.py both need REACT_APP_BACKEND_URL exported before running (they intentionally have no default). Amazon SES SMTP is live so submissions actually send email; SMTP failures surface as HTTP 400 by design.",
+  "rca of the issue": "The DejaVu TTF fonts were absent from the environment (find / -name DejaVu* returned nothing), so PIL's ImageFont.truetype() raised inside stamp_image()/render_document_page() and the code silently fell back to ImageFont.load_default() — a fixed-size ~10px bitmap font that ignores the requested pixel size, hence tiny unreadable watermarks regardless of how large the size parameter was set. FIX (verified this iteration): bundled DejaVuSans.ttf and DejaVuSans-Bold.ttf into /app/backend/assets/fonts/, added a load_font(bold, size) helper that resolves those paths, and pointed stamp_image (title=W//18, body=W//24) and render_document_page at load_font. Verified programmatically (server.load_font(True,66).size == 66 with .path pointing at the bundled ttf) and visually (admin preview shows huge legible bold white text on the dark band)."
+}

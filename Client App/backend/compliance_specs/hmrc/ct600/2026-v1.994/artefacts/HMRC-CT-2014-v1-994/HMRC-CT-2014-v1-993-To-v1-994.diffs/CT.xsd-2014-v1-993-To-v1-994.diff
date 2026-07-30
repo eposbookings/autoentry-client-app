@@ -1,0 +1,309 @@
+@@
+ <?xml version="1.0" encoding="UTF-8"?>
+ 
+-<xsd:schema version='1.993' elementFormDefault='qualified' attributeFormDefault='unqualified' id='CT' targetNamespace='http://www.govtalk.gov.uk/taxation/CT/5' xmlns:xsd='http://www.w3.org/2001/XMLSchema' xmlns:ct='http://www.govtalk.gov.uk/taxation/CT/5'>
++<xsd:schema version='1.994' elementFormDefault='qualified' attributeFormDefault='unqualified' id='CT' targetNamespace='http://www.govtalk.gov.uk/taxation/CT/5' xmlns:xsd='http://www.w3.org/2001/XMLSchema' xmlns:ct='http://www.govtalk.gov.uk/taxation/CT/5'>
+   <xsd:annotation>
+     <xsd:documentation>HMRC FBI Corporation Tax Return</xsd:documentation>
+     <xsd:appinfo>
+       <gt:KeyWords xmlns:gt='http://www.govtalk.gov.uk/CM/core'>taxation, Corporation, FBI, File By Internet, HMRC, CT600, CT600A, CT600B, CT600C, CT600D, CT600E, CT600F, CT600G, CT600H, CT600I, CT600J, CT600K, CT600L, CT600M, CT600N, CT600P</gt:KeyWords>
+       <gms:Metadata xmlns:gms='http://www.govtalk.gov.uk/CM/gms-xs'>
+@@
+         <gms:Creator>HMRC</gms:Creator>
+         <gms:Date>
+           <gms:Created>2014-07-15</gms:Created>
+         </gms:Date>
+         <gms:Date>
+-          <gms:Modified>2024-11-15</gms:Modified>
++          <gms:Modified>2025-10-01</gms:Modified>
+         </gms:Date>
+         <gms:Identifier>{http://www.govtalk.gov.uk/taxation/CT/5}CT</gms:Identifier>
+         <gms:Language>[ISO 639-2/B] ENG</gms:Language>
+         <gms:Publisher>HMRC</gms:Publisher>
+         <gms:Relation>
+@@
+         </gms:Relation>
+         <gms:Relation>
+           <gms:ProvidesDefinitionOf>CT_YesType</gms:ProvidesDefinitionOf>
+         </gms:Relation>
+         <gms:Rights>
+-          <gms:Copyright>(C) Crown Copyright 2001-2024</gms:Copyright>
++          <gms:Copyright>(C) Crown Copyright 2001-2025</gms:Copyright>
+         </gms:Rights>
+         <gms:Subject>
+           <gms:Category>Economics and Finance - Tax</gms:Category>
+         </gms:Subject>
+         <gms:Subject>
+@@
+                   <xsd:element name='GiftAid' type='ct:CTwholePoundStructure' minOccurs='0' maxOccurs='1'></xsd:element>
+                   <xsd:element name='OtherCharities' type='ct:CTwholePoundStructure' minOccurs='0' maxOccurs='1'></xsd:element>
+                   <xsd:element name='GiftsOfShares' type='ct:CTwholePoundStructure' minOccurs='0' maxOccurs='1'></xsd:element>
+                   <xsd:element name='GiftOfRealProperty' type='ct:CTwholePoundStructure' minOccurs='0' maxOccurs='1'></xsd:element>
+                   <xsd:element name='OtherSources' type='ct:CTwholePoundStructure' minOccurs='0' maxOccurs='1'></xsd:element>
++                  <xsd:element name='LegacyIncome' type='ct:CTwholePoundStructure' minOccurs='0' maxOccurs='1'></xsd:element>
+                   <xsd:element name='Total' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                 </xsd:sequence>
+               </xsd:complexType>
+             </xsd:element>
+             <xsd:element name='Expenditure' minOccurs='0' maxOccurs='1'>
+@@
+                       <xsd:restriction base='xsd:integer'>
+                         <xsd:maxInclusive value='999'></xsd:maxInclusive>
+                       </xsd:restriction>
+                     </xsd:simpleType>
+                   </xsd:element>
++                  <xsd:element name='LegacyPayments' minOccurs='0' maxOccurs='1'>
++                    <xsd:complexType>
++                      <xsd:sequence>
++                        <xsd:element name='Payment' minOccurs='1' maxOccurs='unbounded'>
++                          <xsd:complexType>
++                            <xsd:sequence>
++                              <xsd:element name='Forename' type='ct:CTexcludedCharsStringType' minOccurs='1' maxOccurs='1'></xsd:element>
++                              <xsd:element name='Surname' type='ct:CTexcludedCharsStringType' minOccurs='1' maxOccurs='1'></xsd:element>
++                              <xsd:element name='Address' type='ct:CT_CTaddressLineType' minOccurs='1' maxOccurs='2'></xsd:element>
++                              <xsd:element name='Postcode' type='ct:CT_PostCodeType' minOccurs='0' maxOccurs='1'></xsd:element>
++                              <xsd:element name='Overseas' type='ct:CT_YesType' minOccurs='0' maxOccurs='1'></xsd:element>
++                              <xsd:element name='Date' type='ct:CT_DateType' minOccurs='1' maxOccurs='1'></xsd:element>
++                              <xsd:element name='Amount' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
++                            </xsd:sequence>
++                          </xsd:complexType>
++                        </xsd:element>
++                        <xsd:element name='Total' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
++                      </xsd:sequence>
++                    </xsd:complexType>
++                  </xsd:element>
+                 </xsd:sequence>
+               </xsd:complexType>
+             </xsd:element>
+           </xsd:sequence>
+         </xsd:complexType>
+@@
+       </xsd:element>
+       <xsd:element name='Step3' minOccurs='0' maxOccurs='1'>
+         <xsd:complexType>
+           <xsd:sequence>
+             <xsd:element name='Step2BalanceCarriedForwardToStep3' type='ct:CTpoundPenceStructure' minOccurs='1' maxOccurs='1'></xsd:element>
++            <xsd:element name='ExceptionS1112E' type='ct:CT_YesType' minOccurs='0' maxOccurs='1'></xsd:element>
++            <xsd:element name='TotalExpenditureOnEPWsFromAndSubcontractingToConnectedPersons' type='ct:CTwholePoundStructure' minOccurs='0' maxOccurs='1'></xsd:element>
++            <xsd:element name='PAYENICsForWhichTheCompanyIsLiableInThisAP' type='ct:CTwholePoundStructure' minOccurs='0' maxOccurs='1'></xsd:element>
++            <xsd:element name='EmployerPAYEreference' type='ct:CT_PayeReferenceStructure' minOccurs='0' maxOccurs='2'></xsd:element>
++            <xsd:element name='RelevantPAYENICsLiabilityOfConnectedCompanies' type='ct:CTwholePoundStructure' minOccurs='0' maxOccurs='1'></xsd:element>
++            <xsd:element name='ConnectedCompaniesEmployerPAYEreference' type='ct:CT_PayeReferenceStructure' minOccurs='0' maxOccurs='unbounded'></xsd:element>
+             <xsd:element name='TotalRelevantExpenditureOnRandDWorkersPAYEandNationalInsuranceContributions' type='ct:CTpoundPenceStructure' minOccurs='0' maxOccurs='1'></xsd:element>
+             <xsd:element name='Step3RestrictionCarriedForwardToNextAP' type='ct:CTpoundPenceStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+           </xsd:sequence>
+         </xsd:complexType>
+       </xsd:element>
+@@
+           <xsd:sequence>
+             <xsd:element name='Film' minOccurs='0' maxOccurs='1'>
+               <xsd:complexType>
+                 <xsd:sequence>
+                   <xsd:element name='RelevantGlobalExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
++                  <xsd:element name='UKrelevantGlobalExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='QualifyingExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='ExpenditureCreditClaimed' type='ct:CTpoundPenceStructure' minOccurs='1' maxOccurs='1'></xsd:element>
++                  <xsd:element name='AdditionalCreditForVisualEffects' type='ct:CTpoundPenceStructure' minOccurs='0' maxOccurs='1'></xsd:element>
+                 </xsd:sequence>
+               </xsd:complexType>
+             </xsd:element>
+             <xsd:element name='HighEndTV' minOccurs='0' maxOccurs='1'>
+               <xsd:complexType>
+                 <xsd:sequence>
+                   <xsd:element name='RelevantGlobalExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
++                  <xsd:element name='UKrelevantGlobalExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='QualifyingExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='ExpenditureCreditClaimed' type='ct:CTpoundPenceStructure' minOccurs='1' maxOccurs='1'></xsd:element>
++                  <xsd:element name='AdditionalCreditForVisualEffects' type='ct:CTpoundPenceStructure' minOccurs='0' maxOccurs='1'></xsd:element>
+                 </xsd:sequence>
+               </xsd:complexType>
+             </xsd:element>
+             <xsd:element name='ChildrensTV' minOccurs='0' maxOccurs='1'>
+               <xsd:complexType>
+                 <xsd:sequence>
+                   <xsd:element name='RelevantGlobalExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
++                  <xsd:element name='UKrelevantGlobalExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='QualifyingExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='ExpenditureCreditClaimed' type='ct:CTpoundPenceStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                 </xsd:sequence>
+               </xsd:complexType>
+             </xsd:element>
+             <xsd:element name='Animation' minOccurs='0' maxOccurs='1'>
+               <xsd:complexType>
+                 <xsd:sequence>
+                   <xsd:element name='RelevantGlobalExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
++                  <xsd:element name='UKrelevantGlobalExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='QualifyingExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='ExpenditureCreditClaimed' type='ct:CTpoundPenceStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                 </xsd:sequence>
+               </xsd:complexType>
+             </xsd:element>
+             <xsd:element name='IndependentFilm' minOccurs='0' maxOccurs='1'>
+               <xsd:complexType>
+                 <xsd:sequence>
+                   <xsd:element name='RelevantGlobalExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
++                  <xsd:element name='UKrelevantGlobalExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='QualifyingExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='ExpenditureCreditClaimed' type='ct:CTpoundPenceStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                 </xsd:sequence>
+               </xsd:complexType>
+             </xsd:element>
+             <xsd:element name='TotalAudioVisual' minOccurs='1' maxOccurs='1'>
+               <xsd:complexType>
+                 <xsd:sequence>
+                   <xsd:element name='TotalRelevantGlobalExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
++                  <xsd:element name='TotalUKrelevantGlobalExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='TotalQualifyingExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='TotalExpenditureCreditClaimed' type='ct:CTpoundPenceStructure' minOccurs='1' maxOccurs='1'></xsd:element>
++                  <xsd:element name='TotalAdditionalCreditForVisualEffects' type='ct:CTpoundPenceStructure' minOccurs='0' maxOccurs='1'></xsd:element>
+                 </xsd:sequence>
+               </xsd:complexType>
+             </xsd:element>
+           </xsd:sequence>
+         </xsd:complexType>
+@@
+           <xsd:sequence>
+             <xsd:element name='VideoGames' minOccurs='1' maxOccurs='1'>
+               <xsd:complexType>
+                 <xsd:sequence>
+                   <xsd:element name='RelevantGlobalExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
++                  <xsd:element name='UKrelevantGlobalExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='QualifyingExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='ExpenditureCreditClaimed' type='ct:CTpoundPenceStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                 </xsd:sequence>
+               </xsd:complexType>
+             </xsd:element>
+             <xsd:element name='TotalVideoGames' minOccurs='1' maxOccurs='1'>
+               <xsd:complexType>
+                 <xsd:sequence>
+                   <xsd:element name='TotalRelevantGlobalExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
++                  <xsd:element name='TotalUKrelevantGlobalExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='TotalQualifyingExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='TotalExpenditureCreditClaimed' type='ct:CTpoundPenceStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                 </xsd:sequence>
+               </xsd:complexType>
+             </xsd:element>
+@@
+       <xsd:element name='Step1' minOccurs='0' maxOccurs='1'>
+         <xsd:complexType>
+           <xsd:sequence>
+             <xsd:element name='QualifyingExpenditureOnWhichAVECisClaimedInThisAccountingPeriod' type='ct:CTwholePoundStructure' minOccurs='0' maxOccurs='1'></xsd:element>
+             <xsd:element name='AVECclaim' type='ct:CTpoundPenceStructure' minOccurs='0' maxOccurs='1'></xsd:element>
++            <xsd:element name='AdditionalAVECcredit' type='ct:CTpoundPenceStructure' minOccurs='0' maxOccurs='1'></xsd:element>
+             <xsd:element name='QualifyingExpenditureOnWhichVGECisClaimedInThisAccountingPeriod' type='ct:CTwholePoundStructure' minOccurs='0' maxOccurs='1'></xsd:element>
+             <xsd:element name='VGECclaim' type='ct:CTpoundPenceStructure' minOccurs='0' maxOccurs='1'></xsd:element>
+             <xsd:element name='TotalAVECandVGECforTheAccountingPeriod' type='ct:CTpoundPenceStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+             <xsd:element name='RemainingCorporationTaxLiability' type='ct:CTpoundPenceStructure' minOccurs='0' maxOccurs='1'></xsd:element>
+             <xsd:element name='IncomeTaxDeductedFromProfits' type='ct:CTpoundPenceStructure' minOccurs='0' maxOccurs='1'></xsd:element>
+@@
+           <xsd:sequence>
+             <xsd:element name='Film' minOccurs='0' maxOccurs='1'>
+               <xsd:complexType>
+                 <xsd:sequence>
+                   <xsd:element name='CoreExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
++                  <xsd:element name='UKcoreExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='AdditionalDeduction' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='LossesSurrenderedForTaxCredit' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='TaxCreditClaimed' type='ct:CTpoundPenceStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                 </xsd:sequence>
+               </xsd:complexType>
+             </xsd:element>
+             <xsd:element name='HighEndTV' minOccurs='0' maxOccurs='1'>
+               <xsd:complexType>
+                 <xsd:sequence>
+                   <xsd:element name='CoreExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
++                  <xsd:element name='UKcoreExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='AdditionalDeduction' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='LossesSurrenderedForTaxCredit' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='TaxCreditClaimed' type='ct:CTpoundPenceStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                 </xsd:sequence>
+               </xsd:complexType>
+             </xsd:element>
+             <xsd:element name='ChildrensTV' minOccurs='0' maxOccurs='1'>
+               <xsd:complexType>
+                 <xsd:sequence>
+                   <xsd:element name='CoreExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
++                  <xsd:element name='UKcoreExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='AdditionalDeduction' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='LossesSurrenderedForTaxCredit' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='TaxCreditClaimed' type='ct:CTpoundPenceStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                 </xsd:sequence>
+               </xsd:complexType>
+             </xsd:element>
+             <xsd:element name='Animation' minOccurs='0' maxOccurs='1'>
+               <xsd:complexType>
+                 <xsd:sequence>
+                   <xsd:element name='CoreExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
++                  <xsd:element name='UKcoreExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='AdditionalDeduction' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='LossesSurrenderedForTaxCredit' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='TaxCreditClaimed' type='ct:CTpoundPenceStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                 </xsd:sequence>
+               </xsd:complexType>
+             </xsd:element>
+             <xsd:element name='VideoGames' minOccurs='0' maxOccurs='1'>
+               <xsd:complexType>
+                 <xsd:sequence>
+                   <xsd:element name='CoreExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
++                  <xsd:element name='UKcoreExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='AdditionalDeduction' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='LossesSurrenderedForTaxCredit' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='TaxCreditClaimed' type='ct:CTpoundPenceStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                 </xsd:sequence>
+               </xsd:complexType>
+             </xsd:element>
+             <xsd:element name='TotalAudioVisualAndVideoGames' minOccurs='1' maxOccurs='1'>
+               <xsd:complexType>
+                 <xsd:sequence>
+                   <xsd:element name='TotalCoreExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
++                  <xsd:element name='TotalUKcoreExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='TotalAdditionalDeduction' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='TotalLossesSurrenderedForTaxCredit' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='TotalTaxCreditClaimed' type='ct:CTpoundPenceStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                 </xsd:sequence>
+               </xsd:complexType>
+@@
+           <xsd:sequence>
+             <xsd:element name='Theatre' minOccurs='0' maxOccurs='1'>
+               <xsd:complexType>
+                 <xsd:sequence>
+                   <xsd:element name='CoreExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
++                  <xsd:element name='UKcoreExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='AdditionalDeduction' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='LossesSurrenderedForTaxCredit' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='TaxCreditClaimed' type='ct:CTpoundPenceStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                 </xsd:sequence>
+               </xsd:complexType>
+             </xsd:element>
+             <xsd:element name='Orchestra' minOccurs='0' maxOccurs='1'>
+               <xsd:complexType>
+                 <xsd:sequence>
+                   <xsd:element name='CoreExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
++                  <xsd:element name='UKcoreExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='AdditionalDeduction' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='LossesSurrenderedForTaxCredit' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='TaxCreditClaimed' type='ct:CTpoundPenceStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                 </xsd:sequence>
+               </xsd:complexType>
+             </xsd:element>
+             <xsd:element name='MuseumGalleryExhibition' minOccurs='0' maxOccurs='1'>
+               <xsd:complexType>
+                 <xsd:sequence>
+                   <xsd:element name='CoreExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
++                  <xsd:element name='UKcoreExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='AdditionalDeduction' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='LossesSurrenderedForTaxCredit' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='TaxCreditClaimed' type='ct:CTpoundPenceStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                 </xsd:sequence>
+               </xsd:complexType>
+             </xsd:element>
+             <xsd:element name='TotalCulturalReliefs' minOccurs='1' maxOccurs='1'>
+               <xsd:complexType>
+                 <xsd:sequence>
+                   <xsd:element name='TotalCoreExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
++                  <xsd:element name='TotalUKcoreExpenditure' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='TotalAdditionalDeduction' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='TotalLossesSurrenderedForTaxCredit' type='ct:CTwholePoundStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                   <xsd:element name='TotalTaxCreditClaimed' type='ct:CTpoundPenceStructure' minOccurs='1' maxOccurs='1'></xsd:element>
+                 </xsd:sequence>
+               </xsd:complexType>

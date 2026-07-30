@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fieldcraft PDF</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark">F</span><span>Fieldcraft</span></div>
+      <div class="document-title" id="documentTitle">No document open</div>
+      <div class="header-actions">
+        <button class="button ghost" id="openButton">Open PDF</button>
+        <button class="button primary" id="exportButton" disabled>Export fillable PDF</button>
+      </div>
+    </header>
+    <main class="workspace">
+      <section class="viewer">
+        <div class="toolbar">
+          <div class="tool-group">
+            <button class="icon-button" id="zoomOut" title="Zoom out">−</button>
+            <span id="zoomLabel">100%</span>
+            <button class="icon-button" id="zoomIn" title="Zoom in">+</button>
+            <button class="icon-button wide" id="fitButton">Fit width</button>
+          </div>
+          <div class="tool-group">
+            <button class="tool active" data-tool="select">↖ Select</button>
+            <button class="tool" data-tool="text">T Text field</button>
+            <button class="tool" data-tool="checkbox">✓ Checkbox</button>
+            <button class="tool" data-tool="signature">⌁ Signature</button>
+          </div>
+          <button class="button detect" id="detectButton" disabled>Prepare a Form</button>
+        </div>
+        <div class="stage" id="stage">
+          <div class="welcome" id="welcome">
+            <div class="welcome-icon">▤</div>
+            <h1>Turn static PDFs into working forms</h1>
+            <p>Open a document, detect printed boxes, or draw editable fields anywhere on the page.</p>
+            <button class="button primary large" id="welcomeOpen">Open a PDF</button>
+          </div>
+          <div class="pages" id="pages"></div>
+        </div>
+        <div class="statusbar">
+          <span id="statusText">Ready</span>
+          <span id="fieldCount">0 fields</span>
+        </div>
+      </section>
+      <aside class="right-panel">
+        <div class="panel-heading">Field properties</div>
+        <div class="prepare-settings">
+          <div class="settings-title">Preparation settings</div>
+          <label>Standard text size
+            <select id="prepareFontSize">
+              <option value="8">8 pt</option><option value="9">9 pt</option>
+              <option value="10" selected>10 pt</option><option value="11">11 pt</option>
+              <option value="12">12 pt</option><option value="14">14 pt</option>
+            </select>
+          </label>
+          <label>Checkbox mark
+            <select id="prepareMarkStyle">
+              <option value="x" selected>X mark</option>
+              <option value="tick">Tick mark</option>
+            </select>
+          </label>
+          <label class="switch-row"><span>White boxes only</span><input id="prepareWhiteOnly" type="checkbox" checked /></label>
+        </div>
+        <div id="formOverview" class="form-overview hidden">
+          <div class="overview-title"><span class="overview-spark">✦</span> Form overview</div>
+          <p id="overviewSummary"></p>
+          <div class="overview-stats">
+            <div><strong id="overviewText">0</strong><span>Text fields</span></div>
+            <div><strong id="overviewChecks">0</strong><span>Mark / X</span></div>
+            <div><strong id="overviewSkipped">0</strong><span>Filled skipped</span></div>
+          </div>
+          <p class="overview-note">Uses box spacing, row grouping, and nearby question wording. Review overlays before exporting.</p>
+        </div>
+        <div id="noSelection" class="empty-properties">
+          <div class="properties-icon">◇</div>
+          <strong>No field selected</strong>
+          <p>Select a field on the document to edit its properties.</p>
+        </div>
+        <form id="properties" class="properties hidden">
+          <label>Field name<input id="propName" type="text" /></label>
+          <label>Type<select id="propType"><option value="text">Text field</option><option value="checkbox">Checkbox</option><option value="signature">Signature</option></select></label>
+          <label>Placeholder<input id="propPlaceholder" type="text" /></label>
+          <label>Text alignment<select id="propAlignment"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label>
+          <label class="switch-row"><span>Required</span><input id="propRequired" type="checkbox" /></label>
+          <label class="switch-row"><span>Multiline</span><input id="propMultiline" type="checkbox" /></label>
+          <div class="row">
+            <label>Font size<input id="propFontSize" type="number" min="6" max="48" /></label>
+            <label>Border<input id="propBorder" type="number" min="0" max="5" step=".5" /></label>
+          </div>
+          <button type="button" class="button danger" id="deleteField">Delete field</button>
+        </form>
+        <div class="tips">
+          <strong>Quick guide</strong>
+          <p><strong>Prepare a Form</strong> converts visible PDF boxes into fixed-size editable fields. You can also draw fields manually with the tools above.</p>
+        </div>
+      </aside>
+    </main>
+    <div class="toast" id="toast"></div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
