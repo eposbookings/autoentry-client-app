@@ -179,22 +179,42 @@ jobs:
               exit 1
             fi
 
+            echo "Database backup assessment"
+            docker compose exec -T mysql sh -c \
+              'mysql -h127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" -D"$MYSQL_DATABASE" -N -e "
+                SELECT CONCAT(
+                  COUNT(*), \" tables, \",
+                  ROUND(COALESCE(SUM(data_length + index_length), 0) / 1024 / 1024, 2),
+                  \" MB\"
+                )
+                FROM information_schema.tables
+                WHERE table_schema = DATABASE();
+              "'
+
             DUMP_TEMP="$BACKUP_ROOT/mysql.sql.tmp"
             DUMP_COMPLETE=false
-            for attempt in $(seq 1 5); do
+            for attempt in $(seq 1 2); do
               rm -f "$DUMP_TEMP"
-              if docker compose exec -T mysql sh -c \
-                'exec mysqldump -h127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --quick --routines --triggers "$MYSQL_DATABASE"' \
-                > "$DUMP_TEMP" && [ -s "$DUMP_TEMP" ]; then
+              echo "Starting database backup attempt $attempt/2 (10-minute limit)"
+              DUMP_EXIT=0
+              timeout 600 docker compose exec -T mysql sh -c \
+                'exec mysqldump -h127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --quick --skip-lock-tables --no-tablespaces --hex-blob --routines --triggers --verbose "$MYSQL_DATABASE"' \
+                > "$DUMP_TEMP" || DUMP_EXIT=$?
+              DUMP_BYTES="$(stat -c %s "$DUMP_TEMP" 2>/dev/null || echo 0)"
+              echo "Database backup attempt $attempt/2 finished with exit $DUMP_EXIT and $DUMP_BYTES bytes"
+              if [ "$DUMP_EXIT" -eq 0 ] && [ "$DUMP_BYTES" -gt 0 ]; then
                 DUMP_COMPLETE=true
                 break
               fi
-              echo "Database backup attempt $attempt/5 did not complete; retrying..."
+              if [ "$DUMP_EXIT" -eq 124 ]; then
+                echo "Database backup exceeded 10 minutes. The verbose output above identifies the last table reached."
+              fi
+              echo "Database backup attempt $attempt/2 did not complete; retrying once..."
               sleep 10
             done
             if [ "$DUMP_COMPLETE" != "true" ]; then
               rm -f "$DUMP_TEMP"
-              echo "Database backup failed after 5 attempts; no deployment changes have been made."
+              echo "Database backup failed after 2 bounded attempts; no deployment changes have been made."
               docker compose logs --tail=120 mysql
               exit 1
             fi
