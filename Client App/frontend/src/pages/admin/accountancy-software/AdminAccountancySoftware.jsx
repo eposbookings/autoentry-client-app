@@ -4022,7 +4022,13 @@ function YearEndAccountsWorkspace({ workspace, tab }) {
             {tab === "HMRC" ? (
               destination.workflow_enabled ? <>
                 {destination.workflow_profile === "sole_trader" ? (
-                  <SelfAssessmentPreview form={destination.self_assessment_form} values={saFields} />
+                  <SelfAssessmentPreview
+                    form={destination.self_assessment_form}
+                    values={saFields}
+                    pdfForms={destination.self_assessment_pdf_forms || []}
+                    clientId={clientId}
+                    packId={pack?.id}
+                  />
                 ) : <>
                   <ExactCt600SubmissionPreview preview={destination.form_preview} form={destination.ct600_form} pdfUrl={ct600PdfUrl} loading={ct600PdfLoading} error={ct600PdfError} onRetry={() => setCt600PdfRefresh((current) => current + 1)} />
                   <div className="flex justify-end"><Button type="button" onClick={downloadFillableCt600} disabled={saving || !pack}>Download populated fillable CT600 PDF</Button></div>
@@ -4459,8 +4465,10 @@ function FormArtworkPage({ src, alt, overlays, values }) {
   );
 }
 
-function SelfAssessmentPreview({ form, values }) {
+function SelfAssessmentPreview({ form, values, pdfForms = [], clientId, packId }) {
   const [activePackage, setActivePackage] = useState("SA100");
+  const [nativePdfUrl, setNativePdfUrl] = useState("");
+  const [nativePdfError, setNativePdfError] = useState("");
   const previewValues = { ...values, ...(form?.auto_values || {}) };
   const selfEmploymentPackage = previewValues.self_employment ? {
     code: previewValues.self_employment_schedule === "SA103S" ? "SA103S" : "SA103F",
@@ -4472,6 +4480,28 @@ function SelfAssessmentPreview({ form, values }) {
   useEffect(() => {
     if (!packageCodes.split("|").includes(activePackage)) setActivePackage("SA100");
   }, [activePackage, packageCodes]);
+  const activePdfStatus = pdfForms.find((item) => item.form_code === `${activePackage}-2026`);
+  const nativeAvailable = !!activePdfStatus?.available;
+  useEffect(() => {
+    let active = true;
+    let objectUrl = "";
+    setNativePdfUrl("");
+    setNativePdfError("");
+    if (!nativeAvailable || !clientId || !packId) return undefined;
+    api.get(`/admin/accounting/clients/${clientId}/year-end-accounts/packs/${packId}/self-assessment/${activePackage}-2026.pdf?read_only=true`, { responseType: "blob" })
+      .then((response) => {
+        if (!active) return;
+        objectUrl = URL.createObjectURL(response.data);
+        setNativePdfUrl(objectUrl);
+      })
+      .catch((error) => {
+        if (active) setNativePdfError(formatApiError(error) || "The populated system PDF could not be loaded.");
+      });
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [activePackage, clientId, nativeAvailable, packId]);
   if (!form) return <Panel title="Self Assessment preview"><p className="text-sm text-stone-600">No return is available yet.</p></Panel>;
   return (
     <div className="mx-auto max-w-[900px] space-y-4">
@@ -4485,26 +4515,31 @@ function SelfAssessmentPreview({ form, values }) {
           {packages.map((item) => (
             <button key={item.code} type="button" onClick={() => setActivePackage(item.code)} className={`rounded-md border px-3 py-2 text-left text-xs ${activePackage === item.code ? "border-emerald-700 bg-emerald-700 text-white" : "border-stone-200 bg-stone-50 text-stone-800"}`}>
               <span className="block font-bold">{item.code}</span><span className="block opacity-80">{item.label}</span>
+              <span className="mt-1 block opacity-80">{pdfForms.find((formStatus) => formStatus.form_code === `${item.code}-2026`)?.status || "Needs PDF Editor preparation"}</span>
             </button>
           ))}
         </div>
       </div>
-      {activePackage === "SA100" ? [3,4,5,6,7,8,9,10].map((page) => (
+      {nativeAvailable ? (
+        nativePdfUrl ? <iframe title={`${activePackage} populated system PDF`} src={`${nativePdfUrl}#toolbar=1&navpanes=0&view=FitH`} className="h-[78vh] min-h-[720px] w-full border-0 bg-white shadow-sm" /> :
+          <div className={`rounded-md border p-5 text-center text-sm ${nativePdfError ? "border-red-200 bg-red-50 text-red-800" : "border-stone-200 bg-white text-stone-600"}`}>{nativePdfError || `Preparing populated ${activePackage} PDF…`}</div>
+      ) : null}
+      {!nativeAvailable && activePackage === "SA100" ? [3,4,5,6,7,8,9,10].map((page) => (
         <FormArtworkPage key={page} src={`/sa100-2026/page-${String(page).padStart(2, "0")}.png`} alt={`Official SA100 page TR${page - 2}`} overlays={SA100_OVERLAYS[page]} values={previewValues} />
       )) : null}
-      {activePackage === "SA103S" ? (
+      {!nativeAvailable && activePackage === "SA103S" ? (
         <>
           <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">Supplementary page provided: SA103S Self-employment (short)</div>
           {[1,2].map((page) => <FormArtworkPage key={`sa103s-${page}`} src={`/sa103s-2026/page-${page}.png`} alt={`Official SA103S 2026 page ${page}`} overlays={SA103S_OVERLAYS[page]} values={previewValues} />)}
         </>
       ) : null}
-      {activePackage === "SA103F" ? (
+      {!nativeAvailable && activePackage === "SA103F" ? (
         <>
           <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">Supplementary page provided: SA103F Self-employment (full)</div>
           {Array.from({ length: 6 }, (_, index) => <FormArtworkPage key={`sa103f-${index + 1}`} src={`/sa103f-2026/page-${index + 1}.png`} alt={`Official SA103F 2026 page ${index + 1}`} overlays={index === 0 ? SUPPLEMENTARY_HEADER_OVERLAYS : []} values={previewValues} />)}
         </>
       ) : null}
-      {includedSupplementary.filter((schedule) => activePackage === schedule.code).map((schedule) => (
+      {!nativeAvailable && includedSupplementary.filter((schedule) => activePackage === schedule.code).map((schedule) => (
         <div key={schedule.code} className="space-y-4">
           <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900">Supplementary page provided: {schedule.code} {schedule.label}</div>
           {Array.from({ length: schedule.pages }, (_, index) => <FormArtworkPage key={`${schedule.code}-${index + 1}`} src={`/${schedule.folder}/page-${index + 1}.png`} alt={`Official ${schedule.code} 2026 page ${index + 1}`} overlays={index === 0 ? SUPPLEMENTARY_HEADER_OVERLAYS : []} values={previewValues} />)}

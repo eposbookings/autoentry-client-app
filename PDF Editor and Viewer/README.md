@@ -28,3 +28,18 @@ pnpm start
 4. Export a new fillable PDF. The source file is never overwritten.
 
 Detection is intentionally presented as editable candidates because visual documents vary widely. Review the highlighted areas before export.
+
+## EPOS Accountancy integration
+
+Use **Export system package** for a Year End Accounts form:
+
+1. Enter the official form code, such as `SA100-2026` or `SA105-2026`.
+2. Give every field a unique **System key** matching the key used by the
+   accounting workflow, such as `turnover` or `sa105_box_20`.
+3. Enter the official box number where applicable.
+4. Export the system package.
+5. Place both the PDF and its `.field-map.json` file in
+   `Client App/backend/assets/system_forms/`.
+
+The Year End Accounts preview automatically switches from the image fallback
+to the populated native PDF when a valid package is installed.
