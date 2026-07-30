@@ -155,16 +155,50 @@ jobs:
             umask 077
             mkdir -p "$BACKUP_ROOT"
 
+            echo "Ensuring MySQL is running before backup"
+            docker compose up -d mysql
             MYSQL_CONTAINER="$(docker compose ps -q mysql)"
             if [ -z "$MYSQL_CONTAINER" ]; then
-              echo "MySQL container is not running; refusing to deploy without a database backup."
+              echo "MySQL container could not be started; refusing to deploy without a database backup."
               exit 1
             fi
 
-            docker compose exec -T mysql sh -c \
-              'exec mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --quick --routines --triggers "$MYSQL_DATABASE"' \
-              > "$BACKUP_ROOT/mysql.sql"
-            test -s "$BACKUP_ROOT/mysql.sql"
+            MYSQL_READY=false
+            for attempt in $(seq 1 60); do
+              if docker compose exec -T mysql sh -c \
+                'mysqladmin ping -h127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" --silent' >/dev/null 2>&1; then
+                MYSQL_READY=true
+                break
+              fi
+              echo "MySQL is not ready for backup yet ($attempt/60); waiting..."
+              sleep 5
+            done
+            if [ "$MYSQL_READY" != "true" ]; then
+              echo "MySQL did not become ready within 5 minutes. Recent logs:"
+              docker compose logs --tail=120 mysql
+              exit 1
+            fi
+
+            DUMP_TEMP="$BACKUP_ROOT/mysql.sql.tmp"
+            DUMP_COMPLETE=false
+            for attempt in $(seq 1 5); do
+              rm -f "$DUMP_TEMP"
+              if docker compose exec -T mysql sh -c \
+                'exec mysqldump -h127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --quick --routines --triggers "$MYSQL_DATABASE"' \
+                > "$DUMP_TEMP" && [ -s "$DUMP_TEMP" ]; then
+                DUMP_COMPLETE=true
+                break
+              fi
+              echo "Database backup attempt $attempt/5 did not complete; retrying..."
+              sleep 10
+            done
+            if [ "$DUMP_COMPLETE" != "true" ]; then
+              rm -f "$DUMP_TEMP"
+              echo "Database backup failed after 5 attempts; no deployment changes have been made."
+              docker compose logs --tail=120 mysql
+              exit 1
+            fi
+            mv "$DUMP_TEMP" "$BACKUP_ROOT/mysql.sql"
 
             if [ -d "$LEGACY_UPLOADS" ]; then
               mkdir -p "$BACKUP_ROOT/legacy-uploads"
