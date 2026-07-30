@@ -1,0 +1,25 @@
+{
+  "summary": "Backend-only smoke tests for Iteration 4 schema (Description/Date/Amount + delete-after-submit). All 10 items in scope verified end-to-end via curl against the public URL; success-path deletion verified by code inspection of /app/backend/server.py.",
+  "tested_scope": ["backend", "auth", "integration"],
+  "passed": [
+    "Admin login + auth/me works (admin@eposaccountancy.co.uk)",
+    "Unauthenticated /admin/clients returns 401 (role enforcement still active)",
+    "POST /admin/clients/{id}/upload-csv with sample_purchase.csv -> rows_imported=3, errors=[]",
+    "Re-upload replaces previous list (still 3 rows; no duplicates)",
+    "GET /client/items?type=purchase returns 3 items with exactly {_id, client_id, type, description, date, amount, status, created_at, id}; no legacy fields (invoice_number/party/reference) present; status='outstanding'",
+    "GET /client/counts returns {purchase_outstanding:3, sales_outstanding:0}",
+    "GET /admin/clients/{id}/items?type=purchase returns same items as client endpoint",
+    "GET /admin/clients/{id}/items?type=sales returns []",
+    "Submit with INVALID SMTP (smtp.invalid.example.com): HTTP 400, detail='Unable to deliver email: [Errno -2] Name or service not known'; item REMAINS in outstanding list (count still 3)",
+    "Submit with SMTP cleared (DELETE /admin/settings/smtp): HTTP 400, detail='SMTP is not configured...'; item still present",
+    "GET /admin/submissions returns [] (no successful submissions); filters client_id/type/q all return []",
+    "GET /admin/clients counts (purchase_outstanding=3) match total of outstanding_items collection",
+    "Code-path audit (server.py L601-619): after `await send_submission_email(...)` returns without raising, code inserts into db.submissions THEN calls db.outstanding_items.delete_one({_id: ObjectId(item_id)}). On exception, HTTPException(400) is raised before insert/delete -> item correctly stays."
+  ],
+  "failed": [],
+  "action_items": [],
+  "success_rate": {"backend": "100%", "frontend": "not tested (per request)"},
+  "retest_needed": false,
+  "full_testing_deferred": true,
+  "notes": "Could not exercise true SMTP success path (no real creds), but the code contract matches spec exactly: db.submissions.insert_one then db.outstanding_items.delete_one occur only after send_submission_email returns without raising. Sample CSV uses '£' prefix in Amount; backend stores amount as-is string (e.g. '£89.99') — consistent with spec which treats amount as a free-form field."
+}

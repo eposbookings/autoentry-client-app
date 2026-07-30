@@ -1,0 +1,26 @@
+* text=auto
+
+# Deployment and Unix scripts must retain LF endings.
+.gitattributes text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sh text eol=lf
+
+# Windows launchers use native CRLF endings.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Official forms, rendered previews, fonts, and office documents are binary.
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.ttf binary
+*.woff binary
+*.woff2 binary
+*.xlsx binary
+*.xls binary
+*.docx binary
+*.odt binary

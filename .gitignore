@@ -41,8 +41,15 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 .pnpm-store/
-frontend/localhost.log
-backend/*localhost*.log
+Client App/frontend/localhost.log
+Client App/backend/*localhost*.log
+Client App/backend/*.log
+Client App/backend/*.out.log
+Client App/backend/*.err.log
+Client App/tmp/
+PDF Editor and Viewer/node_modules/
+PDF Editor and Viewer/.pnpm-store/
+.git-backups/
 dump.rdb
 
 # System files
@@ -51,6 +58,7 @@ dump.rdb
 
 # Python
 __pycache__/
+**/.pytest_cache/
 *pyc*
 venv/
 .venv/
@@ -68,10 +76,11 @@ chainlit.md
 agenthub/agents/youtube/db
 mysql/
 *.db
+*.db-journal
 *.sqlite
 *.sqlite3
-backend/uploads/*
-!backend/uploads/.gitkeep
+Client App/backend/uploads/*
+!Client App/backend/uploads/.gitkeep
 
 # Archive files and large assets
 **/*.zip

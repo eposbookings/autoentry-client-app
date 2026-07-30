@@ -1,0 +1,94 @@
+{
+  "theme_and_archetype": {
+    "theme": "Light",
+    "archetype": "Archetype 1: Organic & Earthy",
+    "reasoning": "An accounting portal for non-technical small business owners needs to feel trustworthy, calm, and approachable. We avoid cold 'fintech-bro' dark modes or sterile corporate interfaces in favor of a warm, human-centric design."
+  },
+  "typography": {
+    "font_families": {
+      "heading": "Cabinet Grotesk",
+      "body": "Work Sans",
+      "mono": "JetBrains Mono"
+    },
+    "hierarchy": {
+      "h1": "text-4xl sm:text-5xl tracking-tight font-bold text-stone-900",
+      "h2": "text-2xl sm:text-3xl tracking-tight font-semibold text-stone-800",
+      "h3": "text-xl sm:text-2xl font-medium text-stone-800",
+      "body": "text-base leading-relaxed text-stone-700",
+      "small_label": "text-sm uppercase tracking-[0.1em] font-semibold text-stone-500"
+    }
+  },
+  "color_palette": {
+    "background": {
+      "app": "#F9F8F6",
+      "surface": "#FFFFFF",
+      "overlay": "rgba(28, 25, 23, 0.4)"
+    },
+    "text": {
+      "primary": "#1C1917",
+      "secondary": "#57534E",
+      "disabled": "#A8A29E",
+      "inverse": "#FFFFFF"
+    },
+    "brand": {
+      "primary": "#214C37",
+      "primary_hover": "#173627",
+      "accent": "#C05E44",
+      "accent_hover": "#A14D37"
+    },
+    "status": {
+      "success": "#166534",
+      "success_bg": "#DCFCE7",
+      "warning": "#9A3412",
+      "warning_bg": "#FFEDD5",
+      "error": "#991B1B",
+      "error_bg": "#FEE2E2",
+      "outstanding": "#B45309",
+      "outstanding_bg": "#FEF3C7"
+    },
+    "border": {
+      "default": "#E7E5E4",
+      "focus": "#214C37"
+    }
+  },
+  "spacing_and_layout": {
+    "philosophy": "Generous Spacing, Mobile-First Native Feel",
+    "mobile_constraints": "Buttons and touch targets strictly minimum 44x44px. Bottom sheets preferred over modals for mobile workflows.",
+    "dashboard_grid": "Bento-style layout. Mobile: grid-cols-1 gap-6. Desktop: grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8.",
+    "containers": "Cards must have internal padding of p-6 or p-8 to prevent text collision. Max width for client content should be max-w-2xl to maintain focus."
+  },
+  "component_guidelines": {
+    "buttons": "Large, soft-rounded (rounded-xl). Primary actions use Brand Primary (#214C37). Must include data-testid. Hover state must explicitly shift background to a darker hue.",
+    "cards": "Neumorphic clay style. Background pure white (#FFFFFF), 1px solid border (#E7E5E4), soft shadow (shadow-sm). Max border-radius 12px.",
+    "inputs_and_forms": "High contrast borders. Focus state must use ring-2 ring-primary/50. No floating labels. Use clear, large labels above inputs.",
+    "upload_scanner": "Do not rely on drag-and-drop on mobile. Prominent 'Take Photo / Upload' buttons. Real-time visual feedback (spinner for 1-3s, success checkmark). Do not use red text for errors, use amber/warning colors.",
+    "tables": "Admin only. Dense mode. Left-aligned text. Sticky headers with subtle background tint (bg-stone-50)."
+  },
+  "motion_and_interaction": {
+    "hover": "Subtle translation (-translate-y-[1px]) and shadow increase (shadow-md) on cards.",
+    "active": "Scale down (scale-[0.98]) on buttons for haptic-like visual feedback.",
+    "transitions": "Use transition-all duration-200 ease-in-out for basic state changes."
+  },
+  "specific_views": {
+    "client_dashboard": "Clean UI with two massive bento-box action buttons: 'Purchase Invoices' and 'Sales Invoices'. Display count as massive numeric typography (text-5xl font-light) inside the button/card.",
+    "client_outstanding_list": "List items acting as touchable rows. Status indicators (Outstanding in amber, Submitted in green). Search bar prominent at the top.",
+    "client_submission_screen": "Three dominant actions stacked vertically: 'Take Photo', 'Upload Photo', 'No Photo Needed'. Dynamic comment section that becomes mandatory if 'No Photo' is selected. Includes logic for semi-transparent watermark on stamped image.",
+    "admin_dashboard": "Data-dense 'Control Room' grid. Client list with quick search, quick CSV upload module with immediate validation feedback. Global filter for viewing submissions."
+  },
+  "accessibility": {
+    "contrast": "Ensure minimum 4.5:1 on all text. Avoid gray-on-gray.",
+    "testing": "All interactive and key informational elements MUST include a data-testid attribute in kebab-case format (e.g., data-testid='upload-invoice-btn').",
+    "focus": "Visible focus outlines required on all focusable elements (ring-2 ring-primary ring-offset-2)."
+  },
+  "media": {
+    "login_background": {
+      "url": "https://images.pexels.com/photos/7599590/pexels-photo-7599590.jpeg",
+      "description": "Warm, neutral textured paper surface to create a tactile, stress-free entry point."
+    },
+    "admin_empty_state": {
+      "url": "https://images.unsplash.com/photo-1773146916231-e6aeae932080?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzZ8MHwxfHNlYXJjaHwyfHxzbWFsbCUyMGJ1c2luZXNzJTIwb3duZXIlMjBkZXNrfGVufDB8fHx8MTc4MjY3OTM2N3ww&ixlib=rb-4.1.0&q=85",
+      "description": "Small business owner at a desk working - used sparingly as an empty state illustration for the admin client list."
+    },
+    "rules": "Use lucide-react for standard icons. Avoid stock illustrations; rely on the provided imagery and clean typography."
+  }
+}

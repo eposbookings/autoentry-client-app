@@ -15,7 +15,7 @@ on:
         description: "Rebuild and restart the API container after syncing code"
         required: true
         type: boolean
-        default: false
+        default: true
 
 concurrency:
   group: sync-vps-code
@@ -43,18 +43,18 @@ jobs:
           version: 9.15.9
 
       - name: Install frontend dependencies
-        working-directory: frontend
+        working-directory: Client App/frontend
         run: pnpm install --frozen-lockfile --reporter=append-only
 
       - name: Build frontend
-        working-directory: frontend
+        working-directory: Client App/frontend
         env:
           REACT_APP_BACKEND_URL: ${{ inputs.react_app_backend_url }}
         run: pnpm run build
 
       - name: Package frontend build
         run: |
-          tar -C frontend/build -czf frontend-build.tar.gz .
+          tar -C "Client App/frontend/build" -czf frontend-build.tar.gz .
           ls -lh frontend-build.tar.gz
 
       - name: Upload frontend build artifact
@@ -76,7 +76,7 @@ jobs:
           ref: ${{ inputs.deploy_branch }}
 
       - name: Build API Docker image
-        run: docker build -t autoentry-client-app-api:latest ./backend
+        run: docker build -t autoentry-client-app-api:latest "./Client App/backend"
 
       - name: Save API Docker image
         run: |
@@ -141,16 +141,72 @@ jobs:
             cd /opt/autoentry-client-app
 
             DEPLOY_BRANCH="${{ inputs.deploy_branch }}"
+            DEPLOY_TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+            BACKUP_ROOT="$HOME/autoentry-deploy-backups/$DEPLOY_TIMESTAMP"
+            LEGACY_UPLOADS="/opt/autoentry-client-app/backend/uploads"
+            CURRENT_UPLOADS="/opt/autoentry-client-app/Client App/backend/uploads"
+
+            if [ -d "$LEGACY_UPLOADS" ] && [ "${{ inputs.rebuild_backend }}" != "true" ]; then
+              echo "The legacy application layout is present. Re-run this deployment with rebuild_backend enabled."
+              exit 1
+            fi
+
+            echo "Creating pre-deployment backup: $BACKUP_ROOT"
+            umask 077
+            mkdir -p "$BACKUP_ROOT"
+
+            MYSQL_CONTAINER="$(docker compose ps -q mysql)"
+            if [ -z "$MYSQL_CONTAINER" ]; then
+              echo "MySQL container is not running; refusing to deploy without a database backup."
+              exit 1
+            fi
+
+            docker compose exec -T mysql sh -c \
+              'exec mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --quick --routines --triggers "$MYSQL_DATABASE"' \
+              > "$BACKUP_ROOT/mysql.sql"
+            test -s "$BACKUP_ROOT/mysql.sql"
+
+            if [ -d "$LEGACY_UPLOADS" ]; then
+              mkdir -p "$BACKUP_ROOT/legacy-uploads"
+              cp -a "$LEGACY_UPLOADS/." "$BACKUP_ROOT/legacy-uploads/"
+            fi
+
+            if [ -d "$CURRENT_UPLOADS" ]; then
+              mkdir -p "$BACKUP_ROOT/current-uploads"
+              cp -a "$CURRENT_UPLOADS/." "$BACKUP_ROOT/current-uploads/"
+            fi
+
+            {
+              echo "branch=$DEPLOY_BRANCH"
+              echo "commit_before=$(git rev-parse HEAD)"
+              echo "created_utc=$DEPLOY_TIMESTAMP"
+              echo "legacy_upload_files=$(find "$LEGACY_UPLOADS" -type f 2>/dev/null | wc -l)"
+              echo "current_upload_files=$(find "$CURRENT_UPLOADS" -type f 2>/dev/null | wc -l)"
+            } > "$BACKUP_ROOT/manifest.txt"
 
             echo "Syncing branch: $DEPLOY_BRANCH"
             git fetch origin "$DEPLOY_BRANCH"
             git checkout "$DEPLOY_BRANCH"
             git reset --hard "origin/$DEPLOY_BRANCH"
 
+            echo "Preparing persistent upload storage"
+            mkdir -p "$CURRENT_UPLOADS"
+            if [ -d "$BACKUP_ROOT/legacy-uploads" ]; then
+              cp -an "$BACKUP_ROOT/legacy-uploads/." "$CURRENT_UPLOADS/"
+            fi
+
+            LEGACY_BACKUP_COUNT="$(find "$BACKUP_ROOT/legacy-uploads" -type f 2>/dev/null | wc -l)"
+            CURRENT_UPLOAD_COUNT="$(find "$CURRENT_UPLOADS" -type f 2>/dev/null | wc -l)"
+            if [ "$CURRENT_UPLOAD_COUNT" -lt "$LEGACY_BACKUP_COUNT" ]; then
+              echo "Upload migration verification failed: expected at least $LEGACY_BACKUP_COUNT files, found $CURRENT_UPLOAD_COUNT."
+              exit 1
+            fi
+            echo "Upload migration verified: $CURRENT_UPLOAD_COUNT files available in the current upload path."
+
             echo "Installing prebuilt frontend files"
-            rm -rf frontend/build
-            mkdir -p frontend/build
-            tar -xzf /tmp/autoentry-client-app-deploy/frontend-build.tar.gz -C frontend/build
+            rm -rf "Client App/frontend/build"
+            mkdir -p "Client App/frontend/build"
+            tar -xzf /tmp/autoentry-client-app-deploy/frontend-build.tar.gz -C "Client App/frontend/build"
 
             echo "VPS is now on:"
             git log --oneline -1

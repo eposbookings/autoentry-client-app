@@ -1,0 +1,16 @@
+{
+  "name": "fieldcraft-pdf",
+  "version": "1.0.0",
+  "description": "Desktop PDF viewer and visual form-field editor",
+  "main": "src/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron ."
+  },
+  "dependencies": {
+    "electron": "^37.2.3",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "4.10.38"
+  },
+  "devDependencies": {}
+}

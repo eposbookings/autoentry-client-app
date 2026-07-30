@@ -1,0 +1,25 @@
+{
+  "summary": "Verified removal of 'Made with Emergent' branding badge across the EPOS Accountancy portal. Initial check showed the served HTML still contained the badge/script because CRA had cached the old public/index.html; after restarting the frontend supervisor process the badge and emergent-main.js script are fully gone. Confirmed on /login, /portal, and /portal/list/purchase.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "None. Bug fix verified. Note: main agent's change to /app/frontend/public/index.html required a frontend supervisor restart (public/index.html changes are not always hot-reloaded by CRA). This restart has been performed."
+  ],
+  "critical_code_review_comments": [
+    "public/index.html changes require a frontend restart for CRA to serve the updated template — hot-reload is unreliable for public/index.html. Consider mentioning this in future badge-removal fixes.",
+    "The defensive MutationObserver in index.html is a good belt-and-braces safeguard against any late injection."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (not tested)", "frontend": "100%"},
+  "test_credentials": "testclient@example.com / Client12345 (client role)",
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Bug fix verified via Playwright: document.getElementById('emergent-badge') returns null on /login, /portal, /portal/list/purchase; body.innerText does not contain 'Made with Emergent'; no script tag with src containing 'emergent-main' is present. React root renders correctly and login flow works end-to-end.",
+  "rca of the issue": "Root cause: The 'Made with Emergent' badge was originally injected via a static <a id='emergent-badge'> anchor in /app/frontend/public/index.html plus a <script src='https://assets.emergent.sh/scripts/emergent-main.js'> that could re-inject it. Main agent removed both and added a MutationObserver. Reproduction on first browser check still showed the badge because CRA (yarn start) had cached the previously-served index.html template — the change on disk was not picked up until a supervisor restart of the frontend. Mitigation: `sudo supervisorctl restart frontend` was executed. After restart, curl of https://outstanding-items.preview.emergentagent.com/login confirms only the observer script remains (no <a id='emergent-badge'>, no emergent-main.js <script> tag, no 'Made with Emergent' text). Browser verification confirms DOM/text/script all absent on login and authenticated pages."
+}

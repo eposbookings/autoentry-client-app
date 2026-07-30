@@ -1,0 +1,39 @@
+{
+  "summary": "Iteration 2 retest of Outstanding Documents Portal backend after fixes. Confirmed: (1) Both `id` and `_id` are now present in client + item + user payloads across all listed endpoints; full admin CRUD chain using returned `id` works (GET/PUT/DELETE no 500s). (2) New DELETE /api/admin/settings/smtp clears config (configured=false); submit with SMTP unconfigured returns fast JSON 503 with detail and item.status stays 'outstanding'. (3) All previously-passing flows still pass (auth login+cookie+Bearer, /auth/me, /auth/logout, search, password reset, CSV upload + replace, client counts/items, role 403s, submission 400 validation, admin reset item, SMTP password not echoed). Remaining HIGH bug: SMTP unreachable host (smtp.invalid.example.com) still returns Cloudflare HTML 502 because socket.gaierror from smtplib is not caught (only asyncio.TimeoutError appears to be handled). Item status is still correctly preserved as 'outstanding'.",
+  "tested_scope": ["backend", "auth", "integration"],
+  "passed": [
+    "POST /api/admin/clients now returns BOTH `id` and `_id` with identical values",
+    "GET /api/admin/clients (list) returns `id` and `_id` per client + correct purchase/sales counts",
+    "GET /api/admin/clients/{id} works with returned `id` (HTTP 200, no 500)",
+    "PUT /api/admin/clients/{id} updates and returns both `id` and `_id`",
+    "DELETE /api/admin/clients/{id} returns {ok:true}",
+    "POST /api/admin/clients/{id}/upload-csv with type=purchase form field: rows_imported=3, errors=[]; re-upload still 3 rows (replace works)",
+    "POST /api/admin/clients/{id}/reset-password: client can log in with new password",
+    "GET /api/client/items?type=purchase returns 3 items, each with `id` and `_id`",
+    "GET /api/client/items/{id} returns both `id` and `_id`",
+    "GET /api/auth/me returns both `id` and `_id` for the user",
+    "POST /api/auth/login + access_token cookie + Authorization: Bearer both accepted",
+    "POST /api/auth/logout returns {ok:true}",
+    "DELETE /api/admin/settings/smtp (NEW endpoint) returns {ok:true} and subsequent GET shows configured=false",
+    "POST /api/client/items/{id}/submit with SMTP unconfigured -> HTTP 503 JSON {detail:'SMTP is not configured...'} in ~0s; item.status remains 'outstanding'",
+    "Role enforcement: admin->/api/client/* = 403; client->/api/admin/* = 403",
+    "Submission validation: mode=no_photo + empty comment -> 400; invalid mode -> 400",
+    "GET /api/admin/submissions accepts client_id & type filters (200)",
+    "POST /api/admin/items/{id}/reset puts item back to outstanding"
+  ],
+  "failed": [
+    {
+      "area": "submit / SMTP unreachable host handling",
+      "issue": "When SMTP host is unresolvable (smtp.invalid.example.com), POST /api/client/items/{id}/submit returns a Cloudflare HTML `502 Bad gateway` page (content-type text/html), NOT the spec-required JSON 502. Backend traceback shows socket.gaierror raised from smtplib inside asyncio.to_thread; only asyncio.wait_for TimeoutError appears to be guarded — connection/DNS exceptions bubble up unhandled and crash the request, which the proxy then surfaces as 502 HTML. Note: item.status DOES correctly remain 'outstanding', so no state corruption.",
+      "evidence": "backend.err.log shows `socket.gaierror: [Errno -2] Name or service not known` from server.py:537 (smtplib.SMTP(...)) propagating through server.py:546 (asyncio.wait_for). Client receives HTML body starting with `<!DOCTYPE html>... preview.emergentagent.com | 502: Bad gateway` and Cloudflare branding. Elapsed ~0s (DNS fails immediately, well under the 15s timeout).",
+      "priority": "HIGH"
+    }
+  ],
+  "action_items": [
+    "In backend/server.py around line 537-546, wrap the SMTP send in a broad try/except that catches smtplib.SMTPException, socket.gaierror, socket.timeout, OSError, ConnectionError, and asyncio.TimeoutError, and re-raise as HTTPException(status_code=502, detail='Unable to deliver email: <reason>') so clients get a JSON 502 instead of a proxy-level HTML 502. Keep item.status mutation AFTER successful send (already correct).",
+    "Optional: also catch the unconfigured-SMTP path inside the same try so callers get a consistent JSON error envelope."
+  ],
+  "success_rate": {"backend": "~95% (18/19 critical checks pass; 1 HIGH remaining on SMTP unreachable host)", "frontend": "not tested (skipped per request)"},
+  "retest_needed": true,
+  "full_testing_deferred": true
+}

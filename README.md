@@ -1,11 +1,10 @@
-# EPOS Accountancy - Outstanding Documents Portal
+# EPOS Accountancy App
 
-A full-stack portal for EPOS Accountancy. Clients log in to view outstanding
-purchase/sales invoices and submit supporting documents. Admins manage clients,
-upload outstanding-item CSVs, configure SMTP/OpenAI settings, and review
-submissions.
+Parent repository for the EPOS Accountancy platform. It contains the connected
+Client App and Fieldcraft PDF form-authoring project while retaining the existing
+Git remote and deployment history.
 
-Current handover: see [PROJECT_NOTES.md](./PROJECT_NOTES.md) first.
+Current Client App handover: see [PROJECT_NOTES.md](<./Client App/PROJECT_NOTES.md>) first.
 
 ## Tech Stack
 
@@ -17,22 +16,23 @@ Current handover: see [PROJECT_NOTES.md](./PROJECT_NOTES.md) first.
 ## Repository Layout
 
 ```text
-backend/
-  server.py              FastAPI app: auth, clients, CSV, submissions, settings
-  assets/fonts/          Bundled DejaVu fonts
-  uploads/               Submitted/generated documents
-  requirements.txt       Production API dependencies
-frontend/
-  src/pages/             Admin/client/login screens
-  src/components/Brand.jsx
-  src/assets/epos-logo.png
-  public/favicon.png
+Client App/
+  backend/
+    server.py            FastAPI app and accounting services
+    assets/              Official and generated document templates
+    uploads/             Submitted/generated documents
+  frontend/
+    src/                 React application
+    public/              Browser assets and official form previews
+PDF Editor and Viewer/
+  src/                   Fieldcraft Electron application
+  package.json           Fieldcraft runtime and dependencies
 .github/workflows/       Manual VPS deployment workflow
 ```
 
 ## Environment Variables
 
-Backend (`backend/.env`):
+Backend (`Client App/backend/.env`):
 
 - `DATABASE_URL`
 - `CORS_ORIGINS`
@@ -43,12 +43,16 @@ Backend (`backend/.env`):
 - `COOKIE_SECURE` - use `true` on HTTPS/live.
 - `ADMIN_EMAIL`
 - `ADMIN_PASSWORD`
+- `PLATFORM_ADMIN_EMAIL` and `PLATFORM_ADMIN_PASSWORD` for the higher-level platform login that creates practice accounts and owns global integration settings
+- `DEFAULT_PRACTICE_NAME` for the migration tenant assigned to existing administrators and clients
 - `UPLOAD_DIR`
 - optional: `OPENAI_API_KEY`, `OPENAI_INVOICE_CHECK_MODEL`
 - optional: `QUICKBOOKS_CLIENT_ID`, `QUICKBOOKS_CLIENT_SECRET`,
   `QUICKBOOKS_ENVIRONMENT`, `QUICKBOOKS_REDIRECT_URI`
+- optional: `XERO_CLIENT_ID`, `XERO_CLIENT_SECRET`, `XERO_REDIRECT_URI`
+- optional: `SAGE_CLIENT_ID`, `SAGE_CLIENT_SECRET`, `SAGE_REDIRECT_URI`
 
-Frontend (`frontend/.env`):
+Frontend (`Client App/frontend/.env`):
 
 - `REACT_APP_BACKEND_URL`
 - `WDS_SOCKET_PORT`
@@ -61,7 +65,7 @@ All backend API routes are prefixed with `/api`.
 Frontend:
 
 ```bash
-cd frontend
+cd "Client App/frontend"
 pnpm install
 pnpm start
 ```
@@ -69,7 +73,7 @@ pnpm start
 Backend:
 
 ```bash
-cd backend
+cd "Client App/backend"
 pip install -r requirements.txt
 uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 ```
@@ -102,12 +106,21 @@ BACKEND_URL=https://eposbookings.net
 COOKIE_SECURE=true
 QUICKBOOKS_ENVIRONMENT=production
 QUICKBOOKS_REDIRECT_URI=https://eposbookings.net/api/integrations/quickbooks/callback
+XERO_REDIRECT_URI=https://eposbookings.net/api/integrations/xero/callback
+SAGE_REDIRECT_URI=https://eposbookings.net/api/integrations/sage/callback
 ```
 
 In the Intuit developer portal, add the exact production Redirect URI:
 
 ```text
 https://eposbookings.net/api/integrations/quickbooks/callback
+```
+
+Register the matching Xero and Sage callback URIs in their developer portals:
+
+```text
+https://eposbookings.net/api/integrations/xero/callback
+https://eposbookings.net/api/integrations/sage/callback
 ```
 
 Use production QuickBooks keys for live testing. Development/sandbox keys should
