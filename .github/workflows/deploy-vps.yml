@@ -135,7 +135,7 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           port: 22
           script_stop: true
-          command_timeout: 35m
+          command_timeout: 15m
           script: |
             set -e
             cd /opt/autoentry-client-app
@@ -155,75 +155,84 @@ jobs:
             umask 077
             mkdir -p "$BACKUP_ROOT"
 
-            echo "Ensuring MySQL is running before backup"
-            docker compose up -d mysql
-            MYSQL_CONTAINER="$(docker compose ps -q mysql)"
-            if [ -z "$MYSQL_CONTAINER" ]; then
-              echo "MySQL container could not be started; refusing to deploy without a database backup."
+            echo "VPS resource preflight"
+            free -m
+            swapon --show
+            df -h /
+            MEM_TOTAL_KB="$(awk '/MemTotal:/ { print $2 }' /proc/meminfo)"
+            SWAP_TOTAL_KB="$(awk '/SwapTotal:/ { print $2 }' /proc/meminfo)"
+            if [ "$MEM_TOTAL_KB" -lt 1572864 ] && [ "$SWAP_TOTAL_KB" -lt 524288 ]; then
+              echo "This VPS has less than 1.5 GB RAM and no adequate swap. Refusing to start a resource-heavy deployment."
               exit 1
+            fi
+            timeout 20 docker info >/dev/null
+
+            echo "Locating the existing MySQL container"
+            MYSQL_CONTAINER="$(timeout 15 docker compose ps -q mysql || true)"
+            if [ -z "$MYSQL_CONTAINER" ]; then
+              echo "MySQL is not running; starting it before backup"
+              timeout 90 docker compose up -d mysql
+              MYSQL_CONTAINER="$(timeout 15 docker compose ps -q mysql || true)"
+              if [ -z "$MYSQL_CONTAINER" ]; then
+                echo "MySQL container could not be started; refusing to deploy without a database backup."
+                exit 1
+              fi
+            else
+              echo "Reusing the running MySQL container; no restart required"
             fi
 
             MYSQL_READY=false
-            for attempt in $(seq 1 60); do
-              if docker compose exec -T mysql sh -c 'mysqladmin ping -h127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" --silent' >/dev/null 2>&1; then
+            for attempt in $(seq 1 30); do
+              if timeout 5 docker exec "$MYSQL_CONTAINER" sh -c 'mysqladmin ping -h127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" --silent' >/dev/null 2>&1; then
                 MYSQL_READY=true
                 break
               fi
-              echo "MySQL is not ready for backup yet ($attempt/60); waiting..."
-              sleep 5
+              echo "MySQL is not ready for backup yet ($attempt/30); waiting..."
+              sleep 2
             done
             if [ "$MYSQL_READY" != "true" ]; then
-              echo "MySQL did not become ready within 5 minutes. Recent logs:"
+              echo "MySQL did not become ready within one minute. Recent logs:"
               docker compose logs --tail=120 mysql
               exit 1
             fi
 
             echo "Database backup assessment"
-            docker compose exec -T mysql sh -c 'mysql -h127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" -D"$MYSQL_DATABASE" -N -e "SELECT COUNT(*) AS table_count, ROUND(COALESCE(SUM(data_length + index_length), 0) / 1024 / 1024, 2) AS size_mb FROM information_schema.tables WHERE table_schema = DATABASE();"'
+            timeout 15 docker exec "$MYSQL_CONTAINER" sh -c 'mysql -h127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" -D"$MYSQL_DATABASE" -N -e "SELECT COUNT(*) AS table_count, ROUND(COALESCE(SUM(data_length + index_length), 0) / 1024 / 1024, 2) AS size_mb FROM information_schema.tables WHERE table_schema = DATABASE();"'
 
             DUMP_TEMP="$BACKUP_ROOT/mysql.sql.tmp"
-            DUMP_COMPLETE=false
-            for attempt in $(seq 1 2); do
+            rm -f "$DUMP_TEMP"
+            echo "Starting low-priority database backup (90-second limit)"
+            DUMP_STARTED="$(date +%s)"
+            DUMP_EXIT=0
+            nice -n 10 ionice -c2 -n7 timeout --kill-after=10 90 docker exec "$MYSQL_CONTAINER" sh -c 'exec mysqldump -h127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --quick --skip-lock-tables --no-tablespaces --hex-blob --routines --triggers "$MYSQL_DATABASE"' > "$DUMP_TEMP" || DUMP_EXIT=$?
+            DUMP_FINISHED="$(date +%s)"
+            DUMP_BYTES="$(stat -c %s "$DUMP_TEMP" 2>/dev/null || echo 0)"
+            echo "Database backup finished in $((DUMP_FINISHED - DUMP_STARTED)) seconds with exit $DUMP_EXIT and $DUMP_BYTES bytes"
+            if [ "$DUMP_EXIT" -ne 0 ] || [ "$DUMP_BYTES" -le 0 ]; then
               rm -f "$DUMP_TEMP"
-              echo "Starting database backup attempt $attempt/2 (10-minute limit)"
-              DUMP_EXIT=0
-              timeout 600 docker compose exec -T mysql sh -c 'exec mysqldump -h127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --quick --skip-lock-tables --no-tablespaces --hex-blob --routines --triggers --verbose "$MYSQL_DATABASE"' > "$DUMP_TEMP" || DUMP_EXIT=$?
-              DUMP_BYTES="$(stat -c %s "$DUMP_TEMP" 2>/dev/null || echo 0)"
-              echo "Database backup attempt $attempt/2 finished with exit $DUMP_EXIT and $DUMP_BYTES bytes"
-              if [ "$DUMP_EXIT" -eq 0 ] && [ "$DUMP_BYTES" -gt 0 ]; then
-                DUMP_COMPLETE=true
-                break
-              fi
-              if [ "$DUMP_EXIT" -eq 124 ]; then
-                echo "Database backup exceeded 10 minutes. The verbose output above identifies the last table reached."
-              fi
-              echo "Database backup attempt $attempt/2 did not complete; retrying once..."
-              sleep 10
-            done
-            if [ "$DUMP_COMPLETE" != "true" ]; then
-              rm -f "$DUMP_TEMP"
-              echo "Database backup failed after 2 bounded attempts; no deployment changes have been made."
+              echo "Database backup failed within the 90-second safety limit; no deployment changes have been made."
+              timeout 15 docker exec "$MYSQL_CONTAINER" sh -c 'mysql -h127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" -N -e "SHOW FULL PROCESSLIST;"' || true
               docker compose logs --tail=120 mysql
               exit 1
             fi
             mv "$DUMP_TEMP" "$BACKUP_ROOT/mysql.sql"
 
-            if [ -d "$LEGACY_UPLOADS" ]; then
+            LEGACY_UPLOAD_COUNT="$(find "$LEGACY_UPLOADS" -type f 2>/dev/null | wc -l)"
+            CURRENT_UPLOAD_COUNT_BEFORE="$(find "$CURRENT_UPLOADS" -type f 2>/dev/null | wc -l)"
+            if [ "$LEGACY_UPLOAD_COUNT" -gt "$CURRENT_UPLOAD_COUNT_BEFORE" ]; then
+              echo "Legacy upload migration requires a one-time safety snapshot"
               mkdir -p "$BACKUP_ROOT/legacy-uploads"
-              cp -a "$LEGACY_UPLOADS/." "$BACKUP_ROOT/legacy-uploads/"
-            fi
-
-            if [ -d "$CURRENT_UPLOADS" ]; then
-              mkdir -p "$BACKUP_ROOT/current-uploads"
-              cp -a "$CURRENT_UPLOADS/." "$BACKUP_ROOT/current-uploads/"
+              cp -al "$LEGACY_UPLOADS/." "$BACKUP_ROOT/legacy-uploads/"
+            else
+              echo "Persistent uploads are already migrated; skipping duplicate document copies"
             fi
 
             {
               echo "branch=$DEPLOY_BRANCH"
               echo "commit_before=$(git rev-parse HEAD)"
               echo "created_utc=$DEPLOY_TIMESTAMP"
-              echo "legacy_upload_files=$(find "$LEGACY_UPLOADS" -type f 2>/dev/null | wc -l)"
-              echo "current_upload_files=$(find "$CURRENT_UPLOADS" -type f 2>/dev/null | wc -l)"
+              echo "legacy_upload_files=$LEGACY_UPLOAD_COUNT"
+              echo "current_upload_files=$CURRENT_UPLOAD_COUNT_BEFORE"
             } > "$BACKUP_ROOT/manifest.txt"
 
             echo "Syncing branch: $DEPLOY_BRANCH"
@@ -237,10 +246,9 @@ jobs:
               cp -an "$BACKUP_ROOT/legacy-uploads/." "$CURRENT_UPLOADS/"
             fi
 
-            LEGACY_BACKUP_COUNT="$(find "$BACKUP_ROOT/legacy-uploads" -type f 2>/dev/null | wc -l)"
             CURRENT_UPLOAD_COUNT="$(find "$CURRENT_UPLOADS" -type f 2>/dev/null | wc -l)"
-            if [ "$CURRENT_UPLOAD_COUNT" -lt "$LEGACY_BACKUP_COUNT" ]; then
-              echo "Upload migration verification failed: expected at least $LEGACY_BACKUP_COUNT files, found $CURRENT_UPLOAD_COUNT."
+            if [ "$CURRENT_UPLOAD_COUNT" -lt "$LEGACY_UPLOAD_COUNT" ]; then
+              echo "Upload migration verification failed: expected at least $LEGACY_UPLOAD_COUNT files, found $CURRENT_UPLOAD_COUNT."
               exit 1
             fi
             echo "Upload migration verified: $CURRENT_UPLOAD_COUNT files available in the current upload path."
