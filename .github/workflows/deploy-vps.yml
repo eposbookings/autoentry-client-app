@@ -135,7 +135,7 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           port: 22
           script_stop: true
-          command_timeout: 20m
+          command_timeout: 35m
           script: |
             set -e
             cd /opt/autoentry-client-app
@@ -230,16 +230,29 @@ jobs:
             docker compose up -d --force-recreate frontend nginx
 
             echo "Health check"
-            for attempt in $(seq 1 30); do
+            # A first deployment can legitimately take several minutes while
+            # additive schema upgrades are applied to existing live tables.
+            # Do not mistake that migration window for an API crash.
+            for attempt in $(seq 1 180); do
               if curl -fsS http://localhost:8000/api/health; then
                 echo
                 echo "API is healthy"
                 exit 0
               fi
-              echo "API not ready yet ($attempt/30); waiting..."
-              sleep 3
+              API_CONTAINER="$(docker compose ps -q api)"
+              if [ -z "$API_CONTAINER" ] || [ "$(docker inspect -f '{{.State.Running}}' "$API_CONTAINER" 2>/dev/null || echo false)" != "true" ]; then
+                echo "API container stopped before becoming healthy. Recent logs:"
+                docker compose logs --tail=160 api
+                exit 1
+              fi
+              echo "API not ready yet ($attempt/180); schema upgrade or startup is still running..."
+              if [ $((attempt % 12)) -eq 0 ]; then
+                echo "Recent API startup progress:"
+                docker compose logs --tail=20 api
+              fi
+              sleep 5
             done
 
-            echo "API did not become healthy. Recent logs:"
-            docker compose logs --tail=120 api
+            echo "API did not become healthy within 15 minutes. Recent logs:"
+            docker compose logs --tail=200 api
             exit 1

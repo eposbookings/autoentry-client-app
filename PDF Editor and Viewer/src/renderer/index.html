@@ -13,6 +13,7 @@
       <div class="header-actions">
         <button class="button ghost" id="openButton">Open PDF</button>
         <button class="button primary" id="exportButton" disabled>Export fillable PDF</button>
+        <button class="button primary" id="exportPackageButton" disabled>Export system package</button>
       </div>
     </header>
     <main class="workspace">
@@ -50,6 +51,9 @@
         <div class="panel-heading">Field properties</div>
         <div class="prepare-settings">
           <div class="settings-title">Preparation settings</div>
+          <label>Form code
+            <input id="formCode" type="text" placeholder="For example SA105-2026" />
+          </label>
           <label>Standard text size
             <select id="prepareFontSize">
               <option value="8">8 pt</option><option value="9">9 pt</option>
@@ -82,6 +86,8 @@
         </div>
         <form id="properties" class="properties hidden">
           <label>Field name<input id="propName" type="text" /></label>
+          <label>System key<input id="propSystemKey" type="text" placeholder="For example sa105_box_20" /></label>
+          <label>Official box<input id="propBox" type="text" placeholder="For example 20" /></label>
           <label>Type<select id="propType"><option value="text">Text field</option><option value="checkbox">Checkbox</option><option value="signature">Signature</option></select></label>
           <label>Placeholder<input id="propPlaceholder" type="text" /></label>
           <label>Text alignment<select id="propAlignment"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label>

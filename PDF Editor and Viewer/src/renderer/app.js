@@ -19,7 +19,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = "../../node_modules/pdfjs-dist/build/pd
 const $ = (id) => document.getElementById(id);
 const state = { pdf:null, bytes:null, name:"", scale:1.15, tool:"select", fields:[], selected:null, seq:1 };
 const pagesEl = $("pages");
-const props = ["Name","Type","Placeholder","Alignment","Required","Multiline","FontSize","Border"];
+const props = ["Name","SystemKey","Box","Type","Placeholder","Alignment","Required","Multiline","FontSize","Border"];
 
 function toast(message){const el=$("toast");el.textContent=message;el.classList.add("show");setTimeout(()=>el.classList.remove("show"),2200)}
 function setStatus(message){$("statusText").textContent=message}
@@ -37,7 +37,8 @@ async function openPdf(){
     state.name=file.name; state.fields=[];state.selected=null;$("formOverview").classList.add("hidden");
     state.pdf=await pdfjsLib.getDocument({data:state.bytes.slice()}).promise;
     $("documentTitle").textContent=file.name;
-    $("welcome").classList.add("hidden");$("exportButton").disabled=false;$("detectButton").disabled=false;
+    $("welcome").classList.add("hidden");$("exportButton").disabled=false;$("exportPackageButton").disabled=false;$("detectButton").disabled=false;
+    $("formCode").value=file.name.replace(/\.pdf$/i,"").replace(/[^A-Za-z0-9.-]+/g,"-").toUpperCase();
     await renderAll();await importExistingWidgets();setStatus(`${state.pdf.numPages} pages loaded`);updateCount();
   } catch(error) {
     console.error("Unable to open PDF",error);
@@ -81,7 +82,7 @@ function bindLayer(layer,page){
 }
 
 function addField(data,detected=false,shouldSelect=true){
-  const f={id:crypto.randomUUID(),name:fieldName(data.type),type:data.type,placeholder:"",alignment:"left",required:false,multiline:false,fontSize:11,border:1,...data,detected};
+  const f={id:crypto.randomUUID(),name:fieldName(data.type),systemKey:"",box:"",type:data.type,placeholder:"",alignment:"left",required:false,multiline:false,fontSize:11,border:1,...data,detected};
   state.fields.push(f);renderField(f);if(shouldSelect)selectField(f.id);updateCount();return f;
 }
 function renderField(f){
@@ -321,8 +322,61 @@ async function exportPdf(){
   }catch(err){console.error(err);setStatus("Export failed");toast(`Export failed: ${err.message}`)}
 }
 
+function packageManifest(pdfFieldNames){
+  const formCode=$("formCode").value.trim();
+  if(!formCode)throw new Error("Enter the official form code before exporting a system package.");
+  const usedKeys=new Set();
+  const fields=state.fields.map((field,index)=>{
+    const systemKey=String(field.systemKey||"").trim();
+    if(!systemKey)throw new Error(`Field ${field.name} needs a system key.`);
+    if(usedKeys.has(systemKey))throw new Error(`System key ${systemKey} is used more than once.`);
+    usedKeys.add(systemKey);
+    return {
+      pdf_field_name:pdfFieldNames[index],
+      system_key:systemKey,
+      official_box:String(field.box||"").trim(),
+      page:Number(field.page),
+      type:field.type==="checkbox"?"boolean":field.type,
+      required:!!field.required,
+      max_length:field.maxLength||null,
+      placeholder:field.placeholder||"",
+      geometry:{x:field.x,y:field.y,width:field.w,height:field.h}
+    };
+  });
+  return {
+    schema_version:1,
+    form_code:formCode,
+    source_filename:state.name,
+    generated_at:new Date().toISOString(),
+    fields
+  };
+}
+
+async function buildPdfAndNames(){
+  const doc=await PDFDocument.load(state.bytes.slice(),{ignoreEncryption:true}),form=doc.getForm(),font=await doc.embedFont(StandardFonts.Helvetica),names=[];
+  for(const f of state.fields){
+    const page=doc.getPages()[f.page-1],{width,height}=page.getSize(),opts={x:f.x*width,y:height-(f.y+f.h)*height,width:f.w*width,height:f.h*height,borderWidth:f.locked?0:f.border,borderColor:f.locked?undefined:rgb(.15,.38,.65),backgroundColor:undefined,textColor:rgb(.08,.12,.16),font};
+    const preferred=String(f.systemKey||f.name).trim(),safe=preferred.replace(/[^\w .-]/g,"_");names.push(safe);
+    let field;
+    if(f.type==="checkbox"){field=form.createCheckBox(safe);field.addToPage(page,opts);if(f.markStyle==="x")field.updateAppearances(xMarkAppearance)}
+    else{field=form.createTextField(safe);if(f.type==="signature")field.setText("");if(f.multiline)field.enableMultiline();field.addToPage(page,opts);field.setFontSize(f.fontSize);field.setAlignment({left:TextAlignment.Left,center:TextAlignment.Center,right:TextAlignment.Right}[f.alignment]??TextAlignment.Left);field.updateAppearances(font)}
+    if(f.required)field.enableRequired?.();
+  }
+  form.updateFieldAppearances(font);
+  return {bytes:await doc.save(),names};
+}
+
+async function exportSystemPackage(){
+  setStatus("Building system form packageâ€¦");
+  try{
+    const {bytes,names}=await buildPdfAndNames(),manifest=packageManifest(names),base=state.name.replace(/\.pdf$/i,"");
+    const saved=await window.desktop.savePackage({bytes,manifest,suggestedName:`${base}-system-fillable.pdf`});
+    if(saved){setStatus(`Saved ${saved.pdfPath}`);toast("PDF and field map exported successfully")}
+  }catch(err){console.error(err);setStatus("Package export failed");toast(`Package export failed: ${err.message}`)}
+}
+
 document.querySelectorAll(".tool").forEach(b=>b.onclick=()=>{state.tool=b.dataset.tool;document.querySelectorAll(".tool").forEach(x=>x.classList.toggle("active",x===b));setStatus(state.tool==="select"?"Select and resize fields":`Drag to create a ${state.tool} field`)});
-$("openButton").onclick=$("welcomeOpen").onclick=openPdf;$("exportButton").onclick=exportPdf;$("detectButton").onclick=prepareForm;
+$("openButton").onclick=$("welcomeOpen").onclick=openPdf;$("exportButton").onclick=exportPdf;$("exportPackageButton").onclick=exportSystemPackage;$("detectButton").onclick=prepareForm;
 $("zoomIn").onclick=async()=>{if(!state.pdf)return;state.scale=Math.min(2.4,state.scale+.15);$("zoomLabel").textContent=`${Math.round(state.scale/1.15*100)}%`;await renderAll()};
 $("zoomOut").onclick=async()=>{if(!state.pdf)return;state.scale=Math.max(.55,state.scale-.15);$("zoomLabel").textContent=`${Math.round(state.scale/1.15*100)}%`;await renderAll()};
 $("fitButton").onclick=async()=>{if(!state.pdf)return;const page=await state.pdf.getPage(1),v=page.getViewport({scale:1}),available=$("stage").clientWidth-90;state.scale=Math.max(.55,Math.min(1.8,available/v.width));$("zoomLabel").textContent="Fit";await renderAll()};

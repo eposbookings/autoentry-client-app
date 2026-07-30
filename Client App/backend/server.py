@@ -11703,6 +11703,8 @@ SA_SUPPLEMENTARY_FORM_ASSETS = [
     ("tax_calculation_summary", "SA110", "Tax calculation summary", "SA110-2026.pdf"),
 ]
 SA_SUPPLEMENTARY_SCHEMA_CACHE: dict[str, list[dict]] = {}
+SYSTEM_FORM_DIR = ROOT_DIR / "assets" / "system_forms"
+SYSTEM_FORM_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def supplementary_sa_field_type(label: str) -> str:
@@ -11833,6 +11835,119 @@ def sole_trader_self_assessment_form(client: dict, pack: Optional[dict], snapsho
         "auto_values": auto,
         "supplementary_forms": supplementary_forms,
     }
+
+
+def system_pdf_form_package(form_code: str) -> Optional[dict]:
+    safe_code = re.sub(r"[^A-Za-z0-9.-]", "", str(form_code or "")).upper()
+    if not safe_code:
+        return None
+    manifests = sorted(SYSTEM_FORM_DIR.glob("*.field-map.json"))
+    for manifest_path in manifests:
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if str(manifest.get("form_code") or "").upper() != safe_code:
+            continue
+        pdf_name = str(manifest.get("pdf_filename") or manifest_path.name.replace(".field-map.json", ".pdf"))
+        pdf_path = manifest_path.parent / Path(pdf_name).name
+        if not pdf_path.exists():
+            return {**manifest, "available": False, "error": "Prepared PDF is missing."}
+        return {
+            **manifest,
+            "available": True,
+            "_pdf_path": pdf_path,
+            "_manifest_path": manifest_path,
+        }
+    return None
+
+
+def self_assessment_system_form_values(form: dict) -> dict[str, Any]:
+    values = {
+        str(field.get("key")): field.get("value")
+        for section in (form.get("sections") or [])
+        for field in (section.get("fields") or [])
+        if field.get("key")
+    }
+    for supplementary in form.get("supplementary_forms") or []:
+        for field in supplementary.get("fields") or []:
+            if field.get("key"):
+                values[str(field["key"])] = field.get("value")
+    return values
+
+
+def self_assessment_system_form_status(form: Optional[dict]) -> list[dict]:
+    if not form:
+        return []
+    codes = ["SA100-2026"]
+    schedule = next((
+        field.get("value")
+        for section in (form.get("sections") or [])
+        for field in (section.get("fields") or [])
+        if field.get("key") == "self_employment_schedule"
+    ), None)
+    if schedule:
+        codes.append(f"{schedule}-2026")
+    codes.extend(
+        f"{supplementary.get('code')}-2026"
+        for supplementary in (form.get("supplementary_forms") or [])
+        if supplementary.get("selected")
+    )
+    return [
+        {
+            "form_code": code,
+            "available": bool((package := system_pdf_form_package(code)) and package.get("available")),
+            "field_count": len((package or {}).get("fields") or []),
+            "status": "System-fillable" if package and package.get("available") else "Needs PDF Editor preparation",
+        }
+        for code in dict.fromkeys(codes)
+    ]
+
+
+def fill_system_pdf_package(package: dict, values_by_key: dict[str, Any], read_only: bool = True) -> bytes:
+    reader = PdfReader(str(package["_pdf_path"]))
+    writer = PdfWriter()
+    writer.clone_document_from_reader(reader)
+    fields = writer.get_fields() or {}
+    manifest_fields = package.get("fields") or []
+    expected_names = {str(field.get("pdf_field_name") or "") for field in manifest_fields}
+    missing = sorted(name for name in expected_names if name and name not in fields)
+    if missing:
+        raise ValueError(f"Prepared PDF fields are missing: {', '.join(missing[:20])}")
+    pdf_values: dict[str, Any] = {}
+    for field in manifest_fields:
+        pdf_name = str(field.get("pdf_field_name") or "")
+        system_key = str(field.get("system_key") or "")
+        value = values_by_key.get(system_key)
+        if field.get("type") == "boolean":
+            pdf_values[pdf_name] = "/Yes" if bool(value) else "/Off"
+        else:
+            pdf_values[pdf_name] = "" if value is None else str(value)
+    for page in writer.pages:
+        for annotation_ref in page.get("/Annots", []) or []:
+            annotation = annotation_ref.get_object()
+            if annotation.get("/Subtype") != "/Widget":
+                continue
+            parent = annotation.get("/Parent")
+            parent_object = parent.get_object() if parent else None
+            field_name = str(annotation.get("/T") or (parent_object.get("/T") if parent_object else "") or "")
+            if field_name not in expected_names:
+                continue
+            if read_only:
+                target = parent_object or annotation
+                target[NameObject("/Ff")] = NumberObject(int(target.get("/Ff") or 0) | 1)
+    writer.update_page_form_field_values(None, pdf_values, auto_regenerate=False)
+    output = io.BytesIO()
+    writer.write(output)
+    written = PdfReader(io.BytesIO(output.getvalue()))
+    written_fields = written.get_fields() or {}
+    stale = [
+        name for name, expected in pdf_values.items()
+        if str((written_fields.get(name) or {}).get("/V") or "") != str(expected)
+    ]
+    if stale:
+        raise ValueError(f"Prepared PDF values did not persist: {', '.join(stale[:20])}")
+    return output.getvalue()
 
 
 async def year_end_accounts_workspace(session: AsyncSession, client: dict, current_user: Optional[dict] = None, selected_pack_id: Optional[str] = None) -> dict:
@@ -12260,6 +12375,7 @@ async def year_end_accounts_workspace(session: AsyncSession, client: dict, curre
             "auto_boxes": sorted(CT600_AUTOMATIC_BOXES, key=lambda value: int(value)),
             "form_preview": hmrc_form_preview,
             "self_assessment_form": self_assessment_form,
+            "self_assessment_pdf_forms": self_assessment_system_form_status(self_assessment_form),
         },
         "companies_house": {
             "destination": "Companies House",
@@ -16493,6 +16609,53 @@ async def download_native_fillable_ct600(
         content=content,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@api.get("/admin/accounting/clients/{client_id}/year-end-accounts/packs/{pack_id}/self-assessment/{form_code}.pdf")
+async def download_native_self_assessment_form(
+    client_id: str,
+    pack_id: str,
+    form_code: str,
+    read_only: bool = True,
+    user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    client = await get_client_or_404(session, client_id)
+    pack = await annual_accounts_pack_or_404(session, client_id, pack_id)
+    workspace = await year_end_accounts_workspace(session, client, user, selected_pack_id=pack_id)
+    form = (workspace.get("hmrc") or {}).get("self_assessment_form")
+    if not form:
+        raise HTTPException(status_code=409, detail="This accounts pack does not use the Self Assessment workflow.")
+    package = system_pdf_form_package(form_code)
+    if not package or not package.get("available"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"{form_code} has not yet been exported as a system package from PDF Editor and Viewer.",
+        )
+    requested_code = str(form_code or "").upper()
+    allowed = {
+        str(row.get("form_code") or "").upper()
+        for row in self_assessment_system_form_status(form)
+    }
+    if requested_code not in allowed:
+        raise HTTPException(status_code=409, detail=f"{form_code} is not selected for this tax return.")
+    try:
+        content = fill_system_pdf_package(
+            package,
+            self_assessment_system_form_values(form),
+            read_only=read_only,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    filename = (
+        f"{annual_accounts_filename_slug(client.get('business_name'))}-"
+        f"{pack.get('period_to') or 'period'}-{requested_code}.pdf"
+    )
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
     )
 
 

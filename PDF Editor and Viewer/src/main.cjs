@@ -58,6 +58,19 @@ ipcMain.handle("pdf:save", async (_event, { bytes, suggestedName }) => {
   return result.filePath;
 });
 
+ipcMain.handle("pdf:save-package", async (_event, { bytes, manifest, suggestedName }) => {
+  const result = await dialog.showSaveDialog({
+    defaultPath: suggestedName || "prepared-form.pdf",
+    filters: [{ name: "PDF form package", extensions: ["pdf"] }]
+  });
+  if (result.canceled || !result.filePath) return null;
+  const pdfPath = result.filePath.toLowerCase().endsWith(".pdf") ? result.filePath : `${result.filePath}.pdf`;
+  const manifestPath = pdfPath.replace(/\.pdf$/i, ".field-map.json");
+  await fs.writeFile(pdfPath, Buffer.from(bytes));
+  await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  return { pdfPath, manifestPath };
+});
+
 app.whenReady().then(() => {
   createWindow();
   app.on("activate", () => BrowserWindow.getAllWindows().length === 0 && createWindow());
