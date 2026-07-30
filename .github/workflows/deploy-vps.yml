@@ -165,8 +165,7 @@ jobs:
 
             MYSQL_READY=false
             for attempt in $(seq 1 60); do
-              if docker compose exec -T mysql sh -c \
-                'mysqladmin ping -h127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" --silent' >/dev/null 2>&1; then
+              if docker compose exec -T mysql sh -c 'mysqladmin ping -h127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" --silent' >/dev/null 2>&1; then
                 MYSQL_READY=true
                 break
               fi
@@ -180,16 +179,7 @@ jobs:
             fi
 
             echo "Database backup assessment"
-            docker compose exec -T mysql sh -c \
-              'mysql -h127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" -D"$MYSQL_DATABASE" -N -e "
-                SELECT CONCAT(
-                  COUNT(*), \" tables, \",
-                  ROUND(COALESCE(SUM(data_length + index_length), 0) / 1024 / 1024, 2),
-                  \" MB\"
-                )
-                FROM information_schema.tables
-                WHERE table_schema = DATABASE();
-              "'
+            docker compose exec -T mysql sh -c 'mysql -h127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" -D"$MYSQL_DATABASE" -N -e "SELECT COUNT(*) AS table_count, ROUND(COALESCE(SUM(data_length + index_length), 0) / 1024 / 1024, 2) AS size_mb FROM information_schema.tables WHERE table_schema = DATABASE();"'
 
             DUMP_TEMP="$BACKUP_ROOT/mysql.sql.tmp"
             DUMP_COMPLETE=false
@@ -197,9 +187,7 @@ jobs:
               rm -f "$DUMP_TEMP"
               echo "Starting database backup attempt $attempt/2 (10-minute limit)"
               DUMP_EXIT=0
-              timeout 600 docker compose exec -T mysql sh -c \
-                'exec mysqldump -h127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --quick --skip-lock-tables --no-tablespaces --hex-blob --routines --triggers --verbose "$MYSQL_DATABASE"' \
-                > "$DUMP_TEMP" || DUMP_EXIT=$?
+              timeout 600 docker compose exec -T mysql sh -c 'exec mysqldump -h127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --quick --skip-lock-tables --no-tablespaces --hex-blob --routines --triggers --verbose "$MYSQL_DATABASE"' > "$DUMP_TEMP" || DUMP_EXIT=$?
               DUMP_BYTES="$(stat -c %s "$DUMP_TEMP" 2>/dev/null || echo 0)"
               echo "Database backup attempt $attempt/2 finished with exit $DUMP_EXIT and $DUMP_BYTES bytes"
               if [ "$DUMP_EXIT" -eq 0 ] && [ "$DUMP_BYTES" -gt 0 ]; then
