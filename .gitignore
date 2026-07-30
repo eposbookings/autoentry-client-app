@@ -76,6 +76,7 @@ chainlit.md
 agenthub/agents/youtube/db
 mysql/
 *.db
+*.db-journal
 *.sqlite
 *.sqlite3
 Client App/backend/uploads/*
