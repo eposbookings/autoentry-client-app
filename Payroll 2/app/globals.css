@@ -1016,7 +1016,7 @@
   display:grid;
   min-width:0;
   gap:14px;
-  padding-top:16px;
+  padding-top:0;
 }
 .module-content>.operational-workspace,
 .module-content>.feature-library,
@@ -1067,6 +1067,11 @@
 .register-toolbar b{color:#18343d;font-size:16px}
 .card-head p,
 .register-toolbar small{color:#687a81;font-size:11px;line-height:1.45}
+.employer-calendar-card .card-head .primary{
+  border-color:var(--module-accent);
+  background:var(--module-accent);
+  color:#fff;
+}
 .card-head>span,
 .card-head>.status{flex:0 0 auto}
 .subnav{

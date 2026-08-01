@@ -113,7 +113,7 @@ test("responsive payroll keeps employer selection visible without document overf
   assert.match(page,/fetchWorkspaceResource\(`\/api\/pay-runs\?employerId=/);
   assert.match(page,/SummaryLine label="Employees" value=\{draft\?\.employeeCount\|\|0\} format="number"/);
   assert.doesNotMatch(page,/c\.cards\.map/);
-  assert.match(page,/const config: Record<string, \{ title: string; subtitle: string \}>/);
+  assert.doesNotMatch(page,/const config: Record<string, \{ title: string; subtitle: string \}>/);
   assert.match(page,/className="module" data-module=\{active\.toLowerCase\(\)\}/);
   assert.match(page,/className="module-content"/);
   assert.match(styles,/Shared application workspace: carry the approved payroll hierarchy through every module/);
@@ -141,6 +141,8 @@ test("employer calendar days are tenant-scoped, frozen into leave evidence, and 
   ]);
   assert.match(page,/Employer calendar and national holidays/);
   assert.match(page,/EmployerCalendarWorkspace/);
+  assert.match(page,/EmployerCalendarWorkspace canWrite=\{canEmployeeWrite\} onAddEmployee=\{onAddEmployee\}/);
+  assert.match(page,/<span className="status">\{activeDays\.length\} active<\/span><button className="primary" disabled=\{!canWrite\} onClick=\{onAddEmployee\}>＋ Add employee<\/button><button onClick=\{\(\)=>setOpen/);
   assert.match(page,/CalendarModal employee=\{employee\} period=\{period\}/);
   assert.match(page,/selectionMode=\{automaticScheduleWeeks\?"start":"range"\}/);
   assert.match(page,/Choose one date\. The \$\{automaticScheduleWeeks\}-week statutory schedule and end date will be selected automatically\./);
@@ -465,7 +467,7 @@ test("employer configuration rejects malformed statutory data and departments ar
   assert.match(employer,/db\.insert\(employerMemberships\)\.values\(\{employerId:employer\.id,userId:user\.userId,role:"owner"/);
   assert.match(page,/Create isolated client/);
   assert.match(page,/Every client has isolated payroll, CIS, pension, RTI and audit records/);
-  assert.match(page,/employerName\.toUpperCase\(\)/);
+  assert.doesNotMatch(page,/employerName\.toUpperCase\(\)/);
   assert.match(departments,/requireEmployerAccess\(request,employerId,"employer-admin"\)/);
   assert.match(departments,/eq\(departments\.employerId,employerId\)/);
   assert.match(departments,/Move employees out of this department before deleting it/);
@@ -1985,9 +1987,10 @@ test("payroll finalisation creates payment-aware RTI and pension workflow tasks"
   assert.match(styles,/\.mainnav \.workflow-badge/);assert.match(styles,/#c93434/);
 });
 
-test("RTI navigation puts five filing types before the period strip and removes the duplicate heading",async()=>{
+test("module pages omit duplicate headings while RTI keeps filing types before the period strip",async()=>{
   const [page,styles]=await Promise.all([readFile("app/page.tsx","utf8"),readFile("app/globals.css","utf8")]);
-  assert.match(page,/active!=="RTI"&&<div className="module-head">/);
+  assert.doesNotMatch(page,/className="module-head"/);
+  assert.match(styles,/\.module-content\{[\s\S]*?padding-top:0/);
   assert.match(styles,/\.module\[data-module="rti"\] \.operational-workspace>\.submission-cards\{/);
   assert.match(styles,/grid-template-columns:repeat\(5,minmax\(180px,1fr\)\)/);
   assert.match(styles,/\.operational-workspace>\.submission-cards[\s\S]*?order:-2/);
