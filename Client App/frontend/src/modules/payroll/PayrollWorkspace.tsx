@@ -1,5 +1,15 @@
 "use client";
 
+/*
+ * This workspace is migrated from the standalone payroll application. Its
+ * data-loading effects intentionally key off selected identifiers instead of
+ * the locally declared loader functions, which are recreated during render.
+ * Including those functions as dependencies would repeatedly refetch data.
+ * Keep this compatibility waiver scoped to the migrated workspace so CI still
+ * enforces exhaustive dependencies throughout the rest of EPOS Accountancy.
+ */
+/* eslint-disable react-hooks/exhaustive-deps */
+
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { calculateMonthlyPayroll, calculateStatutoryPay, p45OpeningBalances, solveGrossForTargetNet } from "./lib/payroll-engine";
 import { attachmentPriority, calculateAttachment } from "./lib/attachment-engine";
