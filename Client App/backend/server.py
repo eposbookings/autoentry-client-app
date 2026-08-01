@@ -24,6 +24,7 @@ import textwrap
 import time
 import uuid
 import zipfile
+import xml.etree.ElementTree as ET
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -70,11 +71,39 @@ from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from starlette.middleware.cors import CORSMiddleware
 
 try:
+    from backend.document_forms import (
+        DocumentFormPackageError,
+        DocumentFormPackageRegistry,
+    )
+    from backend.filing_domain import (
+        FILING_DOMAIN_SCHEMA,
+        FILING_DOMAIN_VERSION,
+        FilingDomainModel,
+        FilingFact,
+        ProvenanceStep,
+        assess_support,
+        cross_document_invariants,
+        project_ct600_values,
+    )
     from backend.year_end_compliance import (
         filing_generation_allowed,
         year_end_specification_status,
     )
 except ModuleNotFoundError:  # Docker starts uvicorn with backend/ as its cwd.
+    from document_forms import (
+        DocumentFormPackageError,
+        DocumentFormPackageRegistry,
+    )
+    from filing_domain import (
+        FILING_DOMAIN_SCHEMA,
+        FILING_DOMAIN_VERSION,
+        FilingDomainModel,
+        FilingFact,
+        ProvenanceStep,
+        assess_support,
+        cross_document_invariants,
+        project_ct600_values,
+    )
     from year_end_compliance import (
         filing_generation_allowed,
         year_end_specification_status,
@@ -1680,6 +1709,22 @@ accounting_annual_accounts_outputs = Table(
     Column("metadata_json", Text),
     Column("validation_json", Text),
     Column("generated_by", String(36)),
+    Column("created_at", String(64)),
+)
+
+accounting_filing_domain_models = Table(
+    "accounting_filing_domain_models",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("client_id", String(36), nullable=False, index=True),
+    Column("pack_id", String(36), nullable=False, index=True),
+    Column("snapshot_id", String(36), nullable=False, index=True),
+    Column("schema_name", String(128), nullable=False),
+    Column("schema_version", String(32), nullable=False, index=True),
+    Column("model_json", Text, nullable=False),
+    Column("model_hash", String(128), nullable=False, index=True),
+    Column("support_level", String(64), nullable=False, index=True),
+    Column("created_by", String(36)),
     Column("created_at", String(64)),
 )
 
@@ -10848,6 +10893,235 @@ def annual_accounts_ct600_auto_values(client: dict, pack: dict, pnl: dict) -> di
     }
 
 
+def _filing_fact_id(*parts: Any) -> str:
+    material = "|".join(str(part or "") for part in parts)
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+
+
+def annual_accounts_support_assessment(
+    client: dict,
+    pack: dict,
+    ct600_values: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    period_from = str(pack.get("period_from") or "")
+    period_to = str(pack.get("period_to") or "")
+    period_length = "unknown"
+    try:
+        days = (date.fromisoformat(period_to) - date.fromisoformat(period_from)).days + 1
+        period_length = "standard" if days in {365, 366} else "non_standard"
+    except ValueError:
+        pass
+    return assess_support({
+        "client_type": str(client.get("client_type") or "").lower().replace(" ", "_"),
+        "standard": str(pack.get("accounts_standard") or ""),
+        "format": str(pack.get("accounts_format") or ""),
+        "trading_status": str(pack.get("company_trading_status") or ""),
+        "audit_basis": str(pack.get("audit_exemption") or ""),
+        "period_length": period_length,
+    }, ct600_values or {})
+
+
+def build_filing_domain_model(
+    client: dict,
+    pack: dict,
+    snapshot_id: str,
+    trial_balance_rows: list[dict],
+    accounts_preview: dict,
+    ct600_form: dict,
+    taxonomy: dict,
+    created_at: str,
+) -> FilingDomainModel:
+    """Freeze all draft filing projections into one audit-trailed model."""
+    model_id = new_id()
+    pack_id = str(pack.get("id") or "")
+    trial_balance_facts: list[FilingFact] = []
+    for row in trial_balance_rows:
+        account_code = str(row.get("account_code") or row.get("code") or "")
+        balance = money_str(money(row.get("balance") if row.get("balance") is not None else row.get("raw_balance")))
+        fact_id = _filing_fact_id(model_id, "trial_balance", account_code)
+        trial_balance_facts.append(FilingFact(
+            fact_id=fact_id,
+            concept=f"trial_balance:{account_code}",
+            value=balance,
+            value_type="money",
+            period_kind=str(row.get("period_kind") or "current"),
+            provenance=(ProvenanceStep(
+                stage="source_ledger",
+                source_type="annual_accounts_snapshot",
+                source_id=snapshot_id,
+                operation=f"freeze nominal {account_code}",
+                value=balance,
+                evidence_reference=str(row.get("journal_entry_id") or row.get("account_id") or "") or None,
+            ),),
+        ))
+
+    statutory_facts: list[FilingFact] = []
+    presentation_facts: list[FilingFact] = []
+    for statement_name, rows in (
+        ("profit_and_loss", accounts_preview.get("profit_and_loss_rows") or []),
+        ("balance_sheet", accounts_preview.get("balance_sheet_rows") or []),
+    ):
+        for row in rows:
+            key = str(row.get("key") or "")
+            for period_kind, value in (
+                ("current", row.get("amount")),
+                ("comparative", row.get("comparative")),
+            ):
+                if value in {None, ""}:
+                    continue
+                concept = f"statutory:{statement_name}:{key}"
+                statutory_id = _filing_fact_id(model_id, concept, period_kind)
+                chain = (
+                    ProvenanceStep(
+                        stage="source_ledger",
+                        source_type="annual_accounts_snapshot",
+                        source_id=snapshot_id,
+                        operation=f"aggregate mapped nominals into {statement_name}",
+                        value=str(value),
+                    ),
+                    ProvenanceStep(
+                        stage="statutory_value",
+                        source_type="statutory_statement",
+                        source_id=statutory_id,
+                        operation=str(row.get("label") or key),
+                        value=str(value),
+                    ),
+                )
+                statutory_facts.append(FilingFact(
+                    fact_id=statutory_id,
+                    concept=concept,
+                    value=str(value),
+                    value_type="money",
+                    period_kind=period_kind,
+                    provenance=chain,
+                ))
+                presentation_facts.append(FilingFact(
+                    fact_id=_filing_fact_id(model_id, "presentation", concept, period_kind),
+                    concept=concept,
+                    value=str(value),
+                    value_type="money",
+                    period_kind=period_kind,
+                    taxonomy_concept=str(row.get("taxonomy_concept") or "") or None,
+                    provenance=chain + (ProvenanceStep(
+                        stage="taxonomy_fact",
+                        source_type="accounts_presentation",
+                        source_id=key,
+                        operation="project statutory value to accounts presentation fact",
+                        value=str(value),
+                    ),),
+                ))
+
+    ct600_facts: list[FilingFact] = []
+    ct600_values: dict[str, Any] = {}
+    for section in ct600_form.get("sections") or []:
+        for field_row in section.get("fields") or []:
+            box = str(field_row.get("box") or "")
+            if not box:
+                continue
+            value = field_row.get("value")
+            ct600_values[box] = value
+            source = str(field_row.get("source") or "manual")
+            provenance = [
+                ProvenanceStep(
+                    stage="source_ledger" if source == "accounts" else "user_input",
+                    source_type="annual_accounts_snapshot" if source == "accounts" else "ct600_editor",
+                    source_id=snapshot_id if source == "accounts" else f"{pack_id}:box:{box}",
+                    operation="derive from frozen accounts" if source == "accounts" else "record reviewed box value",
+                    value=str(value if value is not None else ""),
+                )
+            ]
+            if source == "accounts":
+                provenance.extend([
+                    ProvenanceStep(
+                        stage="statutory_value",
+                        source_type="annual_accounts_pack",
+                        source_id=pack_id,
+                        operation="apply current filing-domain derivation rule",
+                        value=str(value if value is not None else ""),
+                    ),
+                    ProvenanceStep(
+                        stage="ct600_box",
+                        source_type="CT600_2026_V3",
+                        source_id=box,
+                        operation=f"project into CT600 box {box}",
+                        value=str(value if value is not None else ""),
+                    ),
+                ])
+            ct600_facts.append(FilingFact(
+                fact_id=_filing_fact_id(model_id, "ct600", box),
+                concept=f"ct600:box:{box}",
+                value=value,
+                value_type=str(field_row.get("type") or "text"),
+                period_kind="current",
+                ct600_box=box,
+                user_override=source == "saved",
+                override_reason="Reviewed value saved in CT600 editor" if source == "saved" else None,
+                provenance=tuple(provenance),
+            ))
+
+    period_from = str(pack.get("period_from") or "")
+    period_to = str(pack.get("period_to") or "")
+    support = annual_accounts_support_assessment(client, pack, ct600_values)
+    taxonomy_versions = {
+        "accounts": str((taxonomy.get("accounts") or {}).get("selected_id") or "") or None,
+        "computations": str((taxonomy.get("computations") or {}).get("selected_id") or "") or None,
+    }
+    return FilingDomainModel(
+        schema=FILING_DOMAIN_SCHEMA,
+        schema_version=FILING_DOMAIN_VERSION,
+        model_id=model_id,
+        client_id=str(client.get("id") or ""),
+        pack_id=pack_id,
+        snapshot_id=snapshot_id,
+        company_identity={
+            "legal_name": str(client.get("business_name") or ""),
+            "company_number": str(client.get("company_number") or ""),
+            "utr": str(client.get("utr") or ""),
+        },
+        accounting_period={
+            "from": period_from or None,
+            "to": period_to or None,
+            "comparative_from": str(pack.get("comparative_period_from") or "") or None,
+            "comparative_to": str(pack.get("comparative_period_to") or "") or None,
+        },
+        accounting_standard=str(pack.get("accounts_standard") or ""),
+        entity_regime=str(pack.get("accounts_format") or ""),
+        trading_status=str(pack.get("company_trading_status") or ""),
+        trial_balance_facts=tuple(trial_balance_facts),
+        accounting_adjustments=tuple(),
+        tax_adjustments=tuple(),
+        capital_allowances=tuple(),
+        losses_and_reliefs=tuple(),
+        statutory_facts=tuple(statutory_facts),
+        ct600_facts=tuple(ct600_facts),
+        presentation_facts=tuple(presentation_facts),
+        unsupported_conditions=tuple(support["conditions"]),
+        support_assessment=support,
+        taxonomy_versions=taxonomy_versions,
+        created_at=created_at,
+    )
+
+
+def ct600_form_from_filing_model(form: dict, model: FilingDomainModel) -> dict:
+    """Return the CT600 form with every value projected from the domain model."""
+    values = project_ct600_values(model)
+    return {
+        **form,
+        "sections": [
+            {
+                **section,
+                "fields": [
+                    {**field_row, "value": values.get(str(field_row.get("box") or ""), "")}
+                    for field_row in (section.get("fields") or [])
+                ],
+            }
+            for section in (form.get("sections") or [])
+        ],
+        "filing_domain_model_id": model.model_id,
+        "filing_domain_model_hash": model.sha256(),
+    }
+
+
 CT600_NATIVE_PDF_FIELD_MAP = {
     "1": ["p01_text_000"],
     "2": [f"p01_text_{index:03d}" for index in range(1, 9)],
@@ -11176,8 +11450,30 @@ COMPANIES_HOUSE_SECTION_OPTIONS = [
     ("creditors_note", "Creditors note", True),
     ("share_capital_note", "Share capital note", True),
     ("employees_note", "Average employees note", True),
-    ("detailed_profit_and_loss", "Detailed profit and loss account", True),
+    ("detailed_profit_and_loss", "Detailed profit and loss account", False),
 ]
+
+
+def annual_accounts_section_defaults(pack: Optional[dict]) -> dict[str, dict[str, bool]]:
+    """Return filing-copy defaults without enabling optional disclosures."""
+    pack = pack or {}
+    result = {
+        key: {"enabled": bool(default), "required": bool(default)}
+        for key, _label, default in COMPANIES_HOUSE_SECTION_OPTIONS
+    }
+    accounts_format = str(pack.get("accounts_format") or "")
+    dormant = str(pack.get("company_trading_status") or "") == "dormant"
+    if accounts_format in {"micro", "small_full"}:
+        result["directors_report"] = {"enabled": False, "required": False}
+        result["detailed_profit_and_loss"] = {"enabled": False, "required": False}
+    if dormant:
+        for key in ("contents", "directors_report", "profit_and_loss", "detailed_profit_and_loss"):
+            result[key] = {"enabled": False, "required": False}
+        for key in result:
+            if key not in {"cover", "company_information", "balance_sheet", "accounting_policies", "share_capital_note"}:
+                result[key]["required"] = False
+    return result
+
 
 ANNUAL_ACCOUNTS_TAXONOMIES = {
     "accounts": [
@@ -11243,11 +11539,22 @@ def annual_accounts_taxonomy_selection(pack: dict) -> dict:
     return result
 
 
+def annual_accounts_taxonomy_entry_point(pack: dict) -> str:
+    """Return the FRC entry point that matches the selected accounting standard."""
+    details = pack.get("details") if isinstance(pack.get("details"), dict) else annual_accounts_json(pack.get("details_json"), {})
+    taxonomy_year = str(details.get("accounts_taxonomy") or "FRC-2026").split("-")[-1]
+    entry_point = "IFRS" if str(pack.get("accounts_standard") or "") == "IFRS" else "FRS-102"
+    return (
+        f"https://xbrl.frc.org.uk/{entry_point}/{taxonomy_year}-01-01/"
+        f"{entry_point}-{taxonomy_year}-01-01.xsd"
+    )
+
+
 def annual_accounts_ixbrl_preview_html(client: dict, pack: dict, preview: dict) -> str:
     details = pack.get("details") if isinstance(pack.get("details"), dict) else annual_accounts_json(pack.get("details_json"), {})
     taxonomy_id = str(details.get("accounts_taxonomy") or "FRC-2026")
     taxonomy_year = taxonomy_id.split("-")[-1]
-    schema_ref = f"https://xbrl.frc.org.uk/FRS-102/{taxonomy_year}-01-01/FRS-102-{taxonomy_year}-01-01.xsd"
+    schema_ref = annual_accounts_taxonomy_entry_point(pack)
     company_name = html.escape(str(client.get("business_name") or ""))
     company_number = html.escape(str(client.get("company_number") or ""))
     period_from = html.escape(str(pack.get("period_from") or ""))
@@ -11362,7 +11669,7 @@ def annual_accounts_production_preview_html(client: dict, pack: dict, preview: d
     """
     details = pack.get("details") if isinstance(pack.get("details"), dict) else annual_accounts_json(pack.get("details_json"), {})
     taxonomy_year = str(details.get("accounts_taxonomy") or "FRC-2026").split("-")[-1]
-    schema_ref = f"https://xbrl.frc.org.uk/FRS-102/{taxonomy_year}-01-01/FRS-102-{taxonomy_year}-01-01.xsd"
+    schema_ref = annual_accounts_taxonomy_entry_point(pack)
     company_name = html.escape(str(client.get("business_name") or "Company"))
     company_number = html.escape(str(client.get("company_number") or ""))
     period_from = html.escape(str(pack.get("period_from") or ""))
@@ -11392,6 +11699,11 @@ def annual_accounts_production_preview_html(client: dict, pack: dict, preview: d
         rendered = f"{abs(amount):,.0f}"
         return f"({rendered})" if amount < 0 else rendered
 
+    def tagged_amount(value: Any) -> tuple[str, str]:
+        amount = money(value)
+        sign = ' sign="-"' if amount < 0 else ""
+        return f"{abs(amount):.0f}", sign
+
     def statement_rows(rows: list[dict], instant: bool = False) -> str:
         rendered = []
         current_context = "CurrentInstant" if instant else "CurrentDuration"
@@ -11400,26 +11712,26 @@ def annual_accounts_production_preview_html(client: dict, pack: dict, preview: d
             key = str(row.get("key") or "")
             concept = concept_by_key.get(key, "core:ProfitLoss")
             label = html.escape(str(row.get("label") or ""))
-            current = display_amount(row.get("amount"))
-            comparative = display_amount(row.get("comparative"))
+            current, current_sign = tagged_amount(row.get("amount"))
+            comparative, comparative_sign = tagged_amount(row.get("comparative"))
             rendered.append(
                 f'<tr><td>{label}</td><td></td>'
-                f'<td><ix:nonFraction name="{concept}" contextRef="{current_context}" unitRef="GBP" decimals="0">{current}</ix:nonFraction></td>'
-                f'<td><ix:nonFraction name="{concept}" contextRef="{comparative_context}" unitRef="GBP" decimals="0">{comparative}</ix:nonFraction></td></tr>'
+                f'<td><ix:nonFraction name="{concept}" contextRef="{current_context}" unitRef="GBP" decimals="0"{current_sign}>{current}</ix:nonFraction></td>'
+                f'<td><ix:nonFraction name="{concept}" contextRef="{comparative_context}" unitRef="GBP" decimals="0"{comparative_sign}>{comparative}</ix:nonFraction></td></tr>'
             )
         return "".join(rendered)
 
     notes = preview.get("notes") or []
     notes_page_7 = "".join(
-        f'<div class="note"><b>{html.escape(str(note.get("number") or ""))}&nbsp;&nbsp;{html.escape(str(note.get("title") or ""))}</b>'
+        f'<div class="note"><b>{html.escape(str(note.get("number") or ""))}&#160;&#160;{html.escape(str(note.get("title") or ""))}</b>'
         f'<p>{html.escape(str(note.get("body") or ""))}</p></div>' for note in notes[:3]
     )
     notes_page_8 = "".join(
-        f'<div class="note"><b>{html.escape(str(note.get("number") or ""))}&nbsp;&nbsp;{html.escape(str(note.get("title") or ""))}</b>'
+        f'<div class="note"><b>{html.escape(str(note.get("number") or ""))}&#160;&#160;{html.escape(str(note.get("title") or ""))}</b>'
         f'<p>{html.escape(str(note.get("body") or ""))}</p></div>' for note in notes[3:7]
     )
     notes_page_9 = "".join(
-        f'<div class="note"><b>{html.escape(str(note.get("number") or ""))}&nbsp;&nbsp;{html.escape(str(note.get("title") or ""))}</b>'
+        f'<div class="note"><b>{html.escape(str(note.get("number") or ""))}&#160;&#160;{html.escape(str(note.get("title") or ""))}</b>'
         f'<p>{html.escape(str(note.get("body") or ""))}</p></div>' for note in notes[7:]
     )
     detailed_rows = "".join(
@@ -11439,29 +11751,183 @@ def annual_accounts_production_preview_html(client: dict, pack: dict, preview: d
     pages = []
     if "cover" in enabled:
         pages.append(
-            f'<section class="page cover"><b>Company Registration No. {company_number} (England and Wales)</b>'
-            f'<div class="cover-title"><b>{company_name.upper()}</b><b>ANNUAL REPORT AND UNAUDITED ACCOUNTS</b>'
-            f'<b>FOR THE YEAR ENDED {period_to}</b></div></section>'
+            f'<section class="page cover"><b>Company Registration No. <ix:nonNumeric name="business:UKCompaniesHouseRegisteredNumber" contextRef="CurrentInstant">{company_number}</ix:nonNumeric> (England and Wales)</b>'
+            f'<div class="cover-title"><b><ix:nonNumeric name="business:EntityCurrentLegalOrRegisteredName" contextRef="CurrentInstant">{company_name.upper()}</ix:nonNumeric></b><b>ANNUAL REPORT AND UNAUDITED ACCOUNTS</b>'
+            f'<b>FOR THE YEAR ENDED <ix:nonNumeric name="business:EndDateForPeriodCoveredByReport" contextRef="CurrentInstant">{period_to}</ix:nonNumeric></b></div></section>'
         )
     if "contents" in enabled:
         pages.append(page(2, "ANNUAL REPORT AND UNAUDITED ACCOUNTS", '<table class="contents"><tr><th></th><th>Page</th></tr><tr><td>Company information</td><td>3</td></tr><tr><td>Director&apos;s report</td><td>4</td></tr><tr><td>Income statement</td><td>5</td></tr><tr><td>Statement of financial position</td><td>6</td></tr><tr><td>Notes to the accounts</td><td>7</td></tr><tr><td>Detailed profit and loss account</td><td>10</td></tr></table>', "CONTENTS"))
     if "company_information" in enabled:
         pages.append(page(3, "COMPANY INFORMATION", f'<dl><dt>Director</dt><dd>{director}</dd><dt>Company Number</dt><dd>{company_number} (England and Wales)</dd><dt>Registered Office</dt><dd>{address}</dd><dt>Accountants</dt><dd>{accountant}</dd></dl>'))
     if "directors_report" in enabled:
-        pages.append(page(4, f"(COMPANY NO: {company_number} ENGLAND AND WALES)<br>DIRECTOR&apos;S REPORT", f'<p>The director presents the report and accounts for the year ended {period_to}.</p><h3>Directors</h3><p>{director} held office during the whole of the period.</p><h3>Statement of directors&apos; responsibilities</h3><p>The directors are responsible for preparing the report and accounts in accordance with applicable law and regulations.</p><p>Company law requires the directors to prepare accounts for each financial year and not approve them unless satisfied that they give a true and fair view of the company and its profit or loss.</p><ul><li>select suitable accounting policies and apply them consistently;</li><li>make reasonable and prudent judgements and estimates;</li><li>prepare the accounts on the going concern basis unless inappropriate.</li></ul><p>The directors are responsible for adequate accounting records, safeguarding assets, and preventing and detecting fraud and other irregularities.</p><h3>Small company provisions</h3><p>This report has been prepared under the special provisions relating to small companies within Part 15 of the Companies Act 2006.</p><div class="signature">Signed on behalf of the board of directors<br><br>........................................................<br><br>{director}<br>Director<br><br>Approved by the board on: {approval_date}</div>', ""))
+        pages.append(page(4, f"(COMPANY NO: {company_number} ENGLAND AND WALES)<br/>DIRECTOR&apos;S REPORT", f'<p>The director presents the report and accounts for the year ended {period_to}.</p><h3>Directors</h3><p>{director} held office during the whole of the period.</p><h3>Statement of directors&apos; responsibilities</h3><p>The directors are responsible for preparing the report and accounts in accordance with applicable law and regulations.</p><p>Company law requires the directors to prepare accounts for each financial year and not approve them unless satisfied that they give a true and fair view of the company and its profit or loss.</p><ul><li>select suitable accounting policies and apply them consistently;</li><li>make reasonable and prudent judgements and estimates;</li><li>prepare the accounts on the going concern basis unless inappropriate.</li></ul><p>The directors are responsible for adequate accounting records, safeguarding assets, and preventing and detecting fraud and other irregularities.</p><h3>Small company provisions</h3><p>This report has been prepared under the special provisions relating to small companies within Part 15 of the Companies Act 2006.</p><div class="signature">Signed on behalf of the board of directors<br/><br/>........................................................<br/><br/>{director}<br/>Director<br/><br/>Approved by the board on: {approval_date}</div>', ""))
     if "profit_and_loss" in enabled:
-        pages.append(page(5, "INCOME STATEMENT", f'<table class="statement"><thead><tr><th></th><th></th><th>{current_year}<br>£</th><th>{comparative_year}<br>£</th></tr></thead><tbody>{statement_rows(preview.get("profit_and_loss_rows") or [])}</tbody></table>'))
+        pages.append(page(5, "INCOME STATEMENT", f'<table class="statement"><thead><tr><th></th><th></th><th>{current_year}<br/>£</th><th>{comparative_year}<br/>£</th></tr></thead><tbody>{statement_rows(preview.get("profit_and_loss_rows") or [])}</tbody></table>'))
     if "balance_sheet" in enabled:
-        pages.append(page(6, "STATEMENT OF FINANCIAL POSITION", f'<table class="statement"><thead><tr><th></th><th>Notes</th><th>{current_year}<br>£</th><th>{comparative_year}<br>£</th></tr></thead><tbody>{statement_rows(preview.get("balance_sheet_rows") or [], True)}</tbody></table><div class="declarations"><p>{audit_basis}</p><p>The director acknowledges responsibilities under the Companies Act 2006 for accounting records and preparation of accounts.</p><p>These accounts have been prepared under the small companies&apos; regime and {html.escape(str(preview.get("accounts_standard") or ""))}.</p><p>Approved and authorised for issue on {approval_date} and signed on behalf of the Board by</p><p>{director}<br>Director</p><p>Company Registration No. {company_number}</p></div>', f"AS AT {period_to}"))
+        pages.append(page(6, "STATEMENT OF FINANCIAL POSITION", f'<table class="statement"><thead><tr><th></th><th>Notes</th><th>{current_year}<br/>£</th><th>{comparative_year}<br/>£</th></tr></thead><tbody>{statement_rows(preview.get("balance_sheet_rows") or [], True)}</tbody></table><div class="declarations"><p>{audit_basis}</p><p>The director acknowledges responsibilities under the Companies Act 2006 for accounting records and preparation of accounts.</p><p>These accounts have been prepared under the small companies&apos; regime and {html.escape(str(preview.get("accounts_standard") or ""))}.</p><p>Approved and authorised for issue on {approval_date} and signed on behalf of the Board by</p><p>{director}<br/>Director</p><p>Company Registration No. {company_number}</p></div>', f"AS AT {period_to}"))
     if notes:
         pages.append(page(7, "NOTES TO THE ACCOUNTS", notes_page_7 + '<div class="policies"><h3>Basis of preparation</h3><p>The accounts have been prepared under the historical cost convention.</p><h3>Presentation currency</h3><p>The accounts are presented in £ sterling.</p><h3>Turnover</h3><p>Turnover is measured at fair value, excluding discounts, rebates, VAT and other sales taxes.</p><h3>Tangible fixed assets and depreciation</h3><p>Tangible assets are included at cost less depreciation and impairment.</p></div>'))
         pages.append(page(8, "NOTES TO THE ACCOUNTS", notes_page_8))
-        pages.append(page(9, "NOTES TO THE ACCOUNTS", notes_page_9 or f'<div class="note"><b>8&nbsp;&nbsp;Average number of employees</b><p>During the year the average number of employees was <ix:nonFraction name="core:AverageNumberEmployeesDuringPeriod" contextRef="CurrentDuration" unitRef="Pure" decimals="0">{employee_count or "0"}</ix:nonFraction>.</p></div>'))
+        pages.append(page(9, "NOTES TO THE ACCOUNTS", notes_page_9 or f'<div class="note"><b>8&#160;&#160;Average number of employees</b><p>During the year the average number of employees was <ix:nonFraction name="core:AverageNumberEmployeesDuringPeriod" contextRef="CurrentDuration" unitRef="Pure" decimals="0">{employee_count or "0"}</ix:nonFraction>.</p></div>'))
     if "detailed_profit_and_loss" in enabled:
-        pages.append(page(10, "DETAILED PROFIT AND LOSS ACCOUNT", f'<p class="center">This schedule does not form part of the statutory accounts.</p><table class="statement"><thead><tr><th></th><th></th><th>{current_year}<br>£</th><th>{comparative_year}<br>£</th></tr></thead><tbody>{detailed_rows}</tbody></table>'))
+        pages.append(page(10, "DETAILED PROFIT AND LOSS ACCOUNT", f'<p class="center">This schedule does not form part of the statutory accounts.</p><table class="statement"><thead><tr><th></th><th></th><th>{current_year}<br/>£</th><th>{comparative_year}<br/>£</th></tr></thead><tbody>{detailed_rows}</tbody></table>'))
 
     return f"""<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml" xmlns:ix="http://www.xbrl.org/2013/inlineXBRL" xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:iso4217="http://www.xbrl.org/2003/iso4217" xmlns:business="http://xbrl.frc.org.uk/cd/{taxonomy_year}-01-01/business" xmlns:core="http://xbrl.frc.org.uk/fr/{taxonomy_year}-01-01/core"><head><meta charset="utf-8"/><title>{company_name} - annual accounts draft</title><style>
 body{{font-family:Arial,sans-serif;color:#000;margin:0;background:#ddd;font-size:13px;line-height:1.35}}.page{{position:relative;width:8.27in;min-height:11.69in;margin:18px auto;padding:.55in .55in .7in;background:#fff;box-sizing:border-box;page-break-after:always}}header{{display:flex;flex-direction:column;text-align:center;font-size:18px;text-transform:uppercase;line-height:1.25;border-bottom:1px solid #000;padding-bottom:14px;margin-bottom:38px}}footer{{position:absolute;left:.55in;right:.55in;bottom:.25in;border-top:1px solid #000;padding-top:6px;text-align:center}}.cover{{text-align:center;font-weight:bold}}.cover-title{{display:flex;flex-direction:column;margin-top:4.1in;font-size:18px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:3px 4px}}th:not(:first-child),td:not(:first-child){{text-align:right}}.contents{{width:75%;margin:50px auto}}dl{{display:grid;grid-template-columns:150px 1fr;gap:18px;margin:55px auto;width:80%}}dt{{font-weight:bold}}dd{{margin:0}}h3{{font-size:13px;margin-bottom:0}}p{{margin-top:4px}}.signature{{margin-top:30px}}.statement th{{padding-bottom:18px}}.statement td:nth-last-child(-n+2){{font-variant-numeric:tabular-nums}}.declarations{{margin-top:24px}}.note{{margin:0 0 24px}}.policies{{margin-left:28px}}.policies h3{{font-style:italic}}.center{{text-align:center}}.draft{{position:fixed;z-index:5;top:8px;right:8px;background:#fff3cd;border:1px solid #b8860b;padding:6px;font-size:11px}}@media print{{body{{background:#fff}}.page{{margin:0}}.draft{{position:absolute}}}}</style></head><body><div class="draft">DRAFT REVIEW ARTEFACT - NOT VALIDATED OR FILED</div><ix:header><ix:references><link:schemaRef xlink:type="simple" xlink:href="{schema_ref}"/></ix:references><ix:resources><xbrli:context id="CurrentDuration"><xbrli:entity><xbrli:identifier scheme="http://www.companieshouse.gov.uk/">{company_number}</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>{period_from}</xbrli:startDate><xbrli:endDate>{period_to}</xbrli:endDate></xbrli:period></xbrli:context><xbrli:context id="ComparativeDuration"><xbrli:entity><xbrli:identifier scheme="http://www.companieshouse.gov.uk/">{company_number}</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>{comparative_from}</xbrli:startDate><xbrli:endDate>{comparative_to}</xbrli:endDate></xbrli:period></xbrli:context><xbrli:context id="CurrentInstant"><xbrli:entity><xbrli:identifier scheme="http://www.companieshouse.gov.uk/">{company_number}</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:instant>{period_to}</xbrli:instant></xbrli:period></xbrli:context><xbrli:context id="ComparativeInstant"><xbrli:entity><xbrli:identifier scheme="http://www.companieshouse.gov.uk/">{company_number}</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:instant>{comparative_to}</xbrli:instant></xbrli:period></xbrli:context><xbrli:unit id="GBP"><xbrli:measure>iso4217:GBP</xbrli:measure></xbrli:unit><xbrli:unit id="Pure"><xbrli:measure>xbrli:pure</xbrli:measure></xbrli:unit></ix:resources></ix:header>{''.join(pages)}</body></html>"""
+
+
+def annual_accounts_ixbrl_local_validation(
+    document: str,
+    client: dict,
+    pack: dict,
+    preview: dict,
+    destination: str = "both",
+) -> dict:
+    """Run deterministic checks that do not require an external taxonomy processor.
+
+    Passing these checks means only that the draft is internally coherent. It
+    does not replace FRC taxonomy, HMRC or Companies House destination
+    validation.
+    """
+    issues: list[dict] = []
+
+    def issue(code: str, message: str, severity: str = "error"):
+        issues.append({"code": code, "message": message, "severity": severity})
+
+    try:
+        root = ET.fromstring(document)
+    except ET.ParseError as error:
+        return {
+            "passed": False,
+            "checks": {"xml_well_formed": False},
+            "issues": [{"code": "ixbrl_not_well_formed", "message": str(error), "severity": "error"}],
+            "external_taxonomy_validation": False,
+            "destination_validation": False,
+        }
+
+    namespaces = {
+        "ix": "http://www.xbrl.org/2013/inlineXBRL",
+        "xbrli": "http://www.xbrl.org/2003/instance",
+        "link": "http://www.xbrl.org/2003/linkbase",
+        "xlink": "http://www.w3.org/1999/xlink",
+    }
+    contexts = {
+        str(node.get("id") or "")
+        for node in root.findall(".//xbrli:context", namespaces)
+        if node.get("id")
+    }
+    units = {
+        str(node.get("id") or "")
+        for node in root.findall(".//xbrli:unit", namespaces)
+        if node.get("id")
+    }
+    numeric_facts = root.findall(".//ix:nonFraction", namespaces)
+    non_numeric_facts = root.findall(".//ix:nonNumeric", namespaces)
+    facts = numeric_facts + non_numeric_facts
+    schema_ref = root.find(".//link:schemaRef", namespaces)
+    schema_href = (
+        schema_ref.get(f"{{{namespaces['xlink']}}}href")
+        if schema_ref is not None
+        else None
+    )
+    expected_entry_point = annual_accounts_taxonomy_entry_point(pack)
+    if schema_href != expected_entry_point:
+        issue("taxonomy_entry_point_mismatch", "The iXBRL schema reference does not match the selected accounting standard and taxonomy version.")
+    required_contexts = {"CurrentDuration", "CurrentInstant"}
+    if pack.get("comparative_period_to"):
+        required_contexts |= {"ComparativeDuration", "ComparativeInstant"}
+    if not required_contexts <= contexts:
+        issue("ixbrl_context_missing", "Current or comparative iXBRL contexts are missing.")
+    if "GBP" not in units:
+        issue("ixbrl_currency_unit_missing", "The GBP reporting unit is missing.")
+    if not facts:
+        issue("ixbrl_facts_missing", "The accounts contain no Inline XBRL facts.")
+
+    fact_names = [str(fact.get("name") or "") for fact in facts]
+    required_fact_names = {
+        "business:UKCompaniesHouseRegisteredNumber",
+        "business:EntityCurrentLegalOrRegisteredName",
+        "business:EndDateForPeriodCoveredByReport",
+    }
+    missing_identity = sorted(required_fact_names - set(fact_names))
+    if missing_identity:
+        issue("ixbrl_identity_facts_missing", f"Required identity facts are missing: {', '.join(missing_identity)}.")
+
+    invalid_references = [
+        str(fact.get("name") or "unnamed")
+        for fact in facts
+        if fact.get("contextRef") not in contexts
+    ]
+    if invalid_references:
+        issue("ixbrl_context_reference_invalid", f"Facts reference unknown contexts: {', '.join(invalid_references[:10])}.")
+    invalid_units = [
+        str(fact.get("name") or "unnamed")
+        for fact in numeric_facts
+        if fact.get("unitRef") not in units
+    ]
+    if invalid_units:
+        issue("ixbrl_unit_reference_invalid", f"Numeric facts reference unknown units: {', '.join(invalid_units[:10])}.")
+
+    invalid_numbers = []
+    for fact in numeric_facts:
+        value = "".join(fact.itertext()).strip()
+        try:
+            Decimal(value)
+        except (InvalidOperation, ValueError):
+            invalid_numbers.append(str(fact.get("name") or "unnamed"))
+    if invalid_numbers:
+        issue("ixbrl_numeric_lexical_invalid", f"Numeric facts are not valid decimal values: {', '.join(invalid_numbers[:10])}.")
+
+    enabled = {
+        str(row.get("id") or "")
+        for row in (preview.get("section_options") or [])
+        if row.get("enabled")
+    }
+    expected_statement_facts = 2 * (
+        (len(preview.get("profit_and_loss_rows") or []) if "profit_and_loss" in enabled else 0)
+        + (len(preview.get("balance_sheet_rows") or []) if "balance_sheet" in enabled else 0)
+    )
+    if len(numeric_facts) < expected_statement_facts:
+        issue("ixbrl_statement_facts_incomplete", "Not every current and comparative statement value is tagged.")
+
+    dormant = str(pack.get("company_trading_status") or "") == "dormant"
+    if "balance_sheet" not in enabled:
+        issue("balance_sheet_section_missing", "A Companies House accounts filing requires a balance sheet.")
+    if dormant and "profit_and_loss" in enabled:
+        issue("dormant_profit_and_loss_conflict", "Dormant filing accounts should not include a trading profit and loss account.")
+    if not dormant and destination in {"both", "hmrc"} and "profit_and_loss" not in enabled:
+        issue("hmrc_profit_and_loss_missing", "The HMRC accounts attachment must include the profit and loss account.")
+    if "detailed_profit_and_loss" in enabled and preview.get("detailed_profit_and_loss_rows"):
+        issue(
+            "detailed_profit_and_loss_untagged",
+            "The detailed profit and loss schedule is visible but its nominal rows do not yet have reviewed FRC taxonomy concepts.",
+        )
+    if str(pack.get("audit_exemption") or "").startswith("audited_"):
+        issue(
+            "auditor_report_not_modelled",
+            "Audited accounts require the signed and dated auditor report and senior statutory auditor details; this workflow does not yet collect them.",
+        )
+    if str(pack.get("accounts_format") or "") == "full":
+        issue(
+            "full_accounts_disclosures_incomplete",
+            "Full accounts require strategic/directors/auditor and primary-statement disclosure decisions that are not yet fully modelled.",
+        )
+
+    return {
+        "passed": not any(row["severity"] == "error" for row in issues),
+        "checks": {
+            "xml_well_formed": True,
+            "schema_reference_present": bool(schema_href),
+            "schema_reference_matches_standard": schema_href == expected_entry_point,
+            "context_count": len(contexts),
+            "unit_count": len(units),
+            "fact_count": len(facts),
+            "numeric_fact_count": len(numeric_facts),
+        },
+        "issues": issues,
+        "external_taxonomy_validation": False,
+        "destination_validation": False,
+    }
 
 
 def annual_accounts_ct600_preview_html(client: dict, pack: dict, form: dict, computation: dict) -> str:
@@ -11657,6 +12123,7 @@ SA100_SOLE_TRADER_SECTIONS = [
     {"id": "self_employment", "title": "SA103 - Self-employment", "fields": [
         ("self_employment_schedule", "Self-employment schedule selected by eligibility review", "select", True),
         ("business_name", "Business name", "text", True),
+        ("business_address", "SA103F box 3 - First line of business address", "text", False),
         ("business_description", "Box 1 — Description of business", "text", False),
         ("business_postcode", "Box 2 — Postcode of your business address", "text", False),
         ("accounting_period_from", "Accounts period start", "date", True),
@@ -11685,6 +12152,7 @@ SA100_FIELD_RULES = {
     "address": {"max_length": 160, "placeholder": "Name and address only if different from HMRC's pre-printed details"},
     "phone": {"max_length": 15, "pattern": r"[0-9 +]{1,15}", "placeholder": "Up to 15 characters"},
     "business_name": {"max_length": 60, "placeholder": "As shown on the business records"},
+    "business_address": {"max_length": 80, "placeholder": "SA103F only - first line of the business address"},
     "business_description": {"max_length": 80, "placeholder": "Up to 80 characters"},
     "business_postcode": {"max_length": 8, "placeholder": "For example SW1A 1AA"},
     "other_information": {"max_length": 4000, "placeholder": "Explain only information relevant to this return"},
@@ -11702,9 +12170,16 @@ SA_SUPPLEMENTARY_FORM_ASSETS = [
     ("additional_information_pages", "SA101", "Additional information", "SA101-2026.pdf"),
     ("tax_calculation_summary", "SA110", "Tax calculation summary", "SA110-2026.pdf"),
 ]
+SELF_ASSESSMENT_SUPPLEMENTARY_KEY_PATTERN = re.compile(
+    r"^sa(?:100|101|102|103s|103f|104s|105|106|107|108|109|110)_(?:box|field)_[0-9a-z_]+$"
+)
+SELF_ASSESSMENT_VARIANT_SUFFIX_PATTERN = re.compile(
+    r"(?:_option_\d+|_alternate_\d+|_grid_\d+)$"
+)
 SA_SUPPLEMENTARY_SCHEMA_CACHE: dict[str, list[dict]] = {}
 SYSTEM_FORM_DIR = ROOT_DIR / "assets" / "system_forms"
 SYSTEM_FORM_DIR.mkdir(parents=True, exist_ok=True)
+DOCUMENT_FORM_REGISTRY = DocumentFormPackageRegistry(SYSTEM_FORM_DIR)
 
 
 def supplementary_sa_field_type(label: str) -> str:
@@ -11751,7 +12226,7 @@ def supplementary_sa_form_schema(code: str, asset_name: str, saved: dict) -> lis
         if not label:
             continue
         seen.add(box)
-        key = f"{code.lower()}_box_{box.replace('.', '_')}"
+        key = f"{code.lower()}_box_{box.replace('.', '_').lower()}"
         field_type = supplementary_sa_field_type(label)
         rules = {"placeholder": "Enter the value required by this HMRC box"}
         if field_type == "money":
@@ -11770,6 +12245,79 @@ def supplementary_sa_form_schema(code: str, asset_name: str, saved: dict) -> lis
             "automatic": False,
             **rules,
         })
+    package = system_pdf_form_package(f"{code}-2026")
+    manifest_fields = (package or {}).get("fields") or []
+    manifest_keys = {str(field.get("system_key") or "") for field in manifest_fields}
+    manifest_fields_by_key: dict[str, list[dict]] = {}
+    for manifest_field in manifest_fields:
+        manifest_fields_by_key.setdefault(
+            str(manifest_field.get("system_key") or ""), []
+        ).append(manifest_field)
+
+    def mapped_field(field: dict, key: str) -> dict:
+        result = {**field, "key": key, "pdf_mapped": True}
+        transforms = [
+            row.get("value_transform") or {}
+            for row in manifest_fields_by_key.get(key, [])
+        ]
+        money_transform = next((
+            transform
+            for transform in transforms
+            if transform.get("kind") == "money_character"
+        ), None)
+        if money_transform:
+            whole_digits = max(1, int(money_transform.get("whole_digits") or 8))
+            decimal_places = max(0, int(money_transform.get("decimal_places") or 0))
+            result.update({
+                "type": "money",
+                "max_digits": whole_digits,
+                "decimal_places": decimal_places,
+                "placeholder": (
+                    f"Up to {whole_digits} whole-pound digits"
+                    + (f" and {decimal_places} pence digits" if decimal_places else "")
+                ),
+            })
+        return result
+
+    expanded_fields = []
+    for field in fields:
+        if field["key"] in manifest_keys:
+            expanded_fields.append(mapped_field(field, field["key"]))
+            continue
+        candidate_keys = list(dict.fromkeys(
+            str(manifest_field.get("system_key") or "")
+            for manifest_field in sorted(
+                (
+                    manifest_field
+                    for manifest_field in manifest_fields
+                    if str(manifest_field.get("official_box") or "").lower() == str(field["box"]).lower()
+                ),
+                key=lambda manifest_field: (
+                    int(manifest_field.get("page") or 0),
+                    float((manifest_field.get("geometry") or {}).get("y") or 0),
+                    float((manifest_field.get("geometry") or {}).get("x") or 0),
+                ),
+            )
+            if manifest_field.get("system_key")
+        ))
+        if candidate_keys:
+            for occurrence, candidate_key in enumerate(candidate_keys, start=1):
+                expanded_fields.append({
+                    **mapped_field(field, candidate_key),
+                    "label": (
+                        field["label"]
+                        if len(candidate_keys) == 1
+                        else f"{field['label']} — entry {occurrence}"
+                    ),
+                    "pdf_mapped": True,
+                })
+        else:
+            expanded_fields.append({
+                **field,
+                "pdf_mapped": False,
+                "mapping_warning": "This official box still needs a field drawn in PDF Editor and Viewer.",
+            })
+    fields = expanded_fields
     SA_SUPPLEMENTARY_SCHEMA_CACHE[asset_name] = fields
     return [
         {**field, "value": saved.get(field["key"], False if field["type"] == "boolean" else "")}
@@ -11798,16 +12346,17 @@ def sole_trader_self_assessment_form(client: dict, pack: Optional[dict], snapsho
         "net_profit": money_str(turnover - expenses),
     }
     values = {**auto, **saved}
-    supplementary_forms = [
-        {
+    supplementary_forms = []
+    for selection_key, code, title, asset_name in SA_SUPPLEMENTARY_FORM_ASSETS:
+        selected = bool(values.get(selection_key))
+        supplementary_forms.append({
             "selection_key": selection_key,
             "code": code,
             "title": title,
-            "selected": bool(values.get(selection_key)),
-            "fields": supplementary_sa_form_schema(code, asset_name, saved),
-        }
-        for selection_key, code, title, asset_name in SA_SUPPLEMENTARY_FORM_ASSETS
-    ]
+            "selected": selected,
+            "fields": supplementary_sa_form_schema(code, asset_name, saved) if selected else [],
+            "lazy": not selected,
+        })
     return {
         "form": "SA100 2026",
         "tax_year": "6 April 2025 to 5 April 2026",
@@ -11833,42 +12382,57 @@ def sole_trader_self_assessment_form(client: dict, pack: Optional[dict], snapsho
             for section in SA100_SOLE_TRADER_SECTIONS
         ],
         "auto_values": auto,
+        "saved_values": saved,
         "supplementary_forms": supplementary_forms,
     }
 
 
+def is_system_pdf_artwork_only_field(field: dict) -> bool:
+    """Exclude false-positive widgets drawn over official HMRC branding artwork."""
+    geometry = field.get("geometry") or {}
+    system_key = str(field.get("system_key") or "")
+    try:
+        return (
+            int(field.get("page") or 0) == 1
+            and not str(field.get("official_box") or "").strip()
+            and "_field_" in system_key
+            and float(geometry.get("x") or 0) < 0.09
+            and float(geometry.get("y") or 0) < 0.04
+            and float(geometry.get("width") or 0) > 0.15
+            and float(geometry.get("height") or 0) > 0.06
+        )
+    except (TypeError, ValueError):
+        return False
+
+
 def system_pdf_form_package(form_code: str) -> Optional[dict]:
-    safe_code = re.sub(r"[^A-Za-z0-9.-]", "", str(form_code or "")).upper()
-    if not safe_code:
-        return None
-    manifests = sorted(SYSTEM_FORM_DIR.glob("*.field-map.json"))
-    for manifest_path in manifests:
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if str(manifest.get("form_code") or "").upper() != safe_code:
-            continue
-        pdf_name = str(manifest.get("pdf_filename") or manifest_path.name.replace(".field-map.json", ".pdf"))
-        pdf_path = manifest_path.parent / Path(pdf_name).name
-        if not pdf_path.exists():
-            return {**manifest, "available": False, "error": "Prepared PDF is missing."}
-        return {
-            **manifest,
-            "available": True,
-            "_pdf_path": pdf_path,
-            "_manifest_path": manifest_path,
-        }
-    return None
+    registry = (
+        DOCUMENT_FORM_REGISTRY
+        if DOCUMENT_FORM_REGISTRY.package_directory == SYSTEM_FORM_DIR
+        else DocumentFormPackageRegistry(SYSTEM_FORM_DIR)
+    )
+    package = registry.get(form_code)
+    if not package:
+        return package
+    fields = [
+        field
+        for field in (package.get("fields") or [])
+        if not is_system_pdf_artwork_only_field(field)
+    ]
+    return {**package, "fields": fields}
 
 
 def self_assessment_system_form_values(form: dict) -> dict[str, Any]:
     values = {
+        str(key): value
+        for key, value in (form.get("saved_values") or {}).items()
+    }
+    values.update({
         str(field.get("key")): field.get("value")
         for section in (form.get("sections") or [])
         for field in (section.get("fields") or [])
         if field.get("key")
-    }
+    })
     for supplementary in form.get("supplementary_forms") or []:
         for field in supplementary.get("fields") or []:
             if field.get("key"):
@@ -11904,50 +12468,25 @@ def self_assessment_system_form_status(form: Optional[dict]) -> list[dict]:
     ]
 
 
+def self_assessment_editor_form_codes(form: Optional[dict]) -> set[str]:
+    """Forms an administrator may open while assembling a Self Assessment return."""
+    if not form:
+        return set()
+    codes = {"SA100-2026", "SA103S-2026", "SA103F-2026"}
+    codes.update(
+        f"{supplementary.get('code')}-2026".upper()
+        for supplementary in (form.get("supplementary_forms") or [])
+        if supplementary.get("code")
+    )
+    return codes
+
+
 def fill_system_pdf_package(package: dict, values_by_key: dict[str, Any], read_only: bool = True) -> bytes:
-    reader = PdfReader(str(package["_pdf_path"]))
-    writer = PdfWriter()
-    writer.clone_document_from_reader(reader)
-    fields = writer.get_fields() or {}
-    manifest_fields = package.get("fields") or []
-    expected_names = {str(field.get("pdf_field_name") or "") for field in manifest_fields}
-    missing = sorted(name for name in expected_names if name and name not in fields)
-    if missing:
-        raise ValueError(f"Prepared PDF fields are missing: {', '.join(missing[:20])}")
-    pdf_values: dict[str, Any] = {}
-    for field in manifest_fields:
-        pdf_name = str(field.get("pdf_field_name") or "")
-        system_key = str(field.get("system_key") or "")
-        value = values_by_key.get(system_key)
-        if field.get("type") == "boolean":
-            pdf_values[pdf_name] = "/Yes" if bool(value) else "/Off"
-        else:
-            pdf_values[pdf_name] = "" if value is None else str(value)
-    for page in writer.pages:
-        for annotation_ref in page.get("/Annots", []) or []:
-            annotation = annotation_ref.get_object()
-            if annotation.get("/Subtype") != "/Widget":
-                continue
-            parent = annotation.get("/Parent")
-            parent_object = parent.get_object() if parent else None
-            field_name = str(annotation.get("/T") or (parent_object.get("/T") if parent_object else "") or "")
-            if field_name not in expected_names:
-                continue
-            if read_only:
-                target = parent_object or annotation
-                target[NameObject("/Ff")] = NumberObject(int(target.get("/Ff") or 0) | 1)
-    writer.update_page_form_field_values(None, pdf_values, auto_regenerate=False)
-    output = io.BytesIO()
-    writer.write(output)
-    written = PdfReader(io.BytesIO(output.getvalue()))
-    written_fields = written.get_fields() or {}
-    stale = [
-        name for name, expected in pdf_values.items()
-        if str((written_fields.get(name) or {}).get("/V") or "") != str(expected)
-    ]
-    if stale:
-        raise ValueError(f"Prepared PDF values did not persist: {', '.join(stale[:20])}")
-    return output.getvalue()
+    return DOCUMENT_FORM_REGISTRY.fill(
+        package,
+        values_by_key,
+        read_only=read_only,
+    )
 
 
 async def year_end_accounts_workspace(session: AsyncSession, client: dict, current_user: Optional[dict] = None, selected_pack_id: Optional[str] = None) -> dict:
@@ -12070,6 +12609,30 @@ async def year_end_accounts_workspace(session: AsyncSession, client: dict, curre
             f"Accounts: {accounts_label}; computations: {computations_label}. "
             "Save both selections in Settings.",
         )
+    support_assessment = None
+    if is_company_workflow and active_pack:
+        support_details = active_pack.get("details") or {}
+        support_ct600_values = (
+            support_details.get("ct600_fields")
+            if isinstance(support_details.get("ct600_fields"), dict)
+            else {}
+        )
+        support_assessment = annual_accounts_support_assessment(
+            client,
+            active_pack,
+            support_ct600_values,
+        )
+        if support_assessment["level"] == "unsupported":
+            block(
+                "filing_scope_unsupported",
+                "This case is outside the machine-enforced filing scope. "
+                + " ".join(support_assessment["reasons"]),
+            )
+        elif not support_assessment["submission_allowed"]:
+            block(
+                "filing_scope_export_only",
+                "This filing combination is currently available for draft export and mandatory professional review only; authority submission is disabled.",
+            )
     block("document_validation_pending", "Generate and pass the applicable HMRC schema, calculation and destination validation.")
     if not profile.get("hmrc_connection_status") == "connected":
         block("hmrc_credentials", "Connect and test the HMRC Corporation Tax filing credentials.", "hmrc")
@@ -12163,8 +12726,14 @@ async def year_end_accounts_workspace(session: AsyncSession, client: dict, curre
         for section_number, (section_id, title, boxes) in enumerate(CT600_EDITOR_SECTION_GROUPS, start=1)
     ]
     saved_ch_sections = pack_details.get("companies_house_sections") if isinstance(pack_details.get("companies_house_sections"), dict) else {}
+    section_defaults = annual_accounts_section_defaults(active_pack)
     companies_house_section_options = [
-        {"id": key, "label": label, "enabled": bool(saved_ch_sections.get(key, default)), "required": bool(default)}
+        {
+            "id": key,
+            "label": label,
+            "enabled": bool(saved_ch_sections.get(key, section_defaults[key]["enabled"])),
+            "required": bool(section_defaults[key]["required"]),
+        }
         for key, label, default in COMPANIES_HOUSE_SECTION_OPTIONS
     ]
     saved_custom_sections = pack_details.get("companies_house_custom_sections")
@@ -12274,6 +12843,7 @@ async def year_end_accounts_workspace(session: AsyncSession, client: dict, curre
     }
     return {
         "compliance": compliance_status,
+        "support_matrix": support_assessment,
         "filing_profile": filing_profile,
         "period": {
             "id": year.get("id") if year else None,
@@ -12313,6 +12883,8 @@ async def year_end_accounts_workspace(session: AsyncSession, client: dict, curre
             "companies_house": ("Ready" if ch_ready else "Blocked") if is_company_workflow else "Not applicable",
             "overall": "Ready" if hmrc_ready and (ch_ready or not is_company_workflow) else "Review",
         },
+        "trial_balance": snapshot.get("trial_balance") or [],
+        "trial_balance_summary": tb_summary,
         "workflow": [
             {"step": "1. Freeze data snapshot", "purpose": "Immutable current and comparative Trial Balance", "status": "Available" if year else "Blocked"},
             {"step": "2. Map and prepare accounts", "purpose": "Trading statements, adjustments and detailed P&L", "status": "Review"},
@@ -16373,11 +16945,17 @@ async def update_year_end_accounts_pack(
         if not isinstance(submitted_sa_fields, dict):
             raise HTTPException(status_code=400, detail="Self Assessment fields must be submitted as an object.")
         valid_sa_fields = {key for section in SA100_SOLE_TRADER_SECTIONS for key, _label, _type, _automatic in section["fields"]}
-        supplementary_key_pattern = re.compile(r"^sa(?:101|102|104s|105|106|107|108|109|110)_box_[0-9a-z_]+$")
-        unknown_sa_fields = {
-            key for key in submitted_sa_fields
-            if key not in valid_sa_fields and not supplementary_key_pattern.fullmatch(str(key))
-        }
+        unknown_sa_fields = set()
+        for key in submitted_sa_fields:
+            normalized_key = str(key)
+            base_key = SELF_ASSESSMENT_VARIANT_SUFFIX_PATTERN.sub("", normalized_key)
+            if (
+                normalized_key not in valid_sa_fields
+                and base_key not in valid_sa_fields
+                and not SELF_ASSESSMENT_SUPPLEMENTARY_KEY_PATTERN.fullmatch(normalized_key)
+                and not SELF_ASSESSMENT_SUPPLEMENTARY_KEY_PATTERN.fullmatch(base_key)
+            ):
+                unknown_sa_fields.add(key)
         if unknown_sa_fields:
             raise HTTPException(status_code=400, detail=f"Unsupported Self Assessment fields: {', '.join(sorted(unknown_sa_fields))}.")
         oversized_sa_fields = [key for key, value in submitted_sa_fields.items() if len(str(value or "")) > 4000]
@@ -16495,6 +17073,26 @@ async def generate_year_end_accounts_preview_package(
     workspace = await year_end_accounts_workspace(session, client, user)
     accounts_preview = workspace["companies_house"]["accounts_preview"]
     ct600_preview = workspace["hmrc"]["ct600_form"]
+    frozen_trial_balance_rows = await many(
+        session,
+        select(accounting_annual_accounts_trial_balance_lines).where(
+            accounting_annual_accounts_trial_balance_lines.c.snapshot_id == snapshot_id,
+            accounting_annual_accounts_trial_balance_lines.c.period_kind == "current",
+        ),
+    )
+    now = utc_now_iso()
+    filing_model = build_filing_domain_model(
+        client,
+        pack,
+        snapshot_id,
+        frozen_trial_balance_rows,
+        accounts_preview,
+        ct600_preview,
+        taxonomy,
+        now,
+    )
+    ct600_preview = ct600_form_from_filing_model(ct600_preview, filing_model)
+    model_invariants = cross_document_invariants(filing_model)
     ixbrl_html = annual_accounts_production_preview_html(client, pack, accounts_preview)
     computation_preview = {
         "title": f"{client.get('business_name') or ''} - Corporation Tax computation",
@@ -16508,9 +17106,23 @@ async def generate_year_end_accounts_preview_package(
         "status": "Tax adjustments and capital allowances require completion",
     }
     ct600_html = annual_accounts_ct600_preview_html(client, pack, ct600_preview, computation_preview)
-    now = utc_now_iso()
+    accounts_validation = annual_accounts_ixbrl_local_validation(
+        ixbrl_html,
+        client,
+        pack,
+        accounts_preview,
+        destination="both",
+    )
     common_validation = {
-        "internal_structure_checked": True,
+        "internal_structure_checked": accounts_validation["passed"],
+        "filing_domain_model": {
+            "schema": filing_model.schema,
+            "version": filing_model.schema_version,
+            "model_id": filing_model.model_id,
+            "model_hash": filing_model.sha256(),
+            "support": filing_model.support_assessment,
+            "cross_document_invariants": model_invariants,
+        },
         "taxonomy_selected": True,
         "period_valid": True,
         "external_schema_validation": False,
@@ -16518,6 +17130,35 @@ async def generate_year_end_accounts_preview_package(
         "companies_house_test_validation": False,
         "submission_ready": False,
     }
+    accounts_output_validation = {
+        **common_validation,
+        "local_ixbrl": accounts_validation,
+    }
+    computation_output_validation = {
+        **common_validation,
+        "internal_structure_checked": False,
+        "local_computation": {
+            "passed": False,
+            "issues": [{
+                "code": "corporation_tax_computation_incomplete",
+                "severity": "error",
+                "message": "Tax adjustments, capital allowances and taxable total profits must be completed before HMRC validation.",
+            }],
+        },
+    }
+    await session.execute(insert(accounting_filing_domain_models).values(
+        id=filing_model.model_id,
+        client_id=client_id,
+        pack_id=pack_id,
+        snapshot_id=snapshot_id,
+        schema_name=filing_model.schema,
+        schema_version=filing_model.schema_version,
+        model_json=filing_model.canonical_json(),
+        model_hash=filing_model.sha256(),
+        support_level=filing_model.support_assessment["level"],
+        created_by=user.get("id"),
+        created_at=now,
+    ))
     output_rows = [
         {
             "id": new_id(),
@@ -16532,8 +17173,10 @@ async def generate_year_end_accounts_preview_package(
                 "filename": f"{annual_accounts_filename_slug(client.get('business_name'))}-{pack.get('period_to')}-accounts-draft.html",
                 "taxonomy": taxonomy["accounts"],
                 "reference_format": "Companies House statutory accounts iXBRL",
+                "filing_domain_model_id": filing_model.model_id,
+                "filing_domain_model_hash": filing_model.sha256(),
             }),
-            "validation_json": json_compact(common_validation),
+            "validation_json": json_compact(accounts_output_validation),
             "generated_by": user.get("id"),
             "created_at": now,
         },
@@ -16550,8 +17193,10 @@ async def generate_year_end_accounts_preview_package(
                 "filename": f"{annual_accounts_filename_slug(client.get('business_name'))}-{pack.get('period_to')}-ct600-computation-draft.html",
                 "taxonomy": taxonomy["computations"],
                 "reference_format": "Printable CT600 Version 3 pages plus Corporation Tax computation",
+                "filing_domain_model_id": filing_model.model_id,
+                "filing_domain_model_hash": filing_model.sha256(),
             }),
-            "validation_json": json_compact(common_validation),
+            "validation_json": json_compact(computation_output_validation),
             "generated_by": user.get("id"),
             "created_at": now,
         },
@@ -16565,12 +17210,29 @@ async def generate_year_end_accounts_preview_package(
         "annual_accounts_preview_package_generated",
         "annual_accounts_pack",
         pack_id,
-        {"output_ids": [row["id"] for row in output_rows], "snapshot_id": snapshot_id},
+        {
+            "output_ids": [row["id"] for row in output_rows],
+            "snapshot_id": snapshot_id,
+            "filing_domain_model_id": filing_model.model_id,
+            "filing_domain_model_hash": filing_model.sha256(),
+            "support_level": filing_model.support_assessment["level"],
+        },
     )
     await session.commit()
     return {
         "status": "draft_review",
-        "message": "Draft review artefacts generated. External schema and destination validation are still required.",
+        "message": (
+            "Draft review artefacts generated from one frozen filing-domain model. "
+            "External schema and destination validation are still required."
+        ),
+        "filing_domain_model": {
+            "id": filing_model.model_id,
+            "schema": filing_model.schema,
+            "version": filing_model.schema_version,
+            "hash": filing_model.sha256(),
+            "support": filing_model.support_assessment,
+            "cross_document_invariants": model_invariants,
+        },
         "outputs": [
             {
                 "id": row["id"],
@@ -16612,12 +17274,65 @@ async def download_native_fillable_ct600(
     )
 
 
+@api.get("/admin/document-forms/packages")
+async def list_document_form_packages(
+    module: Optional[str] = None,
+    workflow: Optional[str] = None,
+    user: dict = Depends(require_admin),
+):
+    registry = (
+        DOCUMENT_FORM_REGISTRY
+        if DOCUMENT_FORM_REGISTRY.package_directory == SYSTEM_FORM_DIR
+        else DocumentFormPackageRegistry(SYSTEM_FORM_DIR)
+    )
+    return {
+        "packages": registry.list(module=module, workflow=workflow),
+        "package_directory": str(SYSTEM_FORM_DIR),
+    }
+
+
+@api.get("/admin/document-forms/packages/{form_code}")
+async def get_document_form_package(
+    form_code: str,
+    user: dict = Depends(require_admin),
+):
+    package = system_pdf_form_package(form_code)
+    if not package:
+        raise HTTPException(status_code=404, detail="Official form package not found.")
+    description = DOCUMENT_FORM_REGISTRY.describe(package)
+    try:
+        description["validation"] = DOCUMENT_FORM_REGISTRY.validate(package)
+    except DocumentFormPackageError as error:
+        description["available"] = False
+        description["error"] = str(error)
+    description["fields"] = [
+        {
+            key: field.get(key)
+            for key in (
+                "pdf_field_name",
+                "system_key",
+                "official_box",
+                "page",
+                "type",
+                "required",
+                "max_length",
+                "placeholder",
+                "value_transform",
+                "geometry",
+            )
+        }
+        for field in (package.get("fields") or [])
+    ]
+    return description
+
+
 @api.get("/admin/accounting/clients/{client_id}/year-end-accounts/packs/{pack_id}/self-assessment/{form_code}.pdf")
 async def download_native_self_assessment_form(
     client_id: str,
     pack_id: str,
     form_code: str,
     read_only: bool = True,
+    editor: bool = False,
     user: dict = Depends(require_admin),
     session: AsyncSession = Depends(get_db),
 ):
@@ -16634,10 +17349,14 @@ async def download_native_self_assessment_form(
             detail=f"{form_code} has not yet been exported as a system package from PDF Editor and Viewer.",
         )
     requested_code = str(form_code or "").upper()
-    allowed = {
-        str(row.get("form_code") or "").upper()
-        for row in self_assessment_system_form_status(form)
-    }
+    allowed = (
+        self_assessment_editor_form_codes(form)
+        if editor
+        else {
+            str(row.get("form_code") or "").upper()
+            for row in self_assessment_system_form_status(form)
+        }
+    )
     if requested_code not in allowed:
         raise HTTPException(status_code=409, detail=f"{form_code} is not selected for this tax return.")
     try:
@@ -27039,7 +27758,7 @@ async def update_practice_hmrc_settings(
         "self_assessment_enabled": bool(payload.self_assessment_enabled),
         "corporation_tax_enabled": bool(payload.corporation_tax_enabled),
         "paye_cis_enabled": bool(payload.paye_cis_enabled),
-        "updated_at": utc_now(),
+        "updated_at": utc_now_iso(),
         "updated_by": str(user["id"]),
     }
     if existing:
@@ -30558,6 +31277,18 @@ async def health(session: AsyncSession = Depends(get_db)):
     await session.execute(select(func.count()).select_from(users))
     return {"ok": True, "database": "sql"}
 
+
+try:
+    from backend.payroll import create_payroll_router
+except ModuleNotFoundError:  # Docker starts uvicorn with backend/ as its cwd.
+    from payroll import create_payroll_router
+
+api.include_router(create_payroll_router(
+    get_session=get_db,
+    get_current_user=get_current_user,
+    practice_client_or_404=practice_client_or_404,
+    users_table=users,
+))
 
 app.include_router(api)
 

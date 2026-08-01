@@ -92,6 +92,62 @@ def year_end_specification_status() -> dict[str, Any]:
     return {
         "status": "prototype_not_validated",
         "compliance_claim": False,
+        "release_level": "A_generation_in_progress",
+        "release_levels": [
+            {
+                "id": "A",
+                "label": "Generation complete",
+                "status": "in_progress",
+                "requirements": [
+                    "documents render correctly",
+                    "calculations reconcile internally",
+                    "all facts have provenance",
+                    "unsupported cases fail closed",
+                ],
+            },
+            {
+                "id": "B",
+                "label": "Validator complete",
+                "status": "not_passed",
+                "requirements": [
+                    "HMRC XSD and Schematron",
+                    "recognised XBRL processor",
+                    "HMRC Local Test Service",
+                    "Companies House XBRL validator",
+                ],
+            },
+            {
+                "id": "C",
+                "label": "Test-gateway complete",
+                "status": "not_passed",
+                "requirements": [
+                    "accepted and rejected authority test submissions",
+                    "duplicate, timeout and indeterminate state tests",
+                    "receipt and exact-payload hash retention",
+                ],
+            },
+            {
+                "id": "D",
+                "label": "Controlled production pilot",
+                "status": "not_passed",
+                "requirements": [
+                    "independent accounting and tax review",
+                    "security and credential review",
+                    "mandatory human approval",
+                    "controlled low-complexity cohort",
+                ],
+            },
+        ],
+        "test_suites": {
+            "local": {
+                "status": "reported_by_ci",
+                "meaning": "Local unit, invariant and rendering tests only.",
+            },
+            "authority_integration": {
+                "status": "not_executed",
+                "meaning": "HMRC LTS/TPVS and Companies House validator/gateway tests are separate and have not run.",
+            },
+        },
         "hmrc": {
             **{
                 key: value
@@ -119,7 +175,7 @@ def year_end_specification_status() -> dict[str, Any]:
             {"id": "source_data", "label": "Approved immutable accounts and tax dataset", "status": "not_passed"},
             {"id": "hmrc_xsd", "label": "HMRC CT600 XML Schema validation", "status": "not_implemented"},
             {"id": "hmrc_schematron", "label": "HMRC CT600 Schematron business rules", "status": "not_implemented"},
-            {"id": "ixbrl_specs", "label": "XBRL 2.1, Dimensions 1.0 and Inline XBRL 1.1", "status": "not_implemented"},
+            {"id": "ixbrl_specs", "label": "XBRL 2.1, Dimensions 1.0 and Inline XBRL 1.1", "status": "local_structure_checks_only"},
             {"id": "frc_taxonomy", "label": "Period-valid FRC taxonomy and full tagging", "status": "not_implemented"},
             {"id": "joint_filing", "label": "HMRC/Companies House joint filing checks", "status": "not_implemented"},
             {"id": "render_equivalence", "label": "Human-readable and tagged fact equivalence", "status": "not_implemented"},

@@ -1,0 +1,22 @@
+CREATE TABLE `statutory_notices` (
+	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+	`employee_id` integer NOT NULL,
+	`leave_event_id` integer,
+	`form_type` text NOT NULL,
+	`statutory_type` text NOT NULL,
+	`decision_date` text NOT NULL,
+	`pay_start_date` text NOT NULL,
+	`pay_end_date` text,
+	`reason_code` text NOT NULL,
+	`reason` text NOT NULL,
+	`average_weekly_earnings` real DEFAULT 0 NOT NULL,
+	`continuous_employment_weeks` integer DEFAULT 0 NOT NULL,
+	`evidence_received` integer DEFAULT false NOT NULL,
+	`notice_received` integer DEFAULT false NOT NULL,
+	`status` text DEFAULT 'issued' NOT NULL,
+	`issued_at` text,
+	`created_at` text DEFAULT 'CURRENT_TIMESTAMP' NOT NULL,
+	`updated_at` text DEFAULT 'CURRENT_TIMESTAMP' NOT NULL,
+	FOREIGN KEY (`employee_id`) REFERENCES `employees`(`id`) ON UPDATE no action ON DELETE no action,
+	FOREIGN KEY (`leave_event_id`) REFERENCES `leave_events`(`id`) ON UPDATE no action ON DELETE no action
+);

@@ -1,7 +1,8 @@
 """Run an isolated FY2026 year-end workflow matrix.
 
-This does not write filing records or contact HMRC/Companies House.  It verifies
-the local data flow and records an explicitly simulated accepted response.
+This does not write filing records or contact HMRC/Companies House. It verifies
+the local data flow, runs deterministic iXBRL checks, and records external
+validation/submission as unavailable rather than fabricating acceptance.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from pypdf import PdfReader
 
 
 ROOT = Path(__file__).resolve().parents[2]
+BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 import server  # noqa: E402
 
@@ -61,15 +63,18 @@ def form_for(values):
     }
 
 
-def companies_house_preview(dormant):
-    enabled = {"cover", "company_information", "balance_sheet"}
-    if not dormant:
-        enabled |= {"contents", "directors_report", "profit_and_loss", "detailed_profit_and_loss"}
+def companies_house_preview(pack):
+    defaults = server.annual_accounts_section_defaults(pack)
+    enabled = {key for key, value in defaults.items() if value["enabled"]}
+    dormant = pack["company_trading_status"] == "dormant"
     return {
         "accountants": "EPOS Accountancy",
         "accounts_standard": "Simulation",
-        "section_options": [{"id": item, "enabled": item in enabled} for item, _label, _default in server.COMPANIES_HOUSE_SECTION_OPTIONS],
-        "profit_and_loss_rows": [
+        "section_options": [
+            {"id": item, "enabled": item in enabled, "required": defaults[item]["required"]}
+            for item, _label, _default in server.COMPANIES_HOUSE_SECTION_OPTIONS
+        ],
+        "profit_and_loss_rows": [] if dormant else [
             {"key": "turnover", "label": "Turnover", "amount": "250000", "comparative": "220000"},
             {"key": "profit_before_tax", "label": "Profit before tax", "amount": "50000", "comparative": "42000"},
         ],
@@ -85,14 +90,19 @@ def companies_house_preview(dormant):
 
 def main():
     client = {
+        "id": "simulation-client",
         "business_name": "AG Marseille Limited",
         "company_number": "01234567",
         "utr": "1234567890",
         "registered_office_address": "1 Simulation Street, London",
+        "client_type": "limited_company",
+        "main_contact_name": "Simulation Director",
+        "main_contact_role": "Director",
     }
     results = []
     for standard, accounts_format, status in VARIANTS:
         pack = {
+            "id": f"simulation-{standard}-{accounts_format}-{status}",
             "period_from": "2025-05-01",
             "period_to": "2026-04-30",
             "comparative_period_from": "2024-05-01",
@@ -102,7 +112,12 @@ def main():
             "company_trading_status": status,
             "director_signing_name": "Simulation Director",
             "board_approval_date": "2026-07-31",
-            "details": {"employee_count": 4, "accounts_taxonomy": "FRC-2026"},
+            "audit_exemption": "audit_exempt_dormant_company" if status == "dormant" else "audit_exempt_small_company",
+            "details": {
+                "employee_count": 0 if status == "dormant" else 4,
+                "accounts_taxonomy": "FRC-2026",
+                "computations_taxonomy": "CT-COMP-2025",
+            },
         }
         pnl = {"turnover": "250000", "profit_before_tax": "50000", "tax_on_profit": "12500"}
         issues = server.annual_accounts_configuration_issues(standard, accounts_format, status)
@@ -111,8 +126,29 @@ def main():
         native = server.ct600_native_pdf_values(form)
         pdf_bytes = server.ct600_fillable_pdf_bytes(form)
         pdf_pages = len(PdfReader(__import__("io").BytesIO(pdf_bytes)).pages)
-        ch_html = server.annual_accounts_production_preview_html(
-            client, pack, companies_house_preview(status == "dormant")
+        preview = companies_house_preview(pack)
+        filing_model = server.build_filing_domain_model(
+            client,
+            pack,
+            "simulation-snapshot",
+            [
+                {"account_code": "4000", "balance": "-250000.00", "period_kind": "current"},
+                {"account_code": "5000", "balance": "200000.00", "period_kind": "current"},
+                {"account_code": "2100", "balance": "-12500.00", "period_kind": "current"},
+            ],
+            preview,
+            form,
+            {
+                "accounts": {"selected_id": "FRC-2026"},
+                "computations": {"selected_id": "CT-COMP-2025"},
+            },
+            "2026-07-30T12:00:00Z",
+        )
+        projected_form = server.ct600_form_from_filing_model(form, filing_model)
+        model_invariants = server.cross_document_invariants(filing_model)
+        ch_html = server.annual_accounts_production_preview_html(client, pack, preview)
+        ixbrl_validation = server.annual_accounts_ixbrl_local_validation(
+            ch_html, client, pack, preview, destination="both"
         )
         expected_tax = "0.00" if status == "dormant" else "12500.00"
         checks = {
@@ -126,7 +162,23 @@ def main():
             ),
             "ct600_pdf": pdf_pages == 12 and len(pdf_bytes) > 100_000,
             "companies_house_ixbrl": "<ix:nonFraction" in ch_html and "<link:schemaRef" in ch_html,
+            "ixbrl_well_formed": ixbrl_validation["checks"].get("xml_well_formed") is True,
+            "taxonomy_entry_point": ixbrl_validation["checks"].get("schema_reference_matches_standard") is True,
             "dormant_no_income_statement": status != "dormant" or "INCOME STATEMENT" not in ch_html,
+            "single_domain_projection": (
+                projected_form["filing_domain_model_hash"] == filing_model.sha256()
+                and model_invariants["passed"]
+            ),
+            "all_facts_have_provenance": all(
+                fact.provenance
+                for fact in (
+                    filing_model.trial_balance_facts
+                    + filing_model.statutory_facts
+                    + filing_model.ct600_facts
+                    + filing_model.presentation_facts
+                )
+            ),
+            "production_scope_fails_closed": filing_model.support_assessment["submission_allowed"] is False,
         }
         passed = all(checks.values())
         results.append({
@@ -136,30 +188,134 @@ def main():
             "passed": passed,
             "checks": checks,
             "validation": {
-                "schema": passed,
-                "calculation": passed,
-                "dimensions": passed,
-                "destination_rules": passed,
-                "mode": "local simulation; external gateway validators not invoked",
+                "local_ixbrl": ixbrl_validation,
+                "external_schema": False,
+                "external_calculation": False,
+                "external_dimensions": False,
+                "destination_rules": False,
+                "filing_domain_model": {
+                    "schema": filing_model.schema,
+                    "version": filing_model.schema_version,
+                    "hash": filing_model.sha256(),
+                    "support": filing_model.support_assessment,
+                    "cross_document_invariants": model_invariants,
+                },
+                "mode": "local simulation; FRC taxonomy and external gateway validators not invoked",
             },
             "submission": {
-                "status": "accepted" if passed else "not_attempted",
+                "status": "blocked_external_validation",
                 "simulated": True,
-                "receipt": f"SIM-FY2026-{standard}-{accounts_format}-{status}" if passed else None,
+                "receipt": None,
             },
         })
+    base_pack = {
+        "period_from": "2025-05-01",
+        "period_to": "2026-04-30",
+        "accounts_standard": "FRS_105",
+        "accounts_format": "micro",
+        "company_trading_status": "trading",
+        "audit_exemption": "audit_exempt_small_company",
+        "director_signing_name": "Simulation Director",
+        "board_approval_date": "2026-07-31",
+        "details": {"employee_count": 4, "accounts_taxonomy": "FRC-2026", "computations_taxonomy": "CT-COMP-2025"},
+    }
+    negative_scenarios = []
+
+    def negative(name, detected, expected_code):
+        negative_scenarios.append({
+            "name": name,
+            "passed": bool(detected),
+            "expected_blocker": expected_code,
+        })
+
+    conflict = server.annual_accounts_configuration_issues("FRS_105", "full", "trading")
+    negative("incompatible standard and format", bool(conflict), "accounts_configuration_conflict")
+
+    pack_issues = server.annual_accounts_pack_validation(
+        base_pack,
+        client,
+        {"balanced": False, "account_count": 8, "blocked_account_count": 0, "review_account_count": 0, "unmapped_account_count": 0},
+        {"turnover": "250000", "balance_sheet_total": "180000"},
+    )
+    negative(
+        "unbalanced trial balance",
+        "trial_balance_unbalanced" in {row["code"] for row in pack_issues},
+        "trial_balance_unbalanced",
+    )
+
+    ineligible_pack = {**base_pack, "details": {**base_pack["details"], "employee_count": 40}}
+    pack_issues = server.annual_accounts_pack_validation(
+        ineligible_pack,
+        client,
+        {"balanced": True, "account_count": 8, "blocked_account_count": 0, "review_account_count": 0, "unmapped_account_count": 0},
+        {"turnover": "20000000", "balance_sheet_total": "9000000"},
+    )
+    negative(
+        "micro entity threshold breach",
+        "accounts_format_ineligible" in {row["code"] for row in pack_issues},
+        "accounts_format_ineligible",
+    )
+
+    expired = server.annual_accounts_taxonomy_selection({
+        **base_pack,
+        "period_from": "2025-07-01",
+        "period_to": "2026-06-30",
+        "details": {**base_pack["details"], "computations_taxonomy": "CT-COMP-2024"},
+    })
+    negative("expired computation taxonomy", not expired["ready"], "taxonomy_period_invalid")
+
+    detail_preview = companies_house_preview(base_pack)
+    for section in detail_preview["section_options"]:
+        if section["id"] == "detailed_profit_and_loss":
+            section["enabled"] = True
+    detail_preview["detailed_profit_and_loss_rows"] = [{"label": "4000 - Sales", "amount": "250000"}]
+    detail_html = server.annual_accounts_production_preview_html(client, base_pack, detail_preview)
+    detail_validation = server.annual_accounts_ixbrl_local_validation(detail_html, client, base_pack, detail_preview)
+    negative(
+        "visible untagged detailed profit and loss",
+        "detailed_profit_and_loss_untagged" in {row["code"] for row in detail_validation["issues"]},
+        "detailed_profit_and_loss_untagged",
+    )
+
+    malformed_validation = server.annual_accounts_ixbrl_local_validation(
+        "<html><ix:nonFraction>",
+        client,
+        base_pack,
+        companies_house_preview(base_pack),
+    )
+    negative(
+        "malformed inline XBRL",
+        "ixbrl_not_well_formed" in {row["code"] for row in malformed_validation["issues"]},
+        "ixbrl_not_well_formed",
+    )
+
+    specialist_scope = server.annual_accounts_support_assessment(
+        client,
+        base_pack,
+        {"105": True},
+    )
+    negative(
+        "group or consortium supplementary page outside initial scope",
+        specialist_scope["level"] == "unsupported" and not specialist_scope["submission_allowed"],
+        "filing_scope_unsupported",
+    )
+
     report = {
         "financial_year": "FY2026",
         "company": client["business_name"],
         "production_submission_attempted": False,
-        "passed": all(item["passed"] for item in results),
+        "harness_passed": all(item["passed"] for item in results) and all(item["passed"] for item in negative_scenarios),
+        "filing_ready": False,
         "variants": results,
+        "negative_scenarios": negative_scenarios,
     }
-    output = ROOT / "tmp" / "fy2026_year_end_simulation_report.json"
+    output_dir = BACKEND / "test_reports"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output = output_dir / "fy2026_year_end_simulation_report.json"
     output.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"{sum(item['passed'] for item in results)}/{len(results)} variants passed")
     print(output)
-    if not report["passed"]:
+    if not report["harness_passed"]:
         raise SystemExit(1)
 
 

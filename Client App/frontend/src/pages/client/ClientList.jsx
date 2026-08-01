@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { ArrowLeft, Search, ChevronRight, Plus, ArrowUpDown, ReceiptText } from "lucide-react";
 import { toast } from "sonner";
+import { formatUkDate } from "@/lib/date";
 
 function parseListDate(value) {
   const [day, month, year] = String(value || "").split("/").map((part) => Number(part));
@@ -103,7 +104,7 @@ export default function ClientList() {
                     </div>
                     <div className="truncate font-display font-bold text-stone-950">{it.description}</div>
                     <div className="text-xs text-stone-500 mt-1">
-                      {it.date && <span>{it.date}</span>}
+                      {it.date && <span>{formatUkDate(it.date)}</span>}
                       {it.amount && <span> - {it.amount}</span>}
                     </div>
                   </div>

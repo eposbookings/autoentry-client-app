@@ -1,0 +1,13 @@
+.git
+.next
+dist
+node_modules
+.pnpm-store
+.wrangler
+build
+tmp
+pytest-temp-*
+*.log
+payroll-dev-*
+migration
+data

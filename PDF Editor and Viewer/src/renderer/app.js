@@ -1,5 +1,5 @@
 import * as pdfjsLib from "../../node_modules/pdfjs-dist/build/pdf.mjs";
-import { PDFDocument, rgb, StandardFonts, drawLine, TextAlignment } from "../../node_modules/pdf-lib/dist/pdf-lib.esm.js";
+import { PDFDocument, PDFName, rgb, StandardFonts, drawLine, TextAlignment } from "../../node_modules/pdf-lib/dist/pdf-lib.esm.js";
 
 // PDF.js 5 uses the new Uint8Array Base64/hex helpers. Electron versions
 // released before those APIs reached Chromium need these small equivalents.
@@ -17,9 +17,9 @@ if (!Uint8Array.prototype.toHex) {
 pdfjsLib.GlobalWorkerOptions.workerSrc = "../../node_modules/pdfjs-dist/build/pdf.worker.mjs";
 
 const $ = (id) => document.getElementById(id);
-const state = { pdf:null, bytes:null, name:"", scale:1.15, tool:"select", fields:[], selected:null, seq:1 };
+const state = { pdf:null, bytes:null, name:"", scale:1.15, tool:"select", fields:[], selected:null, seq:1, catalogue:null };
 const pagesEl = $("pages");
-const props = ["Name","SystemKey","Box","Type","Placeholder","Alignment","Required","Multiline","FontSize","Border"];
+const props = ["Name","SystemKey","Box","Type","Placeholder","Alignment","Required","Multiline","FontSize","Border","MaxLength","CharacterIndex"];
 
 function toast(message){const el=$("toast");el.textContent=message;el.classList.add("show");setTimeout(()=>el.classList.remove("show"),2200)}
 function setStatus(message){$("statusText").textContent=message}
@@ -31,20 +31,24 @@ async function openPdf(){
   try {
     const file=await window.desktop.openPdf(); if(!file){setStatus("Ready");return}
     if(file.error)throw new Error(file.error);
-    const raw=file.bytes?.data??file.bytes;
-    state.bytes=raw instanceof ArrayBuffer?new Uint8Array(raw):new Uint8Array(raw); 
-    if(!state.bytes.length)throw new Error("The selected PDF is empty.");
-    state.name=file.name; state.fields=[];state.selected=null;$("formOverview").classList.add("hidden");
-    state.pdf=await pdfjsLib.getDocument({data:state.bytes.slice()}).promise;
-    $("documentTitle").textContent=file.name;
-    $("welcome").classList.add("hidden");$("exportButton").disabled=false;$("exportPackageButton").disabled=false;$("detectButton").disabled=false;
-    $("formCode").value=file.name.replace(/\.pdf$/i,"").replace(/[^A-Za-z0-9.-]+/g,"-").toUpperCase();
-    await renderAll();await importExistingWidgets();setStatus(`${state.pdf.numPages} pages loaded`);updateCount();
+    await loadPdfData(file);
   } catch(error) {
     console.error("Unable to open PDF",error);
     setStatus("Could not open the selected PDF");
     toast(`Could not open PDF: ${error.message||error}`);
   }
+}
+
+async function loadPdfData(file,formCode=""){
+  const raw=file.bytes?.data??file.bytes;
+  state.bytes=raw instanceof ArrayBuffer?new Uint8Array(raw):new Uint8Array(raw);
+  if(!state.bytes.length)throw new Error("The selected PDF is empty.");
+  state.name=file.name;state.fields=[];state.selected=null;state.seq=1;$("formOverview").classList.add("hidden");
+  state.pdf=await pdfjsLib.getDocument({data:state.bytes.slice()}).promise;
+  $("documentTitle").textContent=file.name;
+  $("welcome").classList.add("hidden");$("exportButton").disabled=false;$("exportPackageButton").disabled=false;$("installPackageButton").disabled=false;$("detectButton").disabled=false;$("mapSystemFieldsButton").disabled=false;
+  $("formCode").value=normaliseFormCode(formCode||file.name.replace(/\.pdf$/i,"").replace(/[^A-Za-z0-9.-]+/g,"-"));
+  await renderAll();await importExistingWidgets();await loadSystemCatalogue();setStatus(`${state.pdf.numPages} pages loaded`);updateCount();
 }
 
 async function renderAll(){
@@ -82,7 +86,7 @@ function bindLayer(layer,page){
 }
 
 function addField(data,detected=false,shouldSelect=true){
-  const f={id:crypto.randomUUID(),name:fieldName(data.type),systemKey:"",box:"",type:data.type,placeholder:"",alignment:"left",required:false,multiline:false,fontSize:11,border:1,...data,detected};
+  const f={id:crypto.randomUUID(),name:fieldName(data.type),systemKey:"",box:"",type:data.type,placeholder:"",alignment:"left",required:false,multiline:false,fontSize:11,border:1,maxLength:null,characterIndex:null,markStyle:"x",...data,detected};
   state.fields.push(f);renderField(f);if(shouldSelect)selectField(f.id);updateCount();return f;
 }
 function renderField(f){
@@ -104,11 +108,266 @@ function bindField(el,f){
 function selectField(id){
   state.selected=id;document.querySelectorAll(".field").forEach(e=>e.classList.toggle("selected",e.dataset.id===id));
   const f=state.fields.find(x=>x.id===id);$("noSelection").classList.toggle("hidden",!!f);$("properties").classList.toggle("hidden",!f);
-  if(!f)return;for(const p of props){const el=$(`prop${p}`);if(el.type==="checkbox")el.checked=!!f[p[0].toLowerCase()+p.slice(1)];else el.value=f[p[0].toLowerCase()+p.slice(1)]}
+  if(!f)return;for(const p of props){const el=$(`prop${p}`),value=f[p[0].toLowerCase()+p.slice(1)];if(el.type==="checkbox")el.checked=!!value;else el.value=value??""}
   $("propPlaceholder").closest("label").classList.toggle("hidden",f.type!=="text");$("propMultiline").closest("label").classList.toggle("hidden",f.type!=="text");$("propAlignment").closest("label").classList.toggle("hidden",f.type==="checkbox");
 }
-for(const p of props){$(`prop${p}`).addEventListener("input",e=>{const f=state.fields.find(x=>x.id===state.selected);if(!f)return;const k=p[0].toLowerCase()+p.slice(1);f[k]=e.target.type==="checkbox"?e.target.checked:e.target.type==="number"?Number(e.target.value):e.target.value;renderField(f);selectField(f.id)})}
+for(const p of props){$(`prop${p}`).addEventListener("input",e=>{const f=state.fields.find(x=>x.id===state.selected);if(!f)return;const k=p[0].toLowerCase()+p.slice(1);f[k]=e.target.type==="checkbox"?e.target.checked:e.target.type==="number"?(e.target.value===""?null:Number(e.target.value)):e.target.value;renderField(f);selectField(f.id)})}
 $("deleteField").onclick=()=>{state.fields=state.fields.filter(f=>f.id!==state.selected);document.querySelector(`[data-id="${state.selected}"]`)?.remove();state.selected=null;selectField(null);updateCount()};
+
+function normaliseFormCode(value){
+  return String(value||"").trim().toUpperCase().replace(/[^A-Z0-9.-]/g,"");
+}
+
+function packageScope(formCode){
+  const code=normaliseFormCode(formCode);
+  if(code.startsWith("SA"))return {module:"accounting",workflow:"year_end_self_assessment"};
+  if(code.startsWith("CT600"))return {module:"accounting",workflow:"year_end_corporation_tax"};
+  return {module:"shared",workflow:"official_forms"};
+}
+
+function derivedBoxKey(formCode,box){
+  const base=normaliseFormCode(formCode).replace(/-\d{4}$/,"").toLowerCase();
+  const safeBox=String(box||"").trim().toLowerCase().replace(/[^a-z0-9]+/g,"_").replace(/^_|_$/g,"");
+  return base&&safeBox?`${base}_box_${safeBox}`:"";
+}
+
+async function loadSystemCatalogue(){
+  const formCode=normaliseFormCode($("formCode").value);
+  $("formCode").value=formCode;
+  const result=await window.desktop.getSystemFieldCatalogue(formCode);
+  state.catalogue=result;
+  const options=$("systemKeyOptions");options.innerHTML="";
+  for(const field of result.fields||[]){
+    const option=document.createElement("option");option.value=field.system_key;option.label=`${field.label}${field.official_box?` (box ${field.official_box})`:""}`;options.append(option);
+  }
+  const message=result.error
+    ? result.error
+    : result.fields?.length
+      ? `${result.fields.length} approved EPOS fields loaded. Packages install to ${result.targetDirectory}.`
+      : `No fixed catalogue for ${formCode||"this form"}. Numbered boxes will use ${derivedBoxKey(formCode,"20")||"the form-code box convention"}.`;
+  $("catalogueStatus").textContent=message;
+  return result;
+}
+
+function fieldPdfRectangle(field,page){
+  const [vx1,vy1,vx2,vy2]=page.view,pw=vx2-vx1,ph=vy2-vy1;
+  const x1=vx1+field.x*pw,x2=x1+field.w*pw,y2=vy2-field.y*ph,y1=y2-field.h*ph;
+  return {x1,x2,y1,y2};
+}
+
+function inferOfficialBox(field,page,textBoxes){
+  const rect=fieldPdfRectangle(field,page),centerY=(rect.y1+rect.y2)/2,height=rect.y2-rect.y1;
+  const candidates=textBoxes.filter(item=>{
+    const text=item.text.trim();
+    const numericPart=Number.parseInt(text,10);
+    return /^\d+(?:\.\d+|[A-Z])?$/.test(text)&&text!=="0"&&numericPart>0&&numericPart<=999;
+  }).map(item=>{
+    const textCenterY=(item.y1+item.y2)/2;
+    const rowDistance=Math.abs(textCenterY-centerY);
+    const leftGap=rect.x1-item.x2;
+    const sameRow=rowDistance<=Math.max(12,height*1.4)&&leftGap>=-4&&leftGap<=220;
+    const overlapsX=item.x2>=rect.x1-20&&item.x1<=rect.x2+20;
+    const aboveGap=item.y1-rect.y2;
+    const justAbove=overlapsX&&aboveGap>=-4&&aboveGap<=45;
+    if(!sameRow&&!justAbove)return null;
+    return {
+      box:item.text.trim(),
+      score:sameRow
+        ? rowDistance*4+Math.max(0,leftGap)
+        : 8+Math.abs(aboveGap)+Math.abs(item.x1-rect.x1)*.1
+    };
+  }).filter(Boolean).sort((a,b)=>a.score-b.score);
+  return candidates[0]?.box||"";
+}
+
+function propagateOfficialBoxesAcrossEntryRows(fields){
+  const rows=new Map();
+  for(const field of fields){
+    const rowKey=Math.round(field.y*1000);
+    if(!rows.has(rowKey))rows.set(rowKey,[]);
+    rows.get(rowKey).push(field);
+  }
+  for(const rowFields of rows.values()){
+    rowFields.sort((left,right)=>left.x-right.x);
+    const clusters=[];
+    for(const field of rowFields){
+      const current=clusters.at(-1);
+      const previous=current?.at(-1);
+      const gap=previous?field.x-(previous.x+previous.w):Infinity;
+      const sameEntryRun=previous&&gap<=Math.max(.025,Math.min(previous.w,field.w)*1.15);
+      if(!sameEntryRun)clusters.push([field]);
+      else current.push(field);
+    }
+    for(const cluster of clusters){
+      if(cluster.length<2)continue;
+      if(cluster.length>=3&&cluster.every(field=>field.w<=.09)){
+        cluster.forEach(field=>{field.type="text";field.alignment="center"});
+      }
+      const counts=new Map();
+      for(const field of cluster){
+        if(field.box)counts.set(field.box,(counts.get(field.box)||0)+1);
+      }
+      const officialBox=[...counts.entries()].sort((left,right)=>right[1]-left[1])[0]?.[0];
+      if(!officialBox)continue;
+      // A printed box number is normally detected beside the first cell only.
+      // Carry it across the adjacent character/currency cells so one EPOS
+      // value can be split across the complete official entry grid.
+      cluster.forEach(field=>{field.box=officialBox});
+    }
+  }
+}
+
+function mapStandardSupplementaryHeader(fields,pageNumber){
+  if(pageNumber!==1)return;
+  const rows=new Map();
+  for(const field of fields.filter(item=>item.y>=.09&&item.y<=.22)){
+    const rowKey=Math.round(field.y*500);
+    if(!rows.has(rowKey))rows.set(rowKey,[]);
+    rows.get(rowKey).push(field);
+  }
+  for(const row of rows.values()){
+    const nameField=row.find(field=>field.x<.5&&field.w>=.25);
+    const utrFields=row.filter(field=>field.x>.48&&field.w<=.09).sort((left,right)=>left.x-right.x);
+    if(!nameField||utrFields.length<8)continue;
+    nameField.systemKey="full_name";
+    nameField.box="";
+    nameField.maxLength=nameField.maxLength||54;
+    utrFields.forEach(field=>{
+      field.type="text";
+      field.alignment="center";
+      field.systemKey="utr";
+      field.box="";
+    });
+    return;
+  }
+}
+
+function applyKnownOfficialFormCorrections(fields,pageNumber){
+  const formCode=normaliseFormCode($("formCode").value);
+  if(formCode==="SA103F-2026"&&pageNumber===1){
+    fields.filter(field=>field.x<.5&&field.y>=.42&&field.y<=.49&&field.w>=.3).forEach(field=>{
+      field.type="text";
+      field.box="3";
+      field.systemKey="business_address";
+    });
+    fields.filter(field=>field.x>.5&&field.y>=.53&&field.y<=.59&&field.w<=.09).forEach(field=>{
+      field.type="text";
+      field.alignment="center";
+      field.box="9";
+      field.systemKey="accounting_period_to";
+    });
+  }
+}
+
+function removeNestedDuplicateEntryFields(){
+  const removeIds=new Set();
+  for(const outer of state.fields){
+    if(!outer.systemKey||outer.type!=="text")continue;
+    const nested=state.fields.filter(inner=>{
+      if(inner===outer||inner.page!==outer.page||inner.type!=="text")return false;
+      const sameHorizontalBounds=Math.abs(inner.x-outer.x)<.002&&Math.abs((inner.x+inner.w)-(outer.x+outer.w))<.002;
+      const verticallyContained=inner.y>=outer.y-.001&&inner.y+inner.h<=outer.y+outer.h+.001;
+      return sameHorizontalBounds&&verticallyContained&&inner.h<outer.h*.8;
+    });
+    const sameKeyNested=nested.some(field=>field.systemKey===outer.systemKey);
+    if(sameKeyNested){
+      nested.forEach(field=>removeIds.add(field.id));
+      if(nested.length>=2&&outer.w>=.18)outer.multiline=true;
+    }
+  }
+  if(removeIds.size)state.fields=state.fields.filter(field=>!removeIds.has(field.id));
+}
+
+async function mapSystemFields(){
+  if(!state.pdf||!state.fields.length){toast("Prepare or draw fields before mapping them.");return}
+  const catalogue=await loadSystemCatalogue(),catalogueByBox=new Map();
+  for(const item of catalogue.fields||[]){
+    if(item.official_box&&!catalogueByBox.has(String(item.official_box)))catalogueByBox.set(String(item.official_box),item);
+  }
+  let boxesFound=0,keysAssigned=0;
+  for(let pageNumber=1;pageNumber<=state.pdf.numPages;pageNumber++){
+    const page=await state.pdf.getPage(pageNumber),textBoxes=await textBoxesForPage(page);
+    const pageFields=state.fields.filter(item=>item.page===pageNumber);
+    for(const field of pageFields){
+      if(!field.box)field.box=inferOfficialBox(field,page,textBoxes);
+    }
+    propagateOfficialBoxesAcrossEntryRows(pageFields);
+    mapStandardSupplementaryHeader(pageFields,pageNumber);
+    applyKnownOfficialFormCorrections(pageFields,pageNumber);
+    for(const field of pageFields){
+      if(field.box)boxesFound++;
+      const catalogueField=catalogueByBox.get(String(field.box));
+      const fieldNameKey=String(field.name||"").toLowerCase().replace(/[^a-z0-9]+/g,"");
+      const namedSystemKey={
+        utr:"utr",
+        nino:"national_insurance_number",
+        name:"full_name",
+        fullname:"full_name"
+      }[fieldNameKey];
+      if(!field.systemKey&&catalogueField){
+        field.systemKey=catalogueField.system_key;
+        field.maxLength=field.maxLength||catalogueField.max_length||null;
+        keysAssigned++;
+      }else if(!field.systemKey&&namedSystemKey){
+        field.systemKey=namedSystemKey;
+        keysAssigned++;
+      }else if(!field.systemKey&&field.box){
+        field.systemKey=derivedBoxKey($("formCode").value,field.box);
+        if(field.systemKey)keysAssigned++;
+      }
+      if(!field.systemKey){
+        field.systemKey=`${normaliseFormCode($("formCode").value).replace(/-\d{4}$/,"").toLowerCase()}_field_${pageNumber}_${fieldNameKey||field.id.slice(0,8)}`;
+        keysAssigned++;
+      }
+    }
+  }
+  state.fields=state.fields.filter(field=>!field.fixedGuide);
+  removeNestedDuplicateEntryFields();
+  const rowGroups=new Map();
+  for(const field of state.fields.filter(item=>item.type==="text"&&item.systemKey)){
+    const rowKey=`${field.page}:${field.systemKey}:${Math.round(field.y*200)}`;
+    if(!rowGroups.has(rowKey))rowGroups.set(rowKey,[]);
+    rowGroups.get(rowKey).push(field);
+  }
+  const characterGroupsByKey=new Map();
+  for(const fields of rowGroups.values()){
+    if(fields.length<2||!fields.every(field=>field.w<=.09))continue;
+    const systemKey=fields[0].systemKey;
+    if(!characterGroupsByKey.has(systemKey))characterGroupsByKey.set(systemKey,[]);
+    characterGroupsByKey.get(systemKey).push(fields);
+  }
+  for(const [systemKey,groups] of characterGroupsByKey){
+    groups.sort((left,right)=>left[0].page-right[0].page||left[0].y-right[0].y||left[0].x-right[0].x);
+    groups.forEach((fields,groupIndex)=>{
+      const groupKey=groupIndex===0?systemKey:`${systemKey}_grid_${groupIndex+1}`;
+      fields.sort((a,b)=>a.x-b.x).forEach((field,index)=>{
+        field.systemKey=groupKey;field.characterIndex=index+1;field.maxLength=1;field.alignment="center";
+      });
+    });
+  }
+  const repeatedKeys=new Map();
+  for(const field of state.fields){
+    if(!repeatedKeys.has(field.systemKey))repeatedKeys.set(field.systemKey,[]);
+    repeatedKeys.get(field.systemKey).push(field);
+  }
+  for(const [systemKey,fields] of repeatedKeys){
+    if(fields.length<2)continue;
+    const characterFields=fields.filter(field=>field.characterIndex);
+    const plainFields=fields.filter(field=>!field.characterIndex);
+    if(characterFields.length){
+      plainFields.sort((left,right)=>left.page-right.page||left.y-right.y||left.x-right.x).forEach((field,index)=>{
+        field.systemKey=`${systemKey}_alternate_${index+1}`;
+      });
+      continue;
+    }
+    fields.sort((left,right)=>left.page-right.page||left.y-right.y||left.x-right.x).forEach((field,index)=>{
+      field.systemKey=`${systemKey}_option_${index+1}`;
+    });
+  }
+  state.fields.forEach(renderField);selectField(state.selected);
+  setStatus(`Mapped ${keysAssigned} EPOS keys from ${boxesFound} recognised box labels`);
+  toast(`Mapped ${keysAssigned} fields. Review highlighted fields before installing.`);
+}
 
 async function importExistingWidgets(){
   for(let n=1;n<=state.pdf.numPages;n++){const page=await state.pdf.getPage(n),ann=await page.getAnnotations(),view=page.view;
@@ -200,6 +459,15 @@ async function textBoxesForPage(page){
 function overlapsExistingText(box,textBoxes){
   const inset=Math.min(1.5,(box.y2-box.y1)*.08);
   return textBoxes.some(text=>{
+    const printedText=String(text.text||"").trim();
+    const guideOverlapX=Math.min(box.x2-inset,text.x2)-Math.max(box.x1+inset,text.x1);
+    const guideOverlapY=Math.min(box.y2-inset,text.y2)-Math.max(box.y1+inset,text.y1);
+    // Currency signs and preprinted pence/zero guides are artwork, not
+    // editable characters. Widgets over them shift whole-pound values into
+    // the pound cell and overwrite the official ".00" suffix.
+    const fixedGuide=/^[p0.,\s]+$/i.test(printedText)||printedText.includes("\u00a3")||printedText.includes("\u20ac");
+    if(guideOverlapX>0&&guideOverlapY>0&&fixedGuide)return false;
+    if(/^[Â£$â‚¬p0.,\s]+$/i.test(String(text.text||"").trim()))return false;
     const overlapX=Math.min(box.x2-inset,text.x2)-Math.max(box.x1+inset,text.x1);
     const overlapY=Math.min(box.y2-inset,text.y2)-Math.max(box.y1+inset,text.y1);
     if(overlapX<=0||overlapY<=0)return false;
@@ -207,6 +475,18 @@ function overlapsExistingText(box,textBoxes){
     // Currency/unit labels at the extreme edges of a white calculation cell
     // are retained; centered identifiers and answers make the box non-editable.
     return relativeX>.17&&relativeX<.83;
+  });
+}
+
+function isFixedGuideBox(box,textBoxes){
+  const inset=Math.min(1.5,(box.y2-box.y1)*.08);
+  return textBoxes.some(text=>{
+    const printedText=String(text.text||"").trim();
+    const fixedGuide=/^[p0.,\s]+$/i.test(printedText)||printedText.includes("\u00a3")||printedText.includes("\u20ac");
+    if(!fixedGuide)return false;
+    const overlapX=Math.min(box.x2-inset,text.x2)-Math.max(box.x1+inset,text.x1);
+    const overlapY=Math.min(box.y2-inset,text.y2)-Math.max(box.y1+inset,text.y1);
+    return overlapX>0&&overlapY>0;
   });
 }
 
@@ -288,8 +568,15 @@ async function prepareForm(){
     });
     for(const r of blankBoxes){
       const classification=classifyPreparedBox(r,blankBoxes,textBoxes);
-      const f={page:n,type:classification.type,x:(r.x1-vx1)/pw,y:1-(r.y2-vy1)/ph,w:(r.x2-r.x1)/pw,h:(r.y2-r.y1)/ph,locked:true,confidence:classification.confidence,fontSize:standardFontSize,markStyle,alignment:automaticAlignment(r,classification,textBoxes)};
-      if(!state.fields.some(e=>e.page===n&&Math.abs(e.x-f.x)<.002&&Math.abs(e.y-f.y)<.002&&Math.abs(e.w-f.w)<.002&&Math.abs(e.h-f.h)<.002)){addField(f,true,false);count++;if(classification.type==="checkbox")checks++;else texts++}
+      const f={page:n,type:classification.type,x:(r.x1-vx1)/pw,y:1-(r.y2-vy1)/ph,w:(r.x2-r.x1)/pw,h:(r.y2-r.y1)/ph,locked:true,confidence:classification.confidence,fontSize:standardFontSize,markStyle,alignment:automaticAlignment(r,classification,textBoxes),fixedGuide:isFixedGuideBox(r,textBoxes)};
+      const overlapsDuplicate=state.fields.some(existing=>{
+        if(existing.page!==n)return false;
+        const left=Math.max(existing.x,f.x),top=Math.max(existing.y,f.y),right=Math.min(existing.x+existing.w,f.x+f.w),bottom=Math.min(existing.y+existing.h,f.y+f.h);
+        const intersection=Math.max(0,right-left)*Math.max(0,bottom-top);
+        const union=existing.w*existing.h+f.w*f.h-intersection;
+        return union>0&&intersection/union>.9;
+      });
+      if(!overlapsDuplicate){addField(f,true,false);count++;if(classification.type==="checkbox")checks++;else texts++}
     }
   }
   $("detectButton").disabled=false;selectField(null);
@@ -308,13 +595,41 @@ function xMarkAppearance(_field,widget){
   return {normal:{on,off:[]},down:{on,off:[]}};
 }
 
+function removeWidgetAnnotations(doc){
+  for(const page of doc.getPages()){
+    const annotations=page.node.Annots?.();
+    if(!annotations)continue;
+    for(let index=annotations.size()-1;index>=0;index--){
+      const annotation=doc.context.lookup(annotations.get(index));
+      if(String(annotation?.get?.(PDFName.of("Subtype"))||"")==="/Widget")annotations.remove(index);
+    }
+  }
+}
+
+function resetAcroForm(doc){
+  let form=doc.getForm();
+  try{
+    for(const existingField of form.getFields())form.removeField(existingField);
+    return form;
+  }catch(error){
+    // Some official HMRC PDFs contain an invalid /AP /N entry. pdf-lib cannot
+    // traverse that appearance while removing the legacy field, so discard
+    // the malformed AcroForm and its widgets before creating the new form.
+    console.warn("Rebuilding malformed source AcroForm",error);
+    doc.catalog.delete(PDFName.of("AcroForm"));
+    removeWidgetAnnotations(doc);
+    doc.formCache.invalidate();
+    return doc.getForm();
+  }
+}
+
 async function exportPdf(){
   setStatus("Building fillable PDF…");
   try{
-    const doc=await PDFDocument.load(state.bytes.slice(),{ignoreEncryption:true}),form=doc.getForm(),font=await doc.embedFont(StandardFonts.Helvetica);
+    const doc=await PDFDocument.load(state.bytes.slice(),{ignoreEncryption:true}),form=resetAcroForm(doc),font=await doc.embedFont(StandardFonts.Helvetica);
     for(const f of state.fields){const page=doc.getPages()[f.page-1],{width,height}=page.getSize(),opts={x:f.x*width,y:height-(f.y+f.h)*height,width:f.w*width,height:f.h*height,borderWidth:f.locked?0:f.border,borderColor:f.locked?undefined:rgb(.15,.38,.65),backgroundColor:undefined,textColor:rgb(.08,.12,.16),font};
       let field;const safe=f.name.replace(/[^\w .-]/g,"_");
-      try{if(f.type==="checkbox"){field=form.createCheckBox(safe);field.addToPage(page,opts);if(f.markStyle==="x")field.updateAppearances(xMarkAppearance)}else{field=form.createTextField(safe);if(f.type==="signature")field.setText("");if(f.multiline)field.enableMultiline();field.addToPage(page,opts);field.setFontSize(f.fontSize);field.setAlignment({left:TextAlignment.Left,center:TextAlignment.Center,right:TextAlignment.Right}[f.alignment]??TextAlignment.Left);field.updateAppearances(font)}}catch{continue}
+      try{if(f.type==="checkbox"){field=form.createCheckBox(safe);field.addToPage(page,opts);if(f.markStyle==="x")field.updateAppearances(xMarkAppearance)}else{field=form.createTextField(safe);if(f.type==="signature")field.setText("");if(f.multiline)field.enableMultiline();if(f.characterIndex||f.maxLength)field.setMaxLength(f.characterIndex?1:Number(f.maxLength));field.addToPage(page,opts);field.setFontSize(f.fontSize);field.setAlignment({left:TextAlignment.Left,center:TextAlignment.Center,right:TextAlignment.Right}[f.alignment]??TextAlignment.Left);field.updateAppearances(font)}}catch{continue}
       if(f.required)field.enableRequired?.();
     }
     form.updateFieldAppearances(font);const bytes=await doc.save();const base=state.name.replace(/\.pdf$/i,"");
@@ -323,29 +638,49 @@ async function exportPdf(){
 }
 
 function packageManifest(pdfFieldNames){
-  const formCode=$("formCode").value.trim();
+  const formCode=normaliseFormCode($("formCode").value);
   if(!formCode)throw new Error("Enter the official form code before exporting a system package.");
-  const usedKeys=new Set();
+  const scope=packageScope(formCode);
+  const usedPdfNames=new Set(),keyUses=new Map();
   const fields=state.fields.map((field,index)=>{
     const systemKey=String(field.systemKey||"").trim();
     if(!systemKey)throw new Error(`Field ${field.name} needs a system key.`);
-    if(usedKeys.has(systemKey))throw new Error(`System key ${systemKey} is used more than once.`);
-    usedKeys.add(systemKey);
+    const pdfFieldName=String(pdfFieldNames[index]||"").trim();
+    if(!pdfFieldName||usedPdfNames.has(pdfFieldName))throw new Error(`PDF field name ${pdfFieldName||"(blank)"} must be unique.`);
+    usedPdfNames.add(pdfFieldName);
+    const characterIndex=Number(field.characterIndex)||null;
+    const uses=keyUses.get(systemKey)||[];
+    if(uses.some(use=>use.characterIndex===characterIndex)){
+      throw new Error(
+        characterIndex
+          ? `System key ${systemKey} already uses character position ${characterIndex}.`
+          : `System key ${systemKey} is used more than once. Use character positions for one-character grids.`
+      );
+    }
+    if(uses.length&&!characterIndex)throw new Error(`System key ${systemKey} is repeated without character positions.`);
+    keyUses.set(systemKey,[...uses,{characterIndex}]);
     return {
-      pdf_field_name:pdfFieldNames[index],
+      pdf_field_name:pdfFieldName,
       system_key:systemKey,
       official_box:String(field.box||"").trim(),
       page:Number(field.page),
       type:field.type==="checkbox"?"boolean":field.type,
       required:!!field.required,
-      max_length:field.maxLength||null,
+      max_length:characterIndex?1:(Number(field.maxLength)||null),
+      ...(characterIndex?{value_transform:{
+        kind:"character",
+        index:characterIndex-1,
+        strip_non_alphanumeric:true
+      }}:{}),
       placeholder:field.placeholder||"",
       geometry:{x:field.x,y:field.y,width:field.w,height:field.h}
     };
   });
   return {
-    schema_version:1,
+    schema_version:2,
     form_code:formCode,
+    module:scope.module,
+    workflow:scope.workflow,
     source_filename:state.name,
     generated_at:new Date().toISOString(),
     fields
@@ -353,13 +688,18 @@ function packageManifest(pdfFieldNames){
 }
 
 async function buildPdfAndNames(){
-  const doc=await PDFDocument.load(state.bytes.slice(),{ignoreEncryption:true}),form=doc.getForm(),font=await doc.embedFont(StandardFonts.Helvetica),names=[];
-  for(const f of state.fields){
+  const doc=await PDFDocument.load(state.bytes.slice(),{ignoreEncryption:true}),form=resetAcroForm(doc),font=await doc.embedFont(StandardFonts.Helvetica),names=[];
+  const usedNames=new Set();
+  for(const [index,f] of state.fields.entries()){
     const page=doc.getPages()[f.page-1],{width,height}=page.getSize(),opts={x:f.x*width,y:height-(f.y+f.h)*height,width:f.w*width,height:f.h*height,borderWidth:f.locked?0:f.border,borderColor:f.locked?undefined:rgb(.15,.38,.65),backgroundColor:undefined,textColor:rgb(.08,.12,.16),font};
-    const preferred=String(f.systemKey||f.name).trim(),safe=preferred.replace(/[^\w .-]/g,"_");names.push(safe);
+    const preferred=String(f.name||`${f.systemKey||"field"}_${index+1}`).trim();
+    const base=preferred.replace(/[^\w .-]/g,"_")||`field_${index+1}`;
+    let safe=base,suffix=2;
+    while(usedNames.has(safe))safe=`${base}_${suffix++}`;
+    usedNames.add(safe);names.push(safe);
     let field;
     if(f.type==="checkbox"){field=form.createCheckBox(safe);field.addToPage(page,opts);if(f.markStyle==="x")field.updateAppearances(xMarkAppearance)}
-    else{field=form.createTextField(safe);if(f.type==="signature")field.setText("");if(f.multiline)field.enableMultiline();field.addToPage(page,opts);field.setFontSize(f.fontSize);field.setAlignment({left:TextAlignment.Left,center:TextAlignment.Center,right:TextAlignment.Right}[f.alignment]??TextAlignment.Left);field.updateAppearances(font)}
+    else{field=form.createTextField(safe);if(f.type==="signature")field.setText("");if(f.multiline)field.enableMultiline();if(f.characterIndex||f.maxLength)field.setMaxLength(f.characterIndex?1:Number(f.maxLength));field.addToPage(page,opts);field.setFontSize(f.fontSize);field.setAlignment({left:TextAlignment.Left,center:TextAlignment.Center,right:TextAlignment.Right}[f.alignment]??TextAlignment.Left);field.updateAppearances(font)}
     if(f.required)field.enableRequired?.();
   }
   form.updateFieldAppearances(font);
@@ -375,11 +715,88 @@ async function exportSystemPackage(){
   }catch(err){console.error(err);setStatus("Package export failed");toast(`Package export failed: ${err.message}`)}
 }
 
+async function installSystemPackage(){
+  setStatus("Building and installing EPOS system form package...");
+  try{
+    const {bytes,names}=await buildPdfAndNames(),manifest=packageManifest(names);
+    const installed=await window.desktop.installSystemPackage({bytes,manifest});
+    if(installed){
+      setStatus(`Installed ${manifest.form_code} in EPOS`);
+      toast(installed.backupPaths?.length
+        ? "System package installed; the previous package was backed up."
+        : "System package installed and ready for Accountancy previews.");
+      await loadSystemCatalogue();
+    }
+  }catch(err){
+    console.error(err);setStatus("Package installation failed");toast(`Package installation failed: ${err.message}`);
+  }
+}
+
+async function runBatchSystemFormInstall(){
+  const job=await window.desktop.getBatchJob();
+  if(!job?.enabled)return;
+  const results=[];
+  for(const item of job.forms||[]){
+    try{
+      setStatus(`Batch preparing ${item.formCode}...`);
+      const file=await window.desktop.readPdfPath(item.path);
+      await loadPdfData(file,item.formCode);
+      // HMRC money cells contain printed currency/pence guides, so their
+      // interior is not pure white even though the surrounding grid is an
+      // entry control. Batch preparation relies on vector/text filtering.
+      $("prepareWhiteOnly").checked=false;
+      await prepareForm();
+      await mapSystemFields();
+      const {bytes,names}=await buildPdfAndNames(),manifest=packageManifest(names);
+      const installed=await window.desktop.installSystemPackage({bytes,manifest});
+      results.push({
+        form_code:item.formCode,
+        status:"installed",
+        field_count:manifest.fields.length,
+        pdf_path:installed.pdfPath,
+        manifest_path:installed.manifestPath
+      });
+    }catch(error){
+      console.error(`Batch preparation failed for ${item.formCode}`,error);
+      results.push({
+        form_code:item.formCode,
+        status:"failed",
+        error:error?.message||String(error),
+        stack:error?.stack||""
+      });
+    }
+  }
+  await window.desktop.batchComplete({
+    completed_at:new Date().toISOString(),
+    installed:results.filter(item=>item.status==="installed").length,
+    failed:results.filter(item=>item.status==="failed").length,
+    results
+  });
+}
+
 document.querySelectorAll(".tool").forEach(b=>b.onclick=()=>{state.tool=b.dataset.tool;document.querySelectorAll(".tool").forEach(x=>x.classList.toggle("active",x===b));setStatus(state.tool==="select"?"Select and resize fields":`Drag to create a ${state.tool} field`)});
-$("openButton").onclick=$("welcomeOpen").onclick=openPdf;$("exportButton").onclick=exportPdf;$("exportPackageButton").onclick=exportSystemPackage;$("detectButton").onclick=prepareForm;
+$("openButton").onclick=$("welcomeOpen").onclick=openPdf;$("exportButton").onclick=exportPdf;$("exportPackageButton").onclick=exportSystemPackage;$("installPackageButton").onclick=installSystemPackage;$("detectButton").onclick=prepareForm;$("mapSystemFieldsButton").onclick=mapSystemFields;
+$("formCode").addEventListener("change",loadSystemCatalogue);
+$("propBox").addEventListener("change",()=>{
+  const field=state.fields.find(item=>item.id===state.selected);
+  if(!field||field.systemKey)return;
+  const match=(state.catalogue?.fields||[]).find(item=>String(item.official_box||"")===String(field.box||""));
+  field.systemKey=match?.system_key||derivedBoxKey($("formCode").value,field.box);
+  if(match?.max_length)field.maxLength=match.max_length;
+  selectField(field.id);
+});
 $("zoomIn").onclick=async()=>{if(!state.pdf)return;state.scale=Math.min(2.4,state.scale+.15);$("zoomLabel").textContent=`${Math.round(state.scale/1.15*100)}%`;await renderAll()};
 $("zoomOut").onclick=async()=>{if(!state.pdf)return;state.scale=Math.max(.55,state.scale-.15);$("zoomLabel").textContent=`${Math.round(state.scale/1.15*100)}%`;await renderAll()};
 $("fitButton").onclick=async()=>{if(!state.pdf)return;const page=await state.pdf.getPage(1),v=page.getViewport({scale:1}),available=$("stage").clientWidth-90;state.scale=Math.max(.55,Math.min(1.8,available/v.width));$("zoomLabel").textContent="Fit";await renderAll()};
 document.addEventListener("keydown",e=>{if((e.key==="Delete"||e.key==="Backspace")&&state.selected&&!["INPUT","TEXTAREA"].includes(e.target.tagName))$("deleteField").click()});
 window.addEventListener("error",e=>{console.error(e.error||e.message);setStatus("An application error occurred");toast(`Application error: ${e.message}`)});
 window.addEventListener("unhandledrejection",e=>{console.error(e.reason);setStatus("An application error occurred");toast(`Application error: ${e.reason?.message||e.reason}`)});
+runBatchSystemFormInstall().catch(async error=>{
+  console.error("Batch system form installation failed",error);
+  await window.desktop.batchComplete({
+    completed_at:new Date().toISOString(),
+    installed:0,
+    failed:1,
+    results:[{form_code:"batch",status:"failed",error:error?.message||String(error)}]
+  });
+});

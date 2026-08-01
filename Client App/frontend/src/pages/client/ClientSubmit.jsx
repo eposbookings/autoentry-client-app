@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Camera, Upload, Ban, ArrowLeft, CheckCircle2, X, AlertTriangle, FileText } from "lucide-react";
 import { toast } from "sonner";
+import { formatUkDate } from "@/lib/date";
 
 export default function ClientSubmit() {
   const { itemId } = useParams();
@@ -108,7 +109,7 @@ export default function ClientSubmit() {
         <div className="text-xs uppercase tracking-wider text-stone-500 font-semibold">{item.type === "purchase" ? "Purchase invoice" : "Sales invoice"}</div>
         <div className="font-display text-2xl font-bold text-stone-900 mt-1">{item.description}</div>
         <div className="text-sm text-stone-500 mt-2 flex flex-wrap gap-x-3 gap-y-1">
-          {item.date && <span>Date · {item.date}</span>}
+          {item.date && <span>Date · {formatUkDate(item.date)}</span>}
           {item.amount && <span>Amount · {item.amount}</span>}
         </div>
       </div>

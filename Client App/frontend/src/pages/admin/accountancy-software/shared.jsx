@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { Activity } from "lucide-react";
+import { formatUkDate, formatUkDateTime } from "@/lib/date";
 
 export const PAGE_SIZE_OPTIONS = [10, 25, 50, 100, 250];
 export const DEFAULT_PAGE_SIZE = 50;
@@ -427,17 +428,11 @@ export function formatReportValue(value) {
 }
 
 export function formatDate(value) {
-  if (!value) return "-";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleDateString("en-GB");
+  return formatUkDate(value);
 }
 
 export function formatDateTime(value) {
-  if (!value) return "-";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleString("en-GB");
+  return formatUkDateTime(value);
 }
 
 export function statusBadgeClass(status) {

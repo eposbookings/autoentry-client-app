@@ -14,6 +14,7 @@
         <button class="button ghost" id="openButton">Open PDF</button>
         <button class="button primary" id="exportButton" disabled>Export fillable PDF</button>
         <button class="button primary" id="exportPackageButton" disabled>Export system package</button>
+        <button class="button primary" id="installPackageButton" disabled>Install in EPOS</button>
       </div>
     </header>
     <main class="workspace">
@@ -32,6 +33,7 @@
             <button class="tool" data-tool="signature">⌁ Signature</button>
           </div>
           <button class="button detect" id="detectButton" disabled>Prepare a Form</button>
+          <button class="button detect" id="mapSystemFieldsButton" disabled>Map EPOS fields</button>
         </div>
         <div class="stage" id="stage">
           <div class="welcome" id="welcome">
@@ -54,6 +56,7 @@
           <label>Form code
             <input id="formCode" type="text" placeholder="For example SA105-2026" />
           </label>
+          <div id="catalogueStatus" class="overview-note">Enter a form code to load the EPOS field catalogue.</div>
           <label>Standard text size
             <select id="prepareFontSize">
               <option value="8">8 pt</option><option value="9">9 pt</option>
@@ -86,7 +89,8 @@
         </div>
         <form id="properties" class="properties hidden">
           <label>Field name<input id="propName" type="text" /></label>
-          <label>System key<input id="propSystemKey" type="text" placeholder="For example sa105_box_20" /></label>
+          <label>System key<input id="propSystemKey" type="text" list="systemKeyOptions" placeholder="For example sa105_box_20" /></label>
+          <datalist id="systemKeyOptions"></datalist>
           <label>Official box<input id="propBox" type="text" placeholder="For example 20" /></label>
           <label>Type<select id="propType"><option value="text">Text field</option><option value="checkbox">Checkbox</option><option value="signature">Signature</option></select></label>
           <label>Placeholder<input id="propPlaceholder" type="text" /></label>
@@ -96,6 +100,10 @@
           <div class="row">
             <label>Font size<input id="propFontSize" type="number" min="6" max="48" /></label>
             <label>Border<input id="propBorder" type="number" min="0" max="5" step=".5" /></label>
+          </div>
+          <div class="row">
+            <label>Maximum length<input id="propMaxLength" type="number" min="1" max="4000" placeholder="Optional" /></label>
+            <label>Character position<input id="propCharacterIndex" type="number" min="1" placeholder="Whole value" /></label>
           </div>
           <button type="button" class="button danger" id="deleteField">Delete field</button>
         </form>

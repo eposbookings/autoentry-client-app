@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "forms": {
+    "SA100-2026": {
+      "title": "Self Assessment tax return 2026",
+      "fields": [
+        {"system_key": "utr", "label": "Unique Taxpayer Reference", "type": "text", "automatic": true, "max_length": 10},
+        {"system_key": "date_of_birth", "label": "Date of birth", "official_box": "1", "type": "date", "automatic": false, "max_length": 10},
+        {"system_key": "full_name", "label": "Full name", "type": "text", "automatic": true, "max_length": 54},
+        {"system_key": "address", "label": "Address if different", "official_box": "2", "type": "textarea", "automatic": false, "max_length": 160},
+        {"system_key": "phone", "label": "Phone number", "official_box": "3", "type": "text", "automatic": true, "max_length": 15},
+        {"system_key": "national_insurance_number", "label": "National Insurance number", "official_box": "4", "type": "text", "automatic": false, "max_length": 9},
+        {"system_key": "employment", "label": "Employment pages required", "type": "boolean", "automatic": false},
+        {"system_key": "self_employment", "label": "Self-employment pages required", "type": "boolean", "automatic": true},
+        {"system_key": "partnership", "label": "Partnership pages required", "type": "boolean", "automatic": false},
+        {"system_key": "uk_property", "label": "UK property pages required", "type": "boolean", "automatic": false},
+        {"system_key": "foreign", "label": "Foreign pages required", "type": "boolean", "automatic": false},
+        {"system_key": "trusts", "label": "Trusts etc. pages required", "type": "boolean", "automatic": false},
+        {"system_key": "capital_gains", "label": "Capital Gains Tax summary required", "type": "boolean", "automatic": false},
+        {"system_key": "residence", "label": "Residence and FIG regime pages required", "type": "boolean", "automatic": false},
+        {"system_key": "additional_information_pages", "label": "Additional information pages required", "type": "boolean", "automatic": false},
+        {"system_key": "tax_calculation_summary", "label": "Tax calculation summary required", "type": "boolean", "automatic": true},
+        {"system_key": "taxed_uk_interest", "label": "Taxed UK interest", "type": "money", "automatic": false},
+        {"system_key": "untaxed_uk_interest", "label": "Untaxed UK interest", "type": "money", "automatic": false},
+        {"system_key": "uk_dividends", "label": "Dividends from UK companies", "type": "money", "automatic": false},
+        {"system_key": "other_taxable_income", "label": "Other taxable income", "type": "money", "automatic": false},
+        {"system_key": "other_income_expenses", "label": "Allowable expenses against other income", "type": "money", "automatic": false},
+        {"system_key": "tax_taken_off_other_income", "label": "Tax taken off other income", "type": "money", "automatic": false},
+        {"system_key": "pension_relief_at_source", "label": "Registered pension contributions", "type": "money", "automatic": false},
+        {"system_key": "gift_aid", "label": "Gift Aid payments", "type": "money", "automatic": false},
+        {"system_key": "student_loan_due", "label": "Student Loan repayment due", "type": "boolean", "automatic": false},
+        {"system_key": "child_benefit_received", "label": "High Income Child Benefit Charge", "type": "money", "automatic": false},
+        {"system_key": "marriage_allowance_transfer", "label": "Marriage Allowance transfer", "type": "boolean", "automatic": false},
+        {"system_key": "other_information", "label": "Any other information", "type": "textarea", "automatic": false, "max_length": 4000},
+        {"system_key": "provisional_figures", "label": "Return contains provisional figures", "type": "boolean", "automatic": false},
+        {"system_key": "repayment_to_nominee", "label": "Repayment nominee requested", "type": "boolean", "automatic": false},
+        {"system_key": "declaration_name", "label": "Name of person making declaration", "type": "text", "automatic": false, "max_length": 60},
+        {"system_key": "declaration_date", "label": "Declaration date", "type": "date", "automatic": false, "max_length": 10}
+      ]
+    },
+    "SA103S-2026": {
+      "title": "Self-employment (short) 2026",
+      "fields": [
+        {"system_key": "business_name", "label": "Business name", "type": "text", "automatic": true, "max_length": 60},
+        {"system_key": "business_description", "label": "Description of business", "official_box": "1", "type": "text", "automatic": false, "max_length": 80},
+        {"system_key": "business_postcode", "label": "Business postcode", "official_box": "2", "type": "text", "automatic": false, "max_length": 8},
+        {"system_key": "accounting_period_to", "label": "Date accounts are made up to", "official_box": "7", "type": "date", "automatic": true, "max_length": 10},
+        {"system_key": "turnover", "label": "Turnover", "official_box": "9", "type": "money", "automatic": true},
+        {"system_key": "allowable_expenses", "label": "Total allowable expenses", "official_box": "20", "type": "money", "automatic": true},
+        {"system_key": "net_profit", "label": "Net profit", "official_box": "21", "type": "money", "automatic": true},
+        {"system_key": "capital_allowances", "label": "Capital allowances", "official_box": "23", "type": "money", "automatic": false},
+        {"system_key": "loss_brought_forward", "label": "Loss brought forward", "official_box": "29", "type": "money", "automatic": false},
+        {"system_key": "cis_deductions", "label": "CIS deductions", "official_box": "38", "type": "money", "automatic": false}
+      ]
+    },
+    "SA103F-2026": {
+      "title": "Self-employment (full) 2026",
+      "fields": [
+        {"system_key": "business_name", "label": "Business name", "official_box": "1", "type": "text", "automatic": true, "max_length": 60},
+        {"system_key": "business_description", "label": "Description of business", "official_box": "2", "type": "text", "automatic": false, "max_length": 80},
+        {"system_key": "business_address", "label": "First line of business address", "official_box": "3", "type": "text", "automatic": false, "max_length": 80},
+        {"system_key": "business_postcode", "label": "Business postcode", "official_box": "4", "type": "text", "automatic": false, "max_length": 8},
+        {"system_key": "accounting_period_from", "label": "Accounts period start", "official_box": "8", "type": "date", "automatic": true, "max_length": 10},
+        {"system_key": "accounting_period_to", "label": "Accounts period end", "official_box": "9", "type": "date", "automatic": true, "max_length": 10},
+        {"system_key": "turnover", "label": "Turnover", "official_box": "15", "type": "money", "automatic": true},
+        {"system_key": "allowable_expenses", "label": "Total allowable expenses", "official_box": "31", "type": "money", "automatic": true},
+        {"system_key": "net_profit", "label": "Net profit", "official_box": "47", "type": "money", "automatic": true},
+        {"system_key": "capital_allowances", "label": "Total capital allowances", "official_box": "57", "type": "money", "automatic": false},
+        {"system_key": "loss_brought_forward", "label": "Loss brought forward", "official_box": "74", "type": "money", "automatic": false},
+        {"system_key": "cis_deductions", "label": "CIS deductions", "official_box": "81", "type": "money", "automatic": false}
+      ]
+    }
+  }
+}

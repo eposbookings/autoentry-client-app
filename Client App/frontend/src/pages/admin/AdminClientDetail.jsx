@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, formatApiError } from "@/lib/api";
+import { formatUkDate } from "@/lib/date";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -398,6 +399,7 @@ export default function AdminClientDetail() {
       if (nextDestination === "native") updateCachedAccountingClient(id, updatedClient);
       else clearCachedAccountingWorkspace(id);
       setClient(updatedClient);
+      window.dispatchEvent(new Event("client-services-updated"));
       toast.success("Client updated");
       if (vatChanged && nextDestination === "native") {
         toast.info(client.is_vat_client
@@ -1140,7 +1142,7 @@ function CompaniesHousePanel({
           <div className="max-h-56 overflow-auto">
             {filings.map((filing, index) => (
               <div key={`${filing.date}-${filing.type}-${index}`} className="grid gap-2 border-t border-stone-100 px-3 py-2 text-xs sm:grid-cols-[90px_90px_1fr]">
-                <span className="font-semibold text-stone-800">{filing.date}</span>
+                <span className="font-semibold text-stone-800">{formatDisplayDate(filing.date)}</span>
                 <span className="text-stone-500">{filing.type || filing.category}</span>
                 <span className="text-stone-700">{humaniseFiling(filing.description)}</span>
               </div>
@@ -1217,7 +1219,7 @@ function OutstandingItems({ items, tab, setTab, onUpload, loading = false }) {
                     {items[type].map((item) => (
                       <tr key={item._id} className="border-t border-stone-100" data-testid={`admin-item-${item._id}`}>
                         <td className="px-3 py-2 font-medium text-stone-900">{item.description}</td>
-                        <td className="px-3 py-2 text-stone-600">{item.date}</td>
+                        <td className="px-3 py-2 text-stone-600">{formatDisplayDate(item.date)}</td>
                         <td className="px-3 py-2 text-stone-700">{item.amount}</td>
                       </tr>
                     ))}
@@ -1771,6 +1773,7 @@ function normaliseServiceSettings(services = DEFAULT_SERVICES, value, legacyServ
     result[service.key] = {
       fee: result[service.key]?.fee || "",
       enabled: !!result[service.key]?.enabled || legacy.has(service.label),
+      start_date: result[service.key]?.start_date || service.start_date || "",
     };
   });
   result.combined = {
@@ -2447,8 +2450,7 @@ function splitPersonName(name) {
 }
 
 function formatShortDate(value) {
-  if (!value) return "";
-  return String(value).slice(0, 10);
+  return formatUkDate(value, "");
 }
 
 function humaniseFiling(value) {

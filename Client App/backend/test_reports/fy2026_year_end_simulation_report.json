@@ -1,0 +1,886 @@
+{
+  "financial_year": "FY2026",
+  "company": "AG Marseille Limited",
+  "production_submission_attempted": false,
+  "harness_passed": true,
+  "filing_ready": false,
+  "variants": [
+    {
+      "standard": "FRS_105",
+      "format": "micro",
+      "trading_status": "trading",
+      "passed": true,
+      "checks": {
+        "configuration": true,
+        "ct600_identity": true,
+        "ct600_trial_balance": true,
+        "ct600_tax_chain": true,
+        "ct600_native_routes": true,
+        "ct600_pdf": true,
+        "companies_house_ixbrl": true,
+        "ixbrl_well_formed": true,
+        "taxonomy_entry_point": true,
+        "dormant_no_income_statement": true,
+        "single_domain_projection": true,
+        "all_facts_have_provenance": true,
+        "production_scope_fails_closed": true
+      },
+      "validation": {
+        "local_ixbrl": {
+          "passed": true,
+          "checks": {
+            "xml_well_formed": true,
+            "schema_reference_present": true,
+            "schema_reference_matches_standard": true,
+            "context_count": 4,
+            "unit_count": 2,
+            "fact_count": 12,
+            "numeric_fact_count": 9
+          },
+          "issues": [],
+          "external_taxonomy_validation": false,
+          "destination_validation": false
+        },
+        "external_schema": false,
+        "external_calculation": false,
+        "external_dimensions": false,
+        "destination_rules": false,
+        "filing_domain_model": {
+          "schema": "uk.epos.filing-domain",
+          "version": "1.0.0",
+          "hash": "3403daaf660aaa20d8d0cbacfa800c1a4b93cfb5cabf7baf25dfe9e14648ba93",
+          "support": {
+            "level": "export_only",
+            "generation_allowed": true,
+            "submission_allowed": false,
+            "mandatory_professional_review": true,
+            "conditions": [],
+            "reasons": [
+              "Initial straightforward-company slice; authority validation and tax computation are incomplete."
+            ],
+            "matrix_version": "1.0.0"
+          },
+          "cross_document_invariants": {
+            "passed": true,
+            "issues": []
+          }
+        },
+        "mode": "local simulation; FRC taxonomy and external gateway validators not invoked"
+      },
+      "submission": {
+        "status": "blocked_external_validation",
+        "simulated": true,
+        "receipt": null
+      }
+    },
+    {
+      "standard": "FRS_105",
+      "format": "micro",
+      "trading_status": "non_trading",
+      "passed": true,
+      "checks": {
+        "configuration": true,
+        "ct600_identity": true,
+        "ct600_trial_balance": true,
+        "ct600_tax_chain": true,
+        "ct600_native_routes": true,
+        "ct600_pdf": true,
+        "companies_house_ixbrl": true,
+        "ixbrl_well_formed": true,
+        "taxonomy_entry_point": true,
+        "dormant_no_income_statement": true,
+        "single_domain_projection": true,
+        "all_facts_have_provenance": true,
+        "production_scope_fails_closed": true
+      },
+      "validation": {
+        "local_ixbrl": {
+          "passed": true,
+          "checks": {
+            "xml_well_formed": true,
+            "schema_reference_present": true,
+            "schema_reference_matches_standard": true,
+            "context_count": 4,
+            "unit_count": 2,
+            "fact_count": 12,
+            "numeric_fact_count": 9
+          },
+          "issues": [],
+          "external_taxonomy_validation": false,
+          "destination_validation": false
+        },
+        "external_schema": false,
+        "external_calculation": false,
+        "external_dimensions": false,
+        "destination_rules": false,
+        "filing_domain_model": {
+          "schema": "uk.epos.filing-domain",
+          "version": "1.0.0",
+          "hash": "3e30fb25cd1cc6e55bb340e97e4e18f1492b8fe6cffe0a39f879ba35dbdaf6d8",
+          "support": {
+            "level": "unsupported",
+            "generation_allowed": false,
+            "submission_allowed": false,
+            "mandatory_professional_review": true,
+            "conditions": [],
+            "reasons": [
+              "This filing combination is not present in the machine-enforced support matrix."
+            ],
+            "matrix_version": "1.0.0"
+          },
+          "cross_document_invariants": {
+            "passed": true,
+            "issues": []
+          }
+        },
+        "mode": "local simulation; FRC taxonomy and external gateway validators not invoked"
+      },
+      "submission": {
+        "status": "blocked_external_validation",
+        "simulated": true,
+        "receipt": null
+      }
+    },
+    {
+      "standard": "FRS_102_1A",
+      "format": "small_full",
+      "trading_status": "trading",
+      "passed": true,
+      "checks": {
+        "configuration": true,
+        "ct600_identity": true,
+        "ct600_trial_balance": true,
+        "ct600_tax_chain": true,
+        "ct600_native_routes": true,
+        "ct600_pdf": true,
+        "companies_house_ixbrl": true,
+        "ixbrl_well_formed": true,
+        "taxonomy_entry_point": true,
+        "dormant_no_income_statement": true,
+        "single_domain_projection": true,
+        "all_facts_have_provenance": true,
+        "production_scope_fails_closed": true
+      },
+      "validation": {
+        "local_ixbrl": {
+          "passed": true,
+          "checks": {
+            "xml_well_formed": true,
+            "schema_reference_present": true,
+            "schema_reference_matches_standard": true,
+            "context_count": 4,
+            "unit_count": 2,
+            "fact_count": 12,
+            "numeric_fact_count": 9
+          },
+          "issues": [],
+          "external_taxonomy_validation": false,
+          "destination_validation": false
+        },
+        "external_schema": false,
+        "external_calculation": false,
+        "external_dimensions": false,
+        "destination_rules": false,
+        "filing_domain_model": {
+          "schema": "uk.epos.filing-domain",
+          "version": "1.0.0",
+          "hash": "b95844e965355d62cdfa4d4f05a97c8ec025f280e884136b727ba07a526341da",
+          "support": {
+            "level": "export_only",
+            "generation_allowed": true,
+            "submission_allowed": false,
+            "mandatory_professional_review": true,
+            "conditions": [],
+            "reasons": [
+              "Initial straightforward-company slice; authority validation and tax computation are incomplete."
+            ],
+            "matrix_version": "1.0.0"
+          },
+          "cross_document_invariants": {
+            "passed": true,
+            "issues": []
+          }
+        },
+        "mode": "local simulation; FRC taxonomy and external gateway validators not invoked"
+      },
+      "submission": {
+        "status": "blocked_external_validation",
+        "simulated": true,
+        "receipt": null
+      }
+    },
+    {
+      "standard": "FRS_102_1A",
+      "format": "small_full",
+      "trading_status": "non_trading",
+      "passed": true,
+      "checks": {
+        "configuration": true,
+        "ct600_identity": true,
+        "ct600_trial_balance": true,
+        "ct600_tax_chain": true,
+        "ct600_native_routes": true,
+        "ct600_pdf": true,
+        "companies_house_ixbrl": true,
+        "ixbrl_well_formed": true,
+        "taxonomy_entry_point": true,
+        "dormant_no_income_statement": true,
+        "single_domain_projection": true,
+        "all_facts_have_provenance": true,
+        "production_scope_fails_closed": true
+      },
+      "validation": {
+        "local_ixbrl": {
+          "passed": true,
+          "checks": {
+            "xml_well_formed": true,
+            "schema_reference_present": true,
+            "schema_reference_matches_standard": true,
+            "context_count": 4,
+            "unit_count": 2,
+            "fact_count": 12,
+            "numeric_fact_count": 9
+          },
+          "issues": [],
+          "external_taxonomy_validation": false,
+          "destination_validation": false
+        },
+        "external_schema": false,
+        "external_calculation": false,
+        "external_dimensions": false,
+        "destination_rules": false,
+        "filing_domain_model": {
+          "schema": "uk.epos.filing-domain",
+          "version": "1.0.0",
+          "hash": "2d843106098cf859fb44648f8dc7982eba4bf3beda0869ef3ce9ecfee23659bb",
+          "support": {
+            "level": "unsupported",
+            "generation_allowed": false,
+            "submission_allowed": false,
+            "mandatory_professional_review": true,
+            "conditions": [],
+            "reasons": [
+              "This filing combination is not present in the machine-enforced support matrix."
+            ],
+            "matrix_version": "1.0.0"
+          },
+          "cross_document_invariants": {
+            "passed": true,
+            "issues": []
+          }
+        },
+        "mode": "local simulation; FRC taxonomy and external gateway validators not invoked"
+      },
+      "submission": {
+        "status": "blocked_external_validation",
+        "simulated": true,
+        "receipt": null
+      }
+    },
+    {
+      "standard": "FRS_102",
+      "format": "small_full",
+      "trading_status": "trading",
+      "passed": true,
+      "checks": {
+        "configuration": true,
+        "ct600_identity": true,
+        "ct600_trial_balance": true,
+        "ct600_tax_chain": true,
+        "ct600_native_routes": true,
+        "ct600_pdf": true,
+        "companies_house_ixbrl": true,
+        "ixbrl_well_formed": true,
+        "taxonomy_entry_point": true,
+        "dormant_no_income_statement": true,
+        "single_domain_projection": true,
+        "all_facts_have_provenance": true,
+        "production_scope_fails_closed": true
+      },
+      "validation": {
+        "local_ixbrl": {
+          "passed": true,
+          "checks": {
+            "xml_well_formed": true,
+            "schema_reference_present": true,
+            "schema_reference_matches_standard": true,
+            "context_count": 4,
+            "unit_count": 2,
+            "fact_count": 12,
+            "numeric_fact_count": 9
+          },
+          "issues": [],
+          "external_taxonomy_validation": false,
+          "destination_validation": false
+        },
+        "external_schema": false,
+        "external_calculation": false,
+        "external_dimensions": false,
+        "destination_rules": false,
+        "filing_domain_model": {
+          "schema": "uk.epos.filing-domain",
+          "version": "1.0.0",
+          "hash": "942ea4421b4976fa65e40e3f8d2d3e75b1f16c67002615bdfae9f28d51f7acc1",
+          "support": {
+            "level": "unsupported",
+            "generation_allowed": false,
+            "submission_allowed": false,
+            "mandatory_professional_review": true,
+            "conditions": [],
+            "reasons": [
+              "This filing combination is not present in the machine-enforced support matrix."
+            ],
+            "matrix_version": "1.0.0"
+          },
+          "cross_document_invariants": {
+            "passed": true,
+            "issues": []
+          }
+        },
+        "mode": "local simulation; FRC taxonomy and external gateway validators not invoked"
+      },
+      "submission": {
+        "status": "blocked_external_validation",
+        "simulated": true,
+        "receipt": null
+      }
+    },
+    {
+      "standard": "FRS_102",
+      "format": "full",
+      "trading_status": "trading",
+      "passed": true,
+      "checks": {
+        "configuration": true,
+        "ct600_identity": true,
+        "ct600_trial_balance": true,
+        "ct600_tax_chain": true,
+        "ct600_native_routes": true,
+        "ct600_pdf": true,
+        "companies_house_ixbrl": true,
+        "ixbrl_well_formed": true,
+        "taxonomy_entry_point": true,
+        "dormant_no_income_statement": true,
+        "single_domain_projection": true,
+        "all_facts_have_provenance": true,
+        "production_scope_fails_closed": true
+      },
+      "validation": {
+        "local_ixbrl": {
+          "passed": false,
+          "checks": {
+            "xml_well_formed": true,
+            "schema_reference_present": true,
+            "schema_reference_matches_standard": true,
+            "context_count": 4,
+            "unit_count": 2,
+            "fact_count": 12,
+            "numeric_fact_count": 9
+          },
+          "issues": [
+            {
+              "code": "full_accounts_disclosures_incomplete",
+              "message": "Full accounts require strategic/directors/auditor and primary-statement disclosure decisions that are not yet fully modelled.",
+              "severity": "error"
+            }
+          ],
+          "external_taxonomy_validation": false,
+          "destination_validation": false
+        },
+        "external_schema": false,
+        "external_calculation": false,
+        "external_dimensions": false,
+        "destination_rules": false,
+        "filing_domain_model": {
+          "schema": "uk.epos.filing-domain",
+          "version": "1.0.0",
+          "hash": "4a0c12a4b562dd8d3d1280139b35c890b9ad251b7a96eac9706692d3c87ee4f9",
+          "support": {
+            "level": "unsupported",
+            "generation_allowed": false,
+            "submission_allowed": false,
+            "mandatory_professional_review": true,
+            "conditions": [],
+            "reasons": [
+              "Full accounts disclosures, cash flow/equity decisions and auditor workflow are incomplete."
+            ],
+            "matrix_version": "1.0.0"
+          },
+          "cross_document_invariants": {
+            "passed": true,
+            "issues": []
+          }
+        },
+        "mode": "local simulation; FRC taxonomy and external gateway validators not invoked"
+      },
+      "submission": {
+        "status": "blocked_external_validation",
+        "simulated": true,
+        "receipt": null
+      }
+    },
+    {
+      "standard": "FRS_102",
+      "format": "full",
+      "trading_status": "non_trading",
+      "passed": true,
+      "checks": {
+        "configuration": true,
+        "ct600_identity": true,
+        "ct600_trial_balance": true,
+        "ct600_tax_chain": true,
+        "ct600_native_routes": true,
+        "ct600_pdf": true,
+        "companies_house_ixbrl": true,
+        "ixbrl_well_formed": true,
+        "taxonomy_entry_point": true,
+        "dormant_no_income_statement": true,
+        "single_domain_projection": true,
+        "all_facts_have_provenance": true,
+        "production_scope_fails_closed": true
+      },
+      "validation": {
+        "local_ixbrl": {
+          "passed": false,
+          "checks": {
+            "xml_well_formed": true,
+            "schema_reference_present": true,
+            "schema_reference_matches_standard": true,
+            "context_count": 4,
+            "unit_count": 2,
+            "fact_count": 12,
+            "numeric_fact_count": 9
+          },
+          "issues": [
+            {
+              "code": "full_accounts_disclosures_incomplete",
+              "message": "Full accounts require strategic/directors/auditor and primary-statement disclosure decisions that are not yet fully modelled.",
+              "severity": "error"
+            }
+          ],
+          "external_taxonomy_validation": false,
+          "destination_validation": false
+        },
+        "external_schema": false,
+        "external_calculation": false,
+        "external_dimensions": false,
+        "destination_rules": false,
+        "filing_domain_model": {
+          "schema": "uk.epos.filing-domain",
+          "version": "1.0.0",
+          "hash": "d13af5300124bca3686a60429ff4e832be09d6ed4b1763bf271398f4625c6e41",
+          "support": {
+            "level": "unsupported",
+            "generation_allowed": false,
+            "submission_allowed": false,
+            "mandatory_professional_review": true,
+            "conditions": [],
+            "reasons": [
+              "Full accounts disclosures, cash flow/equity decisions and auditor workflow are incomplete."
+            ],
+            "matrix_version": "1.0.0"
+          },
+          "cross_document_invariants": {
+            "passed": true,
+            "issues": []
+          }
+        },
+        "mode": "local simulation; FRC taxonomy and external gateway validators not invoked"
+      },
+      "submission": {
+        "status": "blocked_external_validation",
+        "simulated": true,
+        "receipt": null
+      }
+    },
+    {
+      "standard": "IFRS",
+      "format": "full",
+      "trading_status": "trading",
+      "passed": true,
+      "checks": {
+        "configuration": true,
+        "ct600_identity": true,
+        "ct600_trial_balance": true,
+        "ct600_tax_chain": true,
+        "ct600_native_routes": true,
+        "ct600_pdf": true,
+        "companies_house_ixbrl": true,
+        "ixbrl_well_formed": true,
+        "taxonomy_entry_point": true,
+        "dormant_no_income_statement": true,
+        "single_domain_projection": true,
+        "all_facts_have_provenance": true,
+        "production_scope_fails_closed": true
+      },
+      "validation": {
+        "local_ixbrl": {
+          "passed": false,
+          "checks": {
+            "xml_well_formed": true,
+            "schema_reference_present": true,
+            "schema_reference_matches_standard": true,
+            "context_count": 4,
+            "unit_count": 2,
+            "fact_count": 12,
+            "numeric_fact_count": 9
+          },
+          "issues": [
+            {
+              "code": "full_accounts_disclosures_incomplete",
+              "message": "Full accounts require strategic/directors/auditor and primary-statement disclosure decisions that are not yet fully modelled.",
+              "severity": "error"
+            }
+          ],
+          "external_taxonomy_validation": false,
+          "destination_validation": false
+        },
+        "external_schema": false,
+        "external_calculation": false,
+        "external_dimensions": false,
+        "destination_rules": false,
+        "filing_domain_model": {
+          "schema": "uk.epos.filing-domain",
+          "version": "1.0.0",
+          "hash": "26ca422f85674e8a400df0174596151b35a614a9b6a6b6e5dc57bfc20b13705d",
+          "support": {
+            "level": "unsupported",
+            "generation_allowed": false,
+            "submission_allowed": false,
+            "mandatory_professional_review": true,
+            "conditions": [],
+            "reasons": [
+              "Complex UK-adopted IFRS filing is outside the initial production scope."
+            ],
+            "matrix_version": "1.0.0"
+          },
+          "cross_document_invariants": {
+            "passed": true,
+            "issues": []
+          }
+        },
+        "mode": "local simulation; FRC taxonomy and external gateway validators not invoked"
+      },
+      "submission": {
+        "status": "blocked_external_validation",
+        "simulated": true,
+        "receipt": null
+      }
+    },
+    {
+      "standard": "IFRS",
+      "format": "full",
+      "trading_status": "non_trading",
+      "passed": true,
+      "checks": {
+        "configuration": true,
+        "ct600_identity": true,
+        "ct600_trial_balance": true,
+        "ct600_tax_chain": true,
+        "ct600_native_routes": true,
+        "ct600_pdf": true,
+        "companies_house_ixbrl": true,
+        "ixbrl_well_formed": true,
+        "taxonomy_entry_point": true,
+        "dormant_no_income_statement": true,
+        "single_domain_projection": true,
+        "all_facts_have_provenance": true,
+        "production_scope_fails_closed": true
+      },
+      "validation": {
+        "local_ixbrl": {
+          "passed": false,
+          "checks": {
+            "xml_well_formed": true,
+            "schema_reference_present": true,
+            "schema_reference_matches_standard": true,
+            "context_count": 4,
+            "unit_count": 2,
+            "fact_count": 12,
+            "numeric_fact_count": 9
+          },
+          "issues": [
+            {
+              "code": "full_accounts_disclosures_incomplete",
+              "message": "Full accounts require strategic/directors/auditor and primary-statement disclosure decisions that are not yet fully modelled.",
+              "severity": "error"
+            }
+          ],
+          "external_taxonomy_validation": false,
+          "destination_validation": false
+        },
+        "external_schema": false,
+        "external_calculation": false,
+        "external_dimensions": false,
+        "destination_rules": false,
+        "filing_domain_model": {
+          "schema": "uk.epos.filing-domain",
+          "version": "1.0.0",
+          "hash": "e20a753bc3556ba65e8b336233d72daaf45f3079eab5242ad0669640fba8956e",
+          "support": {
+            "level": "unsupported",
+            "generation_allowed": false,
+            "submission_allowed": false,
+            "mandatory_professional_review": true,
+            "conditions": [],
+            "reasons": [
+              "Complex UK-adopted IFRS filing is outside the initial production scope."
+            ],
+            "matrix_version": "1.0.0"
+          },
+          "cross_document_invariants": {
+            "passed": true,
+            "issues": []
+          }
+        },
+        "mode": "local simulation; FRC taxonomy and external gateway validators not invoked"
+      },
+      "submission": {
+        "status": "blocked_external_validation",
+        "simulated": true,
+        "receipt": null
+      }
+    },
+    {
+      "standard": "FRS_105",
+      "format": "dormant",
+      "trading_status": "dormant",
+      "passed": true,
+      "checks": {
+        "configuration": true,
+        "ct600_identity": true,
+        "ct600_trial_balance": true,
+        "ct600_tax_chain": true,
+        "ct600_native_routes": true,
+        "ct600_pdf": true,
+        "companies_house_ixbrl": true,
+        "ixbrl_well_formed": true,
+        "taxonomy_entry_point": true,
+        "dormant_no_income_statement": true,
+        "single_domain_projection": true,
+        "all_facts_have_provenance": true,
+        "production_scope_fails_closed": true
+      },
+      "validation": {
+        "local_ixbrl": {
+          "passed": true,
+          "checks": {
+            "xml_well_formed": true,
+            "schema_reference_present": true,
+            "schema_reference_matches_standard": true,
+            "context_count": 4,
+            "unit_count": 2,
+            "fact_count": 8,
+            "numeric_fact_count": 5
+          },
+          "issues": [],
+          "external_taxonomy_validation": false,
+          "destination_validation": false
+        },
+        "external_schema": false,
+        "external_calculation": false,
+        "external_dimensions": false,
+        "destination_rules": false,
+        "filing_domain_model": {
+          "schema": "uk.epos.filing-domain",
+          "version": "1.0.0",
+          "hash": "be9edac43cb3ad990d7151da91c9eec0796a649bdce5413892c9ad90aeac2827",
+          "support": {
+            "level": "export_only",
+            "generation_allowed": true,
+            "submission_allowed": false,
+            "mandatory_professional_review": true,
+            "conditions": [],
+            "reasons": [
+              "Dormant accounts may be prepared for review; destination validation is not connected."
+            ],
+            "matrix_version": "1.0.0"
+          },
+          "cross_document_invariants": {
+            "passed": true,
+            "issues": []
+          }
+        },
+        "mode": "local simulation; FRC taxonomy and external gateway validators not invoked"
+      },
+      "submission": {
+        "status": "blocked_external_validation",
+        "simulated": true,
+        "receipt": null
+      }
+    },
+    {
+      "standard": "FRS_102_1A",
+      "format": "dormant",
+      "trading_status": "dormant",
+      "passed": true,
+      "checks": {
+        "configuration": true,
+        "ct600_identity": true,
+        "ct600_trial_balance": true,
+        "ct600_tax_chain": true,
+        "ct600_native_routes": true,
+        "ct600_pdf": true,
+        "companies_house_ixbrl": true,
+        "ixbrl_well_formed": true,
+        "taxonomy_entry_point": true,
+        "dormant_no_income_statement": true,
+        "single_domain_projection": true,
+        "all_facts_have_provenance": true,
+        "production_scope_fails_closed": true
+      },
+      "validation": {
+        "local_ixbrl": {
+          "passed": true,
+          "checks": {
+            "xml_well_formed": true,
+            "schema_reference_present": true,
+            "schema_reference_matches_standard": true,
+            "context_count": 4,
+            "unit_count": 2,
+            "fact_count": 8,
+            "numeric_fact_count": 5
+          },
+          "issues": [],
+          "external_taxonomy_validation": false,
+          "destination_validation": false
+        },
+        "external_schema": false,
+        "external_calculation": false,
+        "external_dimensions": false,
+        "destination_rules": false,
+        "filing_domain_model": {
+          "schema": "uk.epos.filing-domain",
+          "version": "1.0.0",
+          "hash": "8a3cb9a02e141e796d535980543e9187e62bbf291605278571c3fa0fcb28946a",
+          "support": {
+            "level": "export_only",
+            "generation_allowed": true,
+            "submission_allowed": false,
+            "mandatory_professional_review": true,
+            "conditions": [],
+            "reasons": [
+              "Dormant accounts may be prepared for review; destination validation is not connected."
+            ],
+            "matrix_version": "1.0.0"
+          },
+          "cross_document_invariants": {
+            "passed": true,
+            "issues": []
+          }
+        },
+        "mode": "local simulation; FRC taxonomy and external gateway validators not invoked"
+      },
+      "submission": {
+        "status": "blocked_external_validation",
+        "simulated": true,
+        "receipt": null
+      }
+    },
+    {
+      "standard": "FRS_102",
+      "format": "dormant",
+      "trading_status": "dormant",
+      "passed": true,
+      "checks": {
+        "configuration": true,
+        "ct600_identity": true,
+        "ct600_trial_balance": true,
+        "ct600_tax_chain": true,
+        "ct600_native_routes": true,
+        "ct600_pdf": true,
+        "companies_house_ixbrl": true,
+        "ixbrl_well_formed": true,
+        "taxonomy_entry_point": true,
+        "dormant_no_income_statement": true,
+        "single_domain_projection": true,
+        "all_facts_have_provenance": true,
+        "production_scope_fails_closed": true
+      },
+      "validation": {
+        "local_ixbrl": {
+          "passed": true,
+          "checks": {
+            "xml_well_formed": true,
+            "schema_reference_present": true,
+            "schema_reference_matches_standard": true,
+            "context_count": 4,
+            "unit_count": 2,
+            "fact_count": 8,
+            "numeric_fact_count": 5
+          },
+          "issues": [],
+          "external_taxonomy_validation": false,
+          "destination_validation": false
+        },
+        "external_schema": false,
+        "external_calculation": false,
+        "external_dimensions": false,
+        "destination_rules": false,
+        "filing_domain_model": {
+          "schema": "uk.epos.filing-domain",
+          "version": "1.0.0",
+          "hash": "c3d6fa752b0a397d72d35cb9d69f8d2bfd128eff6d8e030010c60a8a654951b2",
+          "support": {
+            "level": "export_only",
+            "generation_allowed": true,
+            "submission_allowed": false,
+            "mandatory_professional_review": true,
+            "conditions": [],
+            "reasons": [
+              "Dormant accounts may be prepared for review; destination validation is not connected."
+            ],
+            "matrix_version": "1.0.0"
+          },
+          "cross_document_invariants": {
+            "passed": true,
+            "issues": []
+          }
+        },
+        "mode": "local simulation; FRC taxonomy and external gateway validators not invoked"
+      },
+      "submission": {
+        "status": "blocked_external_validation",
+        "simulated": true,
+        "receipt": null
+      }
+    }
+  ],
+  "negative_scenarios": [
+    {
+      "name": "incompatible standard and format",
+      "passed": true,
+      "expected_blocker": "accounts_configuration_conflict"
+    },
+    {
+      "name": "unbalanced trial balance",
+      "passed": true,
+      "expected_blocker": "trial_balance_unbalanced"
+    },
+    {
+      "name": "micro entity threshold breach",
+      "passed": true,
+      "expected_blocker": "accounts_format_ineligible"
+    },
+    {
+      "name": "expired computation taxonomy",
+      "passed": true,
+      "expected_blocker": "taxonomy_period_invalid"
+    },
+    {
+      "name": "visible untagged detailed profit and loss",
+      "passed": true,
+      "expected_blocker": "detailed_profit_and_loss_untagged"
+    },
+    {
+      "name": "malformed inline XBRL",
+      "passed": true,
+      "expected_blocker": "ixbrl_not_well_formed"
+    },
+    {
+      "name": "group or consortium supplementary page outside initial scope",
+      "passed": true,
+      "expected_blocker": "filing_scope_unsupported"
+    }
+  ]
+}

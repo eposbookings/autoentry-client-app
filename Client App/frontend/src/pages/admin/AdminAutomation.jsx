@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { api, formatApiError } from "@/lib/api";
+import { formatUkDateTime } from "@/lib/date";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -332,7 +333,7 @@ export default function AdminAutomation() {
                 <div key={run.id} className="flex items-center justify-between gap-3 border-b border-stone-100 py-2 last:border-b-0">
                   <div>
                     <p className="font-semibold text-stone-900">{run.workflow_name || "Rule"}</p>
-                    <p className="text-xs text-stone-500">{readable(run.trigger_type)} · {run.started_at?.slice(0, 16) || "-"}</p>
+                    <p className="text-xs text-stone-500">{readable(run.trigger_type)} · {formatUkDateTime(run.started_at)}</p>
                   </div>
                   <Badge className={statusClass(run.status)}>{readable(run.status)}</Badge>
                 </div>
@@ -504,7 +505,7 @@ export default function AdminAutomation() {
                       <td><Badge className="bg-blue-100 text-blue-800">{readable(run.execution_mode || "legacy")}</Badge></td>
                       <td>{readable(run.trigger_type)}</td>
                       <td><Badge className={statusClass(run.status)}>{readable(run.status)}</Badge></td>
-                      <td>{run.result}</td><td>{run.duration_ms ?? 0}ms</td><td>{run.started_at?.slice(0, 16) || "-"}</td>
+                      <td>{run.result}</td><td>{run.duration_ms ?? 0}ms</td><td>{formatUkDateTime(run.started_at)}</td>
                     </tr>
                   ))}
                 </tbody>

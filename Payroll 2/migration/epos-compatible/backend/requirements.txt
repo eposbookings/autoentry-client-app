@@ -1,0 +1,7 @@
+asyncmy==0.2.10
+aiosqlite==0.21.0
+fastapi==0.110.1
+httpx==0.28.1
+pydantic==2.13.4
+SQLAlchemy==2.0.45
+uvicorn==0.25.0

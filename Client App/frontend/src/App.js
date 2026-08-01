@@ -24,6 +24,8 @@ import ClientList from "@/pages/client/ClientList";
 import ClientSubmit from "@/pages/client/ClientSubmit";
 import ClientSubmitAdditional from "@/pages/client/ClientSubmitAdditional";
 
+const AdminPayroll = React.lazy(() => import("@/pages/admin/AdminPayroll"));
+
 const practiceRoles = ["admin", "practice_admin", "practice_manager", "practice_staff", "practice_readonly"];
 
 function homeForRole(role) {
@@ -115,6 +117,8 @@ export default function App() {
             <Route path="accountancy" element={<AdminAccountancySettings />} />
             <Route path="automation" element={<AdminAutomation />} />
             <Route path="practice" element={<AdminPractice />} />
+            <Route path="payroll" element={<React.Suspense fallback={null}><AdminPayroll /></React.Suspense>} />
+            <Route path="payroll/:clientId" element={<React.Suspense fallback={null}><AdminPayroll /></React.Suspense>} />
           </Route>
 
           <Route path="/portal" element={<Protected role="client"><ClientLayout /></Protected>}>

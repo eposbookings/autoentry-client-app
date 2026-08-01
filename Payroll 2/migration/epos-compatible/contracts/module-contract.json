@@ -1,0 +1,63 @@
+{
+  "module": "payroll",
+  "mount": {
+    "frontendRoute": "/admin/payroll/:clientId",
+    "backendPrefix": "/api/payroll",
+    "lazy": true
+  },
+  "hostDependencies": [
+    "authenticatedPracticeSession",
+    "enabledClientPayrollService"
+  ],
+  "forbiddenRuntimeDependencies": [
+    "standalonePayrollAuthentication",
+    "vinext",
+    "next",
+    "publicPayrollWorker",
+    "unsignedWorkerRequests"
+  ],
+  "sourceInventory": {
+    "testCount": 278,
+    "migrationCount": 71,
+    "apiAreas": [
+      "adjustments",
+      "admin",
+      "agent",
+      "analysis",
+      "attachments",
+      "benefits",
+      "calculate",
+      "calendar-days",
+      "cis",
+      "data",
+      "departments",
+      "email-templates",
+      "employee-history",
+      "employee-loans",
+      "employee-requests",
+      "employees",
+      "employer",
+      "exports",
+      "hmrc-liabilities",
+      "hmrc-notices",
+      "hmrc-payments",
+      "holiday-funds",
+      "leave",
+      "opening-balances",
+      "pay-frequency",
+      "payroll-versions",
+      "pay-rounding",
+      "pay-runs",
+      "payslip-deliveries",
+      "pensions",
+      "portal",
+      "recurring-items",
+      "reports",
+      "scenarios",
+      "statutory-notices",
+      "submissions",
+      "year-end"
+    ]
+  },
+  "cutover": "complete-module-only"
+}

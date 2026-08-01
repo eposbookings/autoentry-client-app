@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { api, formatApiError } from "@/lib/api";
+import { formatUkDate, formatUkDateTime } from "@/lib/date";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -146,11 +147,11 @@ function ConnectionCard({ connection, onAction, onSync }) {
       <div className="mt-4 grid grid-cols-2 gap-3 border-t border-stone-200 pt-3 text-sm">
         <div>
           <p className="text-xs font-semibold uppercase text-stone-400">Last sync</p>
-          <p className="text-stone-700">{connection.last_sync_at || "Not synced"}</p>
+          <p className="text-stone-700">{formatUkDateTime(connection.last_sync_at, "Not synced")}</p>
         </div>
         <div>
           <p className="text-xs font-semibold uppercase text-stone-400">Next sync</p>
-          <p className="text-stone-700">{connection.next_sync_at || "Manual"}</p>
+          <p className="text-stone-700">{formatUkDateTime(connection.next_sync_at, "Manual")}</p>
         </div>
         <div>
           <p className="text-xs font-semibold uppercase text-stone-400">Auth</p>
@@ -362,7 +363,7 @@ export default function AdminIntegrationHub() {
                     <div key={log.id} className="flex items-center justify-between gap-3 py-3 text-sm">
                       <div>
                         <p className="font-semibold text-stone-900">{log.action}</p>
-                        <p className="text-stone-500">{log.provider_id || "integration hub"} - {log.created_at}</p>
+                        <p className="text-stone-500">{log.provider_id || "integration hub"} - {formatUkDateTime(log.created_at)}</p>
                       </div>
                       <Badge className={statusClass(log.status)}>{log.status}</Badge>
                     </div>
@@ -479,7 +480,7 @@ export default function AdminIntegrationHub() {
                   <div key={run.id} className="grid gap-2 py-3 text-sm md:grid-cols-[1fr_120px_120px_120px_160px]">
                     <div>
                       <p className="font-semibold text-stone-900">{run.provider_id}</p>
-                      <p className="text-stone-500">{run.started_at}</p>
+                      <p className="text-stone-500">{formatUkDateTime(run.started_at)}</p>
                     </div>
                     <Badge className={statusClass(run.status)}>{run.status}</Badge>
                     <span>{run.records_processed || 0} records</span>
@@ -514,7 +515,7 @@ export default function AdminIntegrationHub() {
                       <Badge className={statusClass(key.status)}>{key.status}</Badge>
                     </div>
                     <p className="mt-3 text-sm text-stone-600">Key {key.key_hint || "saved"} / Secret {key.secret_hint || "saved"}</p>
-                    <p className="text-sm text-stone-500">Expires {key.expires_at || "No expiry"} - Rotated {key.rotated_at || "Not rotated"}</p>
+                    <p className="text-sm text-stone-500">Expires {formatUkDate(key.expires_at, "No expiry")} - Rotated {formatUkDateTime(key.rotated_at, "Not rotated")}</p>
                     <Button size="sm" className="mt-3 gap-2" variant="outline" onClick={() => rotateKey(key.id)}>
                       <RotateCcw className="h-4 w-4" /> Record rotation
                     </Button>
@@ -545,7 +546,7 @@ export default function AdminIntegrationHub() {
                     <Button size="sm" variant="outline" onClick={() => replayWebhook(hook.id)}>Replay</Button>
                   </div>
                 </div>
-                <p className="mt-2 text-sm text-stone-500">Last delivery {hook.last_delivery_at || "None"} - Failures {hook.failures || 0} - Retries {hook.retry_count || 0}</p>
+                <p className="mt-2 text-sm text-stone-500">Last delivery {formatUkDateTime(hook.last_delivery_at, "None")} - Failures {hook.failures || 0} - Retries {hook.retry_count || 0}</p>
               </div>
             )) : <EmptyState text="No webhooks registered yet." />}
           </Panel>
@@ -557,7 +558,7 @@ export default function AdminIntegrationHub() {
               <div className="divide-y divide-stone-100">
                 {logs.map((log) => (
                   <div key={log.id} className="grid gap-2 py-3 text-sm md:grid-cols-[180px_1fr_120px_120px]">
-                    <span className="text-stone-500">{log.created_at}</span>
+                    <span className="text-stone-500">{formatUkDateTime(log.created_at)}</span>
                     <span><strong>{log.provider_id || "hub"}</strong> - {log.action}{log.error_details ? ` - ${log.error_details}` : ""}</span>
                     <Badge className={statusClass(log.status)}>{log.status}</Badge>
                     <span>{log.duration_ms || 0} ms</span>
