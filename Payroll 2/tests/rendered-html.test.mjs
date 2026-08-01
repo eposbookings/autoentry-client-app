@@ -2822,9 +2822,9 @@ test("RTI approval rejects stale or corrupted source packages",async()=>{
 });
 
 test("RTI external HMRC results establish guarded accepted and rejected evidence",async()=>{
-  const [route,page,validator,mirror,styles,mirrorStyles]=await Promise.all([
+  const [route,page,validator,mirror,installed,styles,mirrorStyles,installedStyles]=await Promise.all([
     readFile("app/api/submissions/route.ts","utf8"),readFile("app/page.tsx","utf8"),readFile("lib/rti-filing-result.ts","utf8"),
-    readFile("migration/epos-compatible/frontend/src/modules/payroll/PayrollWorkspace.tsx","utf8"),readFile("app/globals.css","utf8"),readFile("migration/epos-compatible/frontend/src/modules/payroll/payroll.css","utf8"),
+    readFile("migration/epos-compatible/frontend/src/modules/payroll/PayrollWorkspace.tsx","utf8"),readFile("../Client App/frontend/src/modules/payroll/PayrollWorkspace.tsx","utf8"),readFile("app/globals.css","utf8"),readFile("migration/epos-compatible/frontend/src/modules/payroll/payroll.css","utf8"),readFile("../Client App/frontend/src/modules/payroll/payroll.css","utf8"),
   ]);
   assert.match(route,/input\.action==="record-filing-result"/);
   assert.match(route,/validateRtiFilingResult/);
@@ -2842,7 +2842,7 @@ test("RTI external HMRC results establish guarded accepted and rejected evidence
   assert.match(page,/This FPS has accepted HMRC evidence/);
   assert.match(page,/const filingResponse=/);
   assert.match(page,/responseSummary=\[response\.code,response\.message\]/);
-  for(const workspace of [page,mirror]){
+  for(const workspace of [page,mirror,installed]){
     assert.match(workspace,/const \[manualRtiResultOpen,setManualRtiResultOpen\]=useState\(false\)/);
     assert.match(workspace,/<Check text="Record external RTI result manually" checked=\{manualRtiResultOpen\} onChange=\{setManualRtiResultOpen\}\/>/);
     assert.match(workspace,/\{manualRtiResultOpen&&<div className="modal-bg" role="dialog" aria-modal="true" aria-label="Record external RTI result manually">/);
@@ -2852,6 +2852,7 @@ test("RTI external HMRC results establish guarded accepted and rejected evidence
   }
   assert.match(styles,/\.rti-result-modal\{/);
   assert.match(mirrorStyles,/\.payroll-module \.rti-result-modal\{/);
+  assert.match(installedStyles,/\.payroll-module \.rti-result-modal\{/);
   const liveLifecycle=await readFile("tests/live-rti-filing-lifecycle.mjs","utf8");
   for(const evidence of ["HMRC-FPS-P1-REJECTED","HMRC-FPS-P1-ACCEPTED","HMRC-AFPS-P2-ACCEPTED","HMRC-EPS-M1-ACCEPTED","HMRC-EXB-2026-ACCEPTED","supersededRtiPackages"])
     assert.match(liveLifecycle,new RegExp(evidence));
