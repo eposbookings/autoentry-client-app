@@ -46,3 +46,6 @@ next-env.d.ts
 /preview-*.log
 /tmp/
 tsconfig.tsbuildinfo
+/data/*.sqlite
+/data/*.sqlite-wal
+/data/*.sqlite-shm
