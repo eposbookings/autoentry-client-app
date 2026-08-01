@@ -65,7 +65,7 @@ jobs:
           if-no-files-found: error
 
   build-api:
-    name: Build API image on GitHub
+    name: Build backend images on GitHub
     runs-on: ubuntu-latest
     if: ${{ inputs.rebuild_backend }}
 
@@ -78,16 +78,22 @@ jobs:
       - name: Build API Docker image
         run: docker build -t autoentry-client-app-api:latest "./Client App/backend"
 
-      - name: Save API Docker image
-        run: |
-          docker save autoentry-client-app-api:latest | gzip -1 > api-image.tar.gz
-          ls -lh api-image.tar.gz
+      - name: Build payroll worker Docker image
+        run: docker build -t autoentry-client-app-payroll-worker:latest -f "./Payroll 2/Dockerfile.epos" "./Payroll 2"
 
-      - name: Upload API image artifact
+      - name: Save backend Docker images
+        run: |
+          docker save \
+            autoentry-client-app-api:latest \
+            autoentry-client-app-payroll-worker:latest \
+            | gzip -1 > backend-images.tar.gz
+          ls -lh backend-images.tar.gz
+
+      - name: Upload backend images artifact
         uses: actions/upload-artifact@v4
         with:
-          name: api-image
-          path: api-image.tar.gz
+          name: backend-images
+          path: backend-images.tar.gz
           if-no-files-found: error
 
   deploy:
@@ -110,11 +116,11 @@ jobs:
           name: frontend-build
           path: deploy-files
 
-      - name: Download API image artifact
+      - name: Download backend images artifact
         if: ${{ inputs.rebuild_backend }}
         uses: actions/download-artifact@v4
         with:
-          name: api-image
+          name: backend-images
           path: deploy-files
 
       - name: Add deployment script to bundle
