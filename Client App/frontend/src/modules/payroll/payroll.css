@@ -1341,3 +1341,9 @@
 .payroll-module .module-period-wrap .periods button.compact-status:not(.has-notifications)>span:first-child{display:none}
 .payroll-module .module-period-wrap .periods button.compact-status:not(.has-notifications)>i{top:6px;left:5px;right:5px;width:auto;text-align:center;font-size:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .payroll-module .module-period-wrap .periods button.compact-status:not(.has-notifications)>b{margin:0;font-size:13px}
+
+/* Compact RTI filing controls and a balanced approval/action footer. */
+.payroll-module .rti-filing-options{padding:12px 18px 10px;gap:10px 18px;align-items:end}.payroll-module .rti-filing-options>.validation-list{padding:2px 0}.payroll-module .rti-filing-options>.validation-list>div{padding:8px 0}.payroll-module .rti-filing-options>.check{margin:6px 0}
+.payroll-module .rti-action-footer{min-height:54px;align-items:center;justify-content:space-between;gap:16px;padding:9px 18px}.payroll-module .rti-confirmation{min-width:300px;padding-left:4px}.payroll-module .rti-confirmation .check{align-items:center;margin:0}.payroll-module .rti-confirmation .check input{margin-top:0}.payroll-module .rti-action-buttons{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-left:auto}
+@media(max-width:900px){.payroll-module .rti-action-footer{align-items:stretch;flex-direction:column}.payroll-module .rti-confirmation{min-width:0;padding-left:2px}.payroll-module .rti-action-buttons{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));margin-left:0}.payroll-module .rti-action-buttons button{width:100%}}
+@media(max-width:560px){.payroll-module .rti-action-buttons{grid-template-columns:1fr}}

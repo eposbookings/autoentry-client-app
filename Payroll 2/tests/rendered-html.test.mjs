@@ -2844,7 +2844,12 @@ test("RTI external HMRC results establish guarded accepted and rejected evidence
   assert.match(page,/responseSummary=\[response\.code,response\.message\]/);
   for(const workspace of [page,mirror,installed]){
     assert.match(workspace,/const \[manualRtiResultOpen,setManualRtiResultOpen\]=useState\(false\)/);
-    assert.match(workspace,/<Check text="Record external RTI result manually" checked=\{manualRtiResultOpen\} onChange=\{setManualRtiResultOpen\}\/>/);
+    assert.match(workspace,/const filingOptions=<div className="form-grid form-pad rti-filing-options">/);
+    assert.match(workspace,/<button type="button" onClick=\{\(\)=>setManualRtiResultOpen\(true\)\}>Record external RTI result manually<\/button>/);
+    assert.match(workspace,/className="operation-footer rti-action-footer"><div className="rti-confirmation">\{selected!=="NVR"&&<Check text="I confirm this return is complete and correct"/);
+    const footerStart=workspace.indexOf('className="rti-action-buttons"'),previewAt=workspace.indexOf('>Preview totals</button>',footerStart),manualAt=workspace.indexOf('>Record external RTI result manually</button>',footerStart),validateAt=workspace.indexOf('"Generate & validate"',footerStart),prepareAt=workspace.indexOf('>Prepare filing package</button>',footerStart);
+    assert.ok(footerStart>=0&&footerStart<previewAt&&previewAt<manualAt&&manualAt<validateAt&&validateAt<prepareAt);
+    assert.doesNotMatch(workspace,/<Check text="Record external RTI result manually"/);
     assert.match(workspace,/\{manualRtiResultOpen&&<div className="modal-bg" role="dialog" aria-modal="true" aria-label="Record external RTI result manually">/);
     assert.match(workspace,/setManualRtiResultOpen\(false\);setRtiAcknowledgement/);
     assert.doesNotMatch(workspace,/<b>Employer identifiers<\/b><small>Checked when the draft is generated/);
@@ -2853,6 +2858,12 @@ test("RTI external HMRC results establish guarded accepted and rejected evidence
   assert.match(styles,/\.rti-result-modal\{/);
   assert.match(mirrorStyles,/\.payroll-module \.rti-result-modal\{/);
   assert.match(installedStyles,/\.payroll-module \.rti-result-modal\{/);
+  for(const stylesheet of [styles,mirrorStyles,installedStyles]){
+    assert.match(stylesheet,/\.rti-filing-options\{/);
+    assert.match(stylesheet,/\.rti-action-footer\{/);
+    assert.match(stylesheet,/\.rti-confirmation/);
+    assert.match(stylesheet,/\.rti-action-buttons\{/);
+  }
   const liveLifecycle=await readFile("tests/live-rti-filing-lifecycle.mjs","utf8");
   for(const evidence of ["HMRC-FPS-P1-REJECTED","HMRC-FPS-P1-ACCEPTED","HMRC-AFPS-P2-ACCEPTED","HMRC-EPS-M1-ACCEPTED","HMRC-EXB-2026-ACCEPTED","supersededRtiPackages"])
     assert.match(liveLifecycle,new RegExp(evidence));
