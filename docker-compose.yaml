@@ -68,6 +68,7 @@ services:
       - ./Client App/backend/uploads:/app/uploads
   payroll-worker:
     restart: always
+    image: autoentry-client-app-payroll-worker:latest
     build:
       context: ./Payroll 2
       dockerfile: Dockerfile.epos
