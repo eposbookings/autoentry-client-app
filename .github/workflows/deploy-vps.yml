@@ -16,6 +16,11 @@ on:
         required: true
         type: boolean
         default: true
+      reclaim_docker_space:
+        description: "Reclaim old unused Docker images (keeps running images and the last 7 days for rollback)"
+        required: true
+        type: boolean
+        default: false
 
 concurrency:
   group: sync-vps-code
@@ -83,17 +88,24 @@ jobs:
 
       - name: Save backend Docker images
         run: |
+          {
+            echo "api=$(docker image inspect --format '{{.Id}}' autoentry-client-app-api:latest)"
+            echo "payroll-worker=$(docker image inspect --format '{{.Id}}' autoentry-client-app-payroll-worker:latest)"
+          } > backend-image-ids.txt
           docker save \
             autoentry-client-app-api:latest \
             autoentry-client-app-payroll-worker:latest \
             | gzip -1 > backend-images.tar.gz
           ls -lh backend-images.tar.gz
+          cat backend-image-ids.txt
 
       - name: Upload backend images artifact
         uses: actions/upload-artifact@v4
         with:
           name: backend-images
-          path: backend-images.tar.gz
+          path: |
+            backend-images.tar.gz
+            backend-image-ids.txt
           if-no-files-found: error
 
   deploy:
@@ -149,4 +161,4 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           port: 22
           command_timeout: 15m
-          script: bash /tmp/autoentry-client-app-deploy/deploy-vps.sh '${{ inputs.deploy_branch }}' '${{ inputs.rebuild_backend }}'
+          script: bash /tmp/autoentry-client-app-deploy/deploy-vps.sh '${{ inputs.deploy_branch }}' '${{ inputs.rebuild_backend }}' deploy '${{ inputs.reclaim_docker_space }}'

@@ -5,7 +5,14 @@ set -Eeuo pipefail
 DEPLOY_BRANCH="${1:?Deploy branch is required}"
 REBUILD_BACKEND="${2:?Backend rebuild flag is required}"
 DEPLOY_MODE="${3:-deploy}"
+RECLAIM_DOCKER_SPACE="${4:-false}"
 
+cleanup_deploy_artifacts() {
+  rm -f /tmp/autoentry-client-app-deploy/frontend-build.tar.gz \
+    /tmp/autoentry-client-app-deploy/backend-images.tar.gz \
+    /tmp/autoentry-client-app-deploy/backend-image-ids.txt
+}
+trap cleanup_deploy_artifacts EXIT
 trap 'status=$?; echo "Deployment failed at line $LINENO: $BASH_COMMAND (exit $status)" >&2; exit "$status"' ERR
 
 cd /opt/autoentry-client-app
@@ -155,16 +162,50 @@ git status --short
 if [ "$REBUILD_BACKEND" = "true" ]; then
   echo "Loading prebuilt backend images"
   ls -lh /tmp/autoentry-client-app-deploy/backend-images.tar.gz
+  IMAGE_MANIFEST="/tmp/autoentry-client-app-deploy/backend-image-ids.txt"
+  if [ ! -s "$IMAGE_MANIFEST" ]; then
+    echo "The backend image identity manifest is missing; refusing to deploy images that cannot be verified."
+    exit 1
+  fi
   echo "Disk before Docker load:"
   df -h
   echo "Docker storage before Docker load:"
   docker system df || true
+
+  # Docker needs temporary headroom while extracting layers. Space reclamation
+  # is opt-in at workflow dispatch and retains running images plus every image
+  # created during the last seven days for rollback.
+  MIN_DOCKER_LOAD_FREE_KB="${MIN_DOCKER_LOAD_FREE_KB:-4194304}"
+  FREE_BEFORE_CLEANUP_KB="$(df --output=avail -k / | tail -n 1 | tr -d ' ')"
+  if [ "$FREE_BEFORE_CLEANUP_KB" -lt "$MIN_DOCKER_LOAD_FREE_KB" ] && [ "$RECLAIM_DOCKER_SPACE" = "true" ]; then
+    echo "Only $((FREE_BEFORE_CLEANUP_KB / 1024)) MB is free; removing unused Docker images older than seven days as explicitly requested."
+    docker image prune -af --filter "until=168h"
+  fi
+  FREE_AFTER_CLEANUP_KB="$(df --output=avail -k / | tail -n 1 | tr -d ' ')"
+  echo "Free disk available for Docker load: $((FREE_AFTER_CLEANUP_KB / 1024)) MB"
+  if [ "$FREE_AFTER_CLEANUP_KB" -lt "$MIN_DOCKER_LOAD_FREE_KB" ]; then
+    echo "At least $((MIN_DOCKER_LOAD_FREE_KB / 1024)) MB free is required to unpack the backend release. Existing services have not been replaced."
+    if [ "$RECLAIM_DOCKER_SPACE" != "true" ]; then
+      echo "Re-run the workflow with 'Reclaim old unused Docker images' enabled after reviewing its rollback-retention description."
+    fi
+    exit 1
+  fi
+
   load_started="$(date +%s)"
   timeout 600 sh -c 'gzip -dc /tmp/autoentry-client-app-deploy/backend-images.tar.gz | docker load'
   load_finished="$(date +%s)"
   echo "Docker images loaded in $((load_finished - load_started)) seconds"
-  docker image inspect autoentry-client-app-api:latest >/dev/null
-  docker image inspect autoentry-client-app-payroll-worker:latest >/dev/null
+  EXPECTED_API_ID="$(sed -n 's/^api=//p' "$IMAGE_MANIFEST" | tail -n 1)"
+  EXPECTED_PAYROLL_ID="$(sed -n 's/^payroll-worker=//p' "$IMAGE_MANIFEST" | tail -n 1)"
+  ACTUAL_API_ID="$(docker image inspect --format '{{.Id}}' autoentry-client-app-api:latest)"
+  ACTUAL_PAYROLL_ID="$(docker image inspect --format '{{.Id}}' autoentry-client-app-payroll-worker:latest)"
+  if [ -z "$EXPECTED_API_ID" ] || [ -z "$EXPECTED_PAYROLL_ID" ] || [ "$ACTUAL_API_ID" != "$EXPECTED_API_ID" ] || [ "$ACTUAL_PAYROLL_ID" != "$EXPECTED_PAYROLL_ID" ]; then
+    echo "Backend image verification failed after Docker load."
+    echo "API expected=$EXPECTED_API_ID actual=$ACTUAL_API_ID"
+    echo "Payroll expected=$EXPECTED_PAYROLL_ID actual=$ACTUAL_PAYROLL_ID"
+    exit 1
+  fi
+  echo "Both backend image identities match the GitHub build artifact"
   docker compose up -d --no-build payroll-worker api
 fi
 
