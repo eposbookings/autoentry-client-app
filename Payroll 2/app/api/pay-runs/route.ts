@@ -4,7 +4,7 @@ import { getDb } from "../../../db";
 import { attachmentOrderDeductions, attachmentOrders, auditLog, departments, employeeLoanDeductions, employeeLoans, employeePayRounding, employees, employers, employerSettings, expensesBenefits, holidayFundEntries, holidayFundSettings, leaveEvents, payrollAdjustments, payrollOpeningBalances, payItems, payPeriods, payRoundingEntries, payRuns, pensionMembershipEvents, pensionMemberships, pensionSchemes, recurringPayItems, submissions } from "../../../db/schema";
 import { calculateMonthlyPayroll, p45OpeningBalances, type PayrollInput } from "../../../lib/payroll-engine";
 import { attachmentPriority, calculateAttachment } from "../../../lib/attachment-engine";
-import { employeeActiveInRange, statutoryPayAllocationForRange } from "../../../lib/pay-periods";
+import { employeeActiveInRange, statutoryPayAllocation, statutoryPayAllocationForRange } from "../../../lib/pay-periods";
 import { assessPension } from "../../../lib/pension-engine";
 import { applyDeductionAdjustments } from "../../../lib/payroll-adjustments";
 import { requireEmployerAccess, sha256 } from "../../../lib/admin-auth";
@@ -15,6 +15,7 @@ import { totalPayrolledBenefitsForRange } from "../../../lib/payrolled-benefits"
 import { payrollFrequencyRule, scheduledPayPeriods, validatePayrollPeriod, type PayrollFrequency } from "../../../lib/pay-frequency";
 import { calculateChildcareVoucher, childcareVoucherBandFromName } from "../../../lib/childcare-vouchers";
 import { calculateHolidayFundPeriod, holidayFundEntryEvidence, type HolidayFundPeriodResult } from "../../../lib/holiday-fund";
+import { hasEmployeePaymentActivity } from "../../../lib/eps-no-payment";
 
 type EmployeePayInput = PayrollInput & {
   employeeId?: number;
@@ -45,6 +46,16 @@ const numericPayFields=[
 ] as const;
 const forbiddenClientYtdFields=["ytdTaxablePay","ytdTaxPaid","ytdNicablePay","ytdEmployeeNic","ytdEmployerNic"] as const;
 const validTaxYear=(value:string)=>/^\d{4}\/\d{2}$/.test(value)&&Number(value.slice(5))===(Number(value.slice(0,4))+1)%100;
+type RtiWorkflowTask={
+  type:"FPS"|"EPS_NO_PAYMENT"|"EPS_RECOVERY";
+  periodNumber:number;
+  taxMonth:number;
+  reason:"employee-payments"|"no-employee-payments"|"statutory-pay-recovery";
+  amount?:number;
+  statutoryPayByType?:Record<string,number>;
+};
+const roundMoney=(value:number)=>Math.round((value+Number.EPSILON)*100)/100;
+const statutoryPayKey=(value:unknown)=>String(value||"statutory").toLowerCase().replace(/\s+leave$/," ").trim().replaceAll(" ","-");
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -52,6 +63,10 @@ export async function GET(request: Request) {
   const access=await requireEmployerAccess(request,employerId,"read");if(!access.ok)return access.response;
   const taxYear = url.searchParams.get("taxYear") || "2026/27";
   const db = getDb();
+  const [workflowEmployer]=await db.select({
+    payFrequency:employers.payFrequency,firstPayDate:employerSettings.firstPayDate,
+  }).from(employers).leftJoin(employerSettings,eq(employerSettings.employerId,employers.id))
+    .where(eq(employers.id,employerId)).limit(1);
   const periods = await db.select().from(payPeriods).where(and(eq(payPeriods.employerId, employerId), eq(payPeriods.taxYear, taxYear))).orderBy(asc(payPeriods.periodNumber));
   const runs = await db.select({
     id: payRuns.id,
@@ -101,18 +116,75 @@ export async function GET(request: Request) {
     eq(payrollOpeningBalances.employerId,employerId),eq(payrollOpeningBalances.taxYear,taxYear),eq(employees.employerId,employerId),
   ));
   const workflowFilings=await db.select({
-    payPeriodId:submissions.payPeriodId,type:submissions.type,status:submissions.status,
+    payPeriodId:submissions.payPeriodId,type:submissions.type,status:submissions.status,payload:submissions.payload,
   }).from(submissions).where(eq(submissions.employerId,employerId));
-  const completedRtiPeriodIds=new Set(workflowFilings.filter(row=>row.type==="FPS"&&row.payPeriodId&&["accepted","submitted"].includes(row.status)).map(row=>row.payPeriodId!));
+  const completedRtiPeriodIds=new Set(workflowFilings.filter(row=>row.type==="FPS"&&row.payPeriodId&&row.status==="accepted").map(row=>row.payPeriodId!));
+  const acceptedEpsPayloads=workflowFilings.flatMap(row=>{
+    if(row.type!=="EPS"||row.status!=="accepted")return [];
+    try{const payload=JSON.parse(row.payload||"{}");return payload.taxYear===taxYear?[payload]:[];}catch{return [];}
+  });
+  const acceptedNoPaymentTaxMonths=new Set(acceptedEpsPayloads.filter(payload=>payload.noPaymentForPeriod===true&&Number.isInteger(Number(payload.periodNumber))).map(payload=>Number(payload.periodNumber)));
   const preparedPensionPeriodIds=new Set(workflowFilings.filter(row=>row.type==="PENSION-PROVIDER"&&row.payPeriodId&&["prepared","submitted","accepted"].includes(row.status)).map(row=>row.payPeriodId!));
   const finalisedPeriods=periods.filter(row=>row.status==="finalised");
   const pensionContributionPeriodIds=new Set(runs.filter(run=>run.status==="finalised"&&run.pensionSchemeId&&(run.employeePension!==0||run.employerPension!==0)).map(run=>run.payPeriodId));
-  const rtiReadyPeriods=finalisedPeriods.filter(row=>!completedRtiPeriodIds.has(row.id)).map(row=>row.periodNumber);
+  const periodByNumber=new Map(periods.map(row=>[row.periodNumber,row]));
+  const runsByPeriodId=new Map<number,typeof runs>();
+  for(const run of runs)runsByPeriodId.set(run.payPeriodId,[...(runsByPeriodId.get(run.payPeriodId)||[]),run]);
+  const workflowEmployeeIds=new Set(runs.map(run=>run.employeeId));
+  const workflowLeaveEvents=(await db.select().from(leaveEvents)).filter(event=>workflowEmployeeIds.has(event.employeeId)&&event.status==="calculated");
+  const rtiTasks:RtiWorkflowTask[]=[];
+  if(workflowEmployer){
+    const workflowSchedule=scheduledPayPeriods(taxYear,payrollFrequencyRule(workflowEmployer.payFrequency).frequency,workflowEmployer.firstPayDate||undefined);
+    for(const scheduled of workflowSchedule){
+      const stored=periodByNumber.get(scheduled.periodNumber);
+      if(stored?.status!=="finalised"||completedRtiPeriodIds.has(stored.id))continue;
+      const hasPayments=(runsByPeriodId.get(stored.id)||[]).some(run=>run.status==="finalised"&&hasEmployeePaymentActivity(run));
+      if(hasPayments)rtiTasks.push({type:"FPS",periodNumber:stored.periodNumber,taxMonth:scheduled.taxMonth,reason:"employee-payments"});
+    }
+    for(const taxMonth of Array.from({length:12},(_,index)=>index+1)){
+      const scheduledMonth=workflowSchedule.filter(item=>item.taxMonth===taxMonth);
+      const storedMonth=scheduledMonth.map(item=>periodByNumber.get(item.periodNumber));
+      const monthComplete=storedMonth.length>0&&storedMonth.every(row=>row&&["finalised","migrated"].includes(row.status));
+      const hasPayFlowPeriod=storedMonth.some(row=>row?.status==="finalised");
+      const hasPayments=storedMonth.some(row=>row&&(runsByPeriodId.get(row.id)||[]).some(run=>run.status==="finalised"&&hasEmployeePaymentActivity(run)));
+      if(monthComplete&&hasPayFlowPeriod&&!hasPayments&&!acceptedNoPaymentTaxMonths.has(taxMonth)){
+        const taskPeriod=scheduledMonth.at(-1)!.periodNumber;
+        rtiTasks.push({type:"EPS_NO_PAYMENT",periodNumber:taskPeriod,taxMonth,reason:"no-employee-payments"});
+      }
+    }
+    let cumulativeRecovery=0;
+    const cumulativeRecoveryByType:Record<string,number>={};
+    let recoveryTask:RtiWorkflowTask|undefined;
+    for(const taxMonth of Array.from({length:12},(_,index)=>index+1)){
+      const scheduledMonth=workflowSchedule.filter(item=>item.taxMonth===taxMonth);
+      const storedMonth=scheduledMonth.map(item=>periodByNumber.get(item.periodNumber));
+      const monthComplete=storedMonth.length>0&&storedMonth.every(row=>row&&["finalised","migrated"].includes(row.status));
+      const hasPayFlowPeriod=storedMonth.some(row=>row?.status==="finalised");
+      if(monthComplete){
+        for(const event of workflowLeaveEvents){
+          const recovery=statutoryPayAllocation(event,taxMonth,taxYear).recovery;
+          if(!recovery)continue;
+          const key=statutoryPayKey(event.subtype||event.type);
+          cumulativeRecoveryByType[key]=roundMoney((cumulativeRecoveryByType[key]||0)+recovery);
+          cumulativeRecovery=roundMoney(cumulativeRecovery+recovery);
+        }
+      }
+      if(!monthComplete||!hasPayFlowPeriod||cumulativeRecovery<=0)continue;
+      const covered=acceptedEpsPayloads.some(payload=>Number(payload.periodNumber)>=taxMonth&&Number(payload.recoveries?.statutoryPayRecovered||0)+0.005>=cumulativeRecovery);
+      if(!covered)recoveryTask={
+        type:"EPS_RECOVERY",periodNumber:scheduledMonth.at(-1)!.periodNumber,taxMonth,
+        reason:"statutory-pay-recovery",amount:cumulativeRecovery,statutoryPayByType:{...cumulativeRecoveryByType},
+      };
+    }
+    if(recoveryTask)rtiTasks.push(recoveryTask);
+  }
+  rtiTasks.sort((left,right)=>left.periodNumber-right.periodNumber||({FPS:0,EPS_NO_PAYMENT:1,EPS_RECOVERY:1}[left.type]-{FPS:0,EPS_NO_PAYMENT:1,EPS_RECOVERY:1}[right.type]));
+  const rtiReadyPeriods=[...new Set(rtiTasks.map(task=>task.periodNumber))];
   const pensionReadyPeriods=finalisedPeriods.filter(row=>pensionContributionPeriodIds.has(row.id)&&!preparedPensionPeriodIds.has(row.id)).map(row=>row.periodNumber);
   return NextResponse.json({
     periods,runs:visibleRuns,items,openingBalances:access.membership.canViewConfidential?openingBalances:openingBalances.filter(row=>!row.confidential),
     workflowStatus:{
-      rti:{count:rtiReadyPeriods.length,periods:rtiReadyPeriods},
+      rti:{count:rtiReadyPeriods.length,returnCount:rtiTasks.length,periods:rtiReadyPeriods,tasks:rtiTasks},
       pensions:{count:pensionReadyPeriods.length,periods:pensionReadyPeriods},
     },
   });
@@ -154,8 +226,9 @@ export async function POST(request: Request) {
     return NextResponse.json({error:`The pay date must fall within PAYE tax month ${scheduledPeriod.taxMonth}.`},{status:422});
   if(frequency!=="monthly"&&requestedPayDate!==scheduledPeriod.payDate)
     return NextResponse.json({error:`Period ${periodNumber} must use the scheduled pay date ${scheduledPeriod.payDate}.`},{status:422});
-  if(!Array.isArray(input.employees)||!input.employees.length||input.employees.length>500)
-    return NextResponse.json({error:"Payroll must contain between 1 and 500 employees."},{status:400});
+  const confirmedEmptyPayroll=input.action==="finalise"&&input.confirmNoEmployeePayments===true;
+  if(!Array.isArray(input.employees)||input.employees.length>500||(!input.employees.length&&!confirmedEmptyPayroll))
+    return NextResponse.json({error:"Payroll must contain between 1 and 500 employees, unless an empty payroll is explicitly confirmed during finalisation."},{status:400});
   const records = input.employees as EmployeePayInput[];
   const identities=new Set<string>();
   for(let index=0;index<records.length;index++){
@@ -304,9 +377,19 @@ export async function POST(request: Request) {
       return {...line,quantity,rate,amount,name:String(line.name||"Pay item").slice(0,100),recurringItemId:line.recurringItemId?Number(line.recurringItemId):null};
     });
     const statutoryEvents=await db.select().from(leaveEvents).where(and(eq(leaveEvents.employeeId,employee.id),eq(leaveEvents.status,"calculated")));
-    const automaticStatutoryPay=postLeavingPayment?0:Math.round(statutoryEvents.reduce((sum,event)=>sum+statutoryPayAllocationForRange(event,scheduledPeriod.periodStart,scheduledPeriod.periodEnd).pay,0)*100)/100;
-    const nonAttachableStatutoryPay=Math.round(statutoryEvents.filter(event=>event.subtype!=="sick").reduce((sum,event)=>sum+statutoryPayAllocationForRange(event,scheduledPeriod.periodStart,scheduledPeriod.periodEnd).pay,0)*100)/100;
-    const statutoryPay=Math.round((automaticStatutoryPay+Math.max(0,Number(record.statutoryPay||0)))*100)/100;
+    const statutoryAllocations=postLeavingPayment?[]:statutoryEvents.map(event=>({event,...statutoryPayAllocationForRange(event,scheduledPeriod.periodStart,scheduledPeriod.periodEnd)}));
+    const statutoryPayByType:Record<string,number>={},statutoryRecoveryByType:Record<string,number>={};
+    for(const allocation of statutoryAllocations){
+      const key=statutoryPayKey(allocation.event.subtype||allocation.event.type);
+      if(allocation.pay)statutoryPayByType[key]=roundMoney((statutoryPayByType[key]||0)+allocation.pay);
+      if(allocation.recovery)statutoryRecoveryByType[key]=roundMoney((statutoryRecoveryByType[key]||0)+allocation.recovery);
+    }
+    const automaticStatutoryPay=roundMoney(Object.values(statutoryPayByType).reduce((sum,value)=>sum+value,0));
+    const manualStatutoryPay=Math.max(0,Number(record.statutoryPay||0));
+    if(manualStatutoryPay)statutoryPayByType.unclassified=roundMoney((statutoryPayByType.unclassified||0)+manualStatutoryPay);
+    const statutoryRecovery=roundMoney(Object.values(statutoryRecoveryByType).reduce((sum,value)=>sum+value,0));
+    const nonAttachableStatutoryPay=roundMoney(statutoryAllocations.filter(allocation=>allocation.event.subtype!=="sick").reduce((sum,allocation)=>sum+allocation.pay,0));
+    const statutoryPay=roundMoney(automaticStatutoryPay+manualStatutoryPay);
     const [holidaySetting]=await db.select().from(holidayFundSettings).where(and(
       eq(holidayFundSettings.employerId,employerId),eq(holidayFundSettings.employeeId,employee.id),eq(holidayFundSettings.status,"active"),
     )).limit(1);
@@ -644,6 +727,8 @@ export async function POST(request: Request) {
         taxWeekNumber:scheduledPeriod.taxWeekNumber,taxMonth:scheduledPeriod.taxMonth,
         payrolledBenefits:automaticPayrolledBenefits,
         class1Benefits:automaticClass1Benefits,
+        statutoryPayByType,
+        statutoryRecoveryByType,
       }),
       pensionSnapshot:pensionSchemeId&&activePensionScheme?JSON.stringify({
         schemaVersion:"payflow-pension-evidence-2",
@@ -719,8 +804,20 @@ export async function POST(request: Request) {
         }).where(eq(employeePayRounding.id,roundingSetting.id));
       }
     }
-    calculated.push({ employee, result, payrolledBenefits:automaticPayrolledBenefits, adjustments:adjustmentRows, attachments:orderCalculations, employeeLoans:loanCalculations, cashRounding:roundingCalculation, holidayFund, payRunId: saved.id });
+    calculated.push({ employee, result, payrolledBenefits:automaticPayrolledBenefits, adjustments:adjustmentRows, attachments:orderCalculations, employeeLoans:loanCalculations, cashRounding:roundingCalculation, holidayFund, statutoryPayByType,statutoryRecoveryByType,statutoryRecovery,payRunId: saved.id });
   }
+  const noEmployeePayments=!calculated.some(item=>item.result&&hasEmployeePaymentActivity({
+    grossPay:item.result.grossPay,taxablePay:item.result.taxablePay,payeTax:item.result.incomeTax,
+    employeeNic:item.result.employeeNic,employerNic:item.result.employerNic,
+    studentLoan:item.result.studentLoan,postgraduateLoan:item.result.postgraduateLoan,
+    employeePension:item.result.employeePension,employerPension:item.result.employerPension,
+    otherDeductions:item.attachments.reduce((sum,entry)=>sum+entry.totalFromPay,0)+item.employeeLoans.reduce((sum,entry)=>sum+entry.amount,0),
+    netPay:item.result.netPay,
+  }));
+  const statutoryRecovery=roundMoney(calculated.reduce((sum,item)=>sum+Number(item.statutoryRecovery||0),0));
+  const rtiTypes=noEmployeePayments
+    ?[frequency==="monthly"?"EPS_NO_PAYMENT":"RTI_MONTH_REVIEW"]
+    :["FPS",...(statutoryRecovery>0?["EPS_RECOVERY"]:[])];
   if (input.action === "finalise") {
     await db.update(payPeriods).set({ status: "finalised", finalisedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }).where(eq(payPeriods.id, period.id));
     if (periodNumber < schedule.length) {
@@ -735,7 +832,7 @@ export async function POST(request: Request) {
       }
     }
     const pensionSubmissionReady=calculated.some(item=>item.result.employeePension!==0||item.result.employerPension!==0);
-    await db.insert(auditLog).values({ employerId, actor: access.user.displayName, action: "finalised", entityType: "pay-period", entityId: String(period.id), after: JSON.stringify({ periodNumber, employees: calculated.length,postLeavingPayments:records.filter(record=>record.postLeavingPayment===true).map(record=>record.payrollId),workflowTasks:{rtiReady:true,pensionReady:pensionSubmissionReady} }) });
+    await db.insert(auditLog).values({ employerId, actor: access.user.displayName, action: "finalised", entityType: "pay-period", entityId: String(period.id), after: JSON.stringify({ periodNumber, employees: calculated.length,noEmployeePayments,noPaymentConfirmed:input.confirmNoEmployeePayments===true,postLeavingPayments:records.filter(record=>record.postLeavingPayment===true).map(record=>record.payrollId),workflowTasks:{rtiReady:true,rtiType:rtiTypes[0],rtiTypes,taxMonth:scheduledPeriod.taxMonth,statutoryRecovery,pensionReady:pensionSubmissionReady} }) });
   }else{
     await db.insert(auditLog).values({
       employerId,actor:access.user.displayName,
@@ -748,6 +845,11 @@ export async function POST(request: Request) {
     periodNumber,status:input.action === "finalise" ? "finalised" : "draft",calculated,
     workflowTasks:input.action==="finalise"?{
       rtiReady:true,
+      rtiType:rtiTypes[0],
+      rtiTypes,
+      taxMonth:scheduledPeriod.taxMonth,
+      noEmployeePayments,
+      statutoryRecovery,
       pensionReady:calculated.some(item=>item.result.employeePension!==0||item.result.employerPension!==0),
     }:undefined,
   });

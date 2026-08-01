@@ -195,6 +195,27 @@ async function verifySecondPeriod(employerId,employees,result,leaveClaims) {
   for(const lastName of ["Sick","Maternity","Paternity","Neonatal"]){
     check(storedByLastName.get(lastName)?.statutoryPay>0,`${lastName} statutory pay flowed into the finalised pay run`);
   }
+  const periodTwoTasks=stored.workflowStatus.rti.tasks.filter(task=>task.periodNumber===2);
+  check(periodTwoTasks.some(task=>task.type==="FPS"),"Statutory employee payments created an FPS obligation for period two");
+  const recoveryTask=periodTwoTasks.find(task=>task.type==="EPS_RECOVERY");
+  check(recoveryTask?.amount>0&&recoveryTask.statutoryPayByType.maternity>0&&recoveryTask.statutoryPayByType.paternity>0&&recoveryTask.statutoryPayByType.neonatal>0,
+    "Recoverable family pay created one cumulative EPS recovery obligation with a by-type explanation");
+  check(!("sick" in recoveryTask.statutoryPayByType),"Statutory Sick Pay did not create an EPS recovery claim");
+  const maternitySnapshot=JSON.parse(storedByLastName.get("Maternity").rtiSnapshot);
+  const sickSnapshot=JSON.parse(storedByLastName.get("Sick").rtiSnapshot);
+  check(maternitySnapshot.statutoryPayByType.maternity>0&&sickSnapshot.statutoryPayByType.sick>0,
+    "Finalised payslip evidence retained immutable statutory-pay types for RTI");
+
+  const fps=await request("/api/submissions",{method:"POST",expected:[201],json:{employerId,type:"FPS",taxYear,periodNumber:2}});
+  const maternityFps=fps.body.payload.employees.find(row=>row.payrollId===employeeByLastName.get("Maternity").payrollId);
+  const sickFps=fps.body.payload.employees.find(row=>row.payrollId===employeeByLastName.get("Sick").payrollId);
+  check(maternityFps.ytd.statutoryMaternityPay>0&&maternityFps.ytd.statutoryPayByType.maternity>0,
+    "FPS payload exposed HMRC-specific SMP year-to-date values");
+  check(sickFps.ytd.statutorySickPay>0&&sickFps.ytd.statutoryPayByType.sick>0,
+    "FPS audit payload retained SSP year-to-date values without creating an EPS recovery");
+  const eps=await request("/api/submissions",{method:"POST",expected:[201],json:{employerId,type:"EPS",taxYear,periodNumber:2}});
+  check(eps.body.payload.recoveries.statutoryPayRecovered>0&&eps.body.payload.recoveries.statutoryPayRecoveredByType.maternity>0,
+    "EPS payload automatically claimed cumulative statutory-pay recovery from the calendar");
   const deduction=byLastName.get("Deduction"),deductionRun=storedByLastName.get("Deduction");
   check(deduction.attachments.length===1&&deduction.attachments[0].totalFromPay>0&&deductionRun.otherDeductions>0,"DEA statutory band deduction reduced second-period net pay");
   const classOne=storedByLastName.get("Class One");
@@ -370,6 +391,10 @@ const leaveClaims=await createLeaveEvidence(employerId,employees);
 await createSecondPeriodBenefit(employerId,employees);
 const periodTwo=await finalisePeriod(employerId,employees,2);
 await verifySecondPeriod(employerId,employees,periodTwo,leaveClaims);
+if(process.env.PAYFLOW_STOP_AFTER_RTI==="1"){
+  console.log(JSON.stringify({baseUrl,runId,employerId,summary:{checks:checks.length,employees:employees.length,periods:2,scope:"calendar-to-payslip-to-rti"},checks},null,2));
+  process.exit(0);
+}
 await verifyReportsAndYearEnd(employerId,employees);
 await verifyPortalAndIsolation(employerId,employees);
 await verifyBackup(employerId);

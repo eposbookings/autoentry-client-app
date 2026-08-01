@@ -171,6 +171,34 @@ fi
 echo "Restarting lightweight web containers"
 docker compose up -d --force-recreate frontend nginx
 
+echo "Payroll worker health check"
+for attempt in $(seq 1 60); do
+  PAYROLL_CONTAINER="$(docker compose ps -q payroll-worker)"
+  if [ -n "$PAYROLL_CONTAINER" ]; then
+    PAYROLL_RUNNING="$(docker inspect -f '{{.State.Running}}' "$PAYROLL_CONTAINER" 2>/dev/null || echo false)"
+    PAYROLL_HEALTH="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$PAYROLL_CONTAINER" 2>/dev/null || echo missing)"
+    if [ "$PAYROLL_RUNNING" = "true" ] && [ "$PAYROLL_HEALTH" = "healthy" ]; then
+      echo "Payroll worker is healthy"
+      break
+    fi
+  else
+    PAYROLL_RUNNING=false
+    PAYROLL_HEALTH=missing
+  fi
+  if [ "$PAYROLL_RUNNING" != "true" ]; then
+    echo "Payroll worker stopped before becoming healthy. Recent logs:"
+    docker compose logs --tail=160 payroll-worker
+    exit 1
+  fi
+  if [ "$attempt" -eq 60 ]; then
+    echo "Payroll worker did not become healthy within five minutes. Recent logs:"
+    docker compose logs --tail=200 payroll-worker
+    exit 1
+  fi
+  echo "Payroll worker not ready yet ($attempt/60; health=$PAYROLL_HEALTH)..."
+  sleep 5
+done
+
 echo "Health check"
 for attempt in $(seq 1 180); do
   if curl -fsS http://localhost:8000/api/health; then

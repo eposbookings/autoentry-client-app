@@ -30,6 +30,19 @@ const openingNicCategories=(value:string)=>{
     return Array.isArray(parsed)?parsed.filter(line=>line&&typeof line==="object"&&!Array.isArray(line)):[];
   }catch{return [];}
 };
+const emptyStatutoryPayByType=()=>({maternity:0,paternity:0,adoption:0,"shared-parental":0,bereavement:0,neonatal:0,sick:0,unclassified:0});
+const addStatutoryPayByType=(target:ReturnType<typeof emptyStatutoryPayByType>,value:unknown)=>{
+  if(!value||typeof value!=="object"||Array.isArray(value))return 0;
+  let total=0;
+  for(const [rawKey,rawAmount] of Object.entries(value as Record<string,unknown>)){
+    const key=rawKey.toLowerCase().replace(/\s+leave$/," ").trim().replaceAll(" ","-") as keyof typeof target;
+    const amount=round(Number(rawAmount||0));
+    if(!Number.isFinite(amount)||amount<0)continue;
+    if(key in target)target[key]=round(target[key]+amount);else target.unclassified=round(target.unclassified+amount);
+    total=round(total+amount);
+  }
+  return total;
+};
 
 async function sourceFingerprint(db:ReturnType<typeof getDb>,employerId:number,type:string,taxYear:string,payPeriodId:number|null,payrollId=""){
   const [employer]=await db.select().from(employers).where(eq(employers.id,employerId)).limit(1);
@@ -157,6 +170,8 @@ export async function POST(request: Request) {
         const own=yearRuns.filter(run=>run.employeeId===row.employeeId);
         const migrationOpening=openingBalances.find(item=>item.employeeId===row.employeeId);
         const categories=new Map<string,{niCategory:string;nicablePay:number;earningsAtLel:number;earningsLelToPt:number;earningsPtToUel:number;earningsAboveUel:number;employeeNic:number;employerNic:number}>();
+        const statutoryPayByType=emptyStatutoryPayByType();
+        statutoryPayByType.unclassified=round(Number(migrationOpening?.statutoryPay||0));
         if(migrationOpening){
           const importedCategories=openingNicCategories(migrationOpening.nicCategoryBreakdown);
           const categoryRows=importedCategories.length?importedCategories:[{
@@ -175,6 +190,9 @@ export async function POST(request: Request) {
         }
         for(const run of own){
           let snapshot:any={};try{snapshot=JSON.parse(run.rtiSnapshot||"{}");}catch{}
+          const classifiedStatutoryPay=addStatutoryPayByType(statutoryPayByType,snapshot.statutoryPayByType);
+          const unclassifiedDifference=round(Number(run.statutoryPay||0)-classifiedStatutoryPay);
+          if(unclassifiedDifference>0.005)statutoryPayByType.unclassified=round(statutoryPayByType.unclassified+unclassifiedDifference);
           const category=String(snapshot.niCategory||row.niCategory||"A"),periodWeeks=snapshot.reportedPayFrequency==="fortnightly"?2:snapshot.reportedPayFrequency==="four-weekly"?4:1,bands=nicEarningsBands(run.nicablePay,snapshot.earningsPeriod==="weekly"?"weekly":"monthly",periodWeeks);
           const current=categories.get(category)||{niCategory:category,nicablePay:0,earningsAtLel:0,earningsLelToPt:0,earningsPtToUel:0,earningsAboveUel:0,employeeNic:0,employerNic:0};
           current.nicablePay=round(current.nicablePay+run.nicablePay);
@@ -186,6 +204,7 @@ export async function POST(request: Request) {
           current.employerNic=round(current.employerNic+run.employerNic);
           categories.set(category,current);
         }
+        if(statutoryPayByType.unclassified>0.005)errors.push(`Employee ${row.payrollId} has ${round(statutoryPayByType.unclassified).toFixed(2)} of statutory pay without a frozen payment type. Reopen and re-finalise the affected PayFlow period from the leave calendar, or add typed migration opening balances, before preparing the FPS.`);
         const firstPaidPeriod=Math.min(...own.map(run=>yearPeriods.find(item=>item.id===run.payPeriodId)?.periodNumber||99));
         const reportStarterDeclaration=!migrationOpening&&period!.periodNumber===firstPaidPeriod&&row.starterEvidence!=="P45 provided";
         const openingPensionMethod=own.map(run=>run.pensionSchemeId?parseFrozenPensionSnapshot(run.pensionSnapshot).taxRelief:null).find(Boolean);
@@ -198,6 +217,14 @@ export async function POST(request: Request) {
           studentLoan:round(Number(migrationOpening?.studentLoan||0)+own.reduce((sum,run)=>sum+run.studentLoan,0)),
           postgraduateLoan:round(Number(migrationOpening?.postgraduateLoan||0)+own.reduce((sum,run)=>sum+run.postgraduateLoan,0)),
           statutoryPay:round(Number(migrationOpening?.statutoryPay||0)+own.reduce((sum,run)=>sum+run.statutoryPay,0)),
+          statutoryPayByType,
+          statutoryMaternityPay:statutoryPayByType.maternity,
+          statutoryPaternityPay:statutoryPayByType.paternity,
+          statutoryAdoptionPay:statutoryPayByType.adoption,
+          statutorySharedParentalPay:statutoryPayByType["shared-parental"],
+          statutoryParentalBereavementPay:statutoryPayByType.bereavement,
+          statutoryNeonatalCarePay:statutoryPayByType.neonatal,
+          statutorySickPay:statutoryPayByType.sick,
           pensionContributionNetPay:round((openingPensionMethod==="net-pay"?Number(migrationOpening?.employeePension||0):0)+own.reduce((sum,run)=>{const evidence:Record<string,unknown>=run.pensionSchemeId?parseFrozenPensionSnapshot(run.pensionSnapshot):{};return sum+(evidence.taxRelief==="net-pay"?Number(evidence.employeeDeduction??run.employeePension):0);},0)),
           pensionContributionReliefAtSource:round((openingPensionMethod==="relief-at-source"?Number(migrationOpening?.employeePension||0):0)+own.reduce((sum,run)=>{const evidence:Record<string,unknown>=run.pensionSchemeId?parseFrozenPensionSnapshot(run.pensionSnapshot):{};return sum+(evidence.taxRelief==="relief-at-source"?Number(evidence.employeeDeduction??run.employeePension):0);},0)),
           previousEmploymentPay:row.p45PreviousPay,previousEmploymentTax:row.p45PreviousTax,niByCategory:[...categories.values()],
