@@ -2869,6 +2869,25 @@ test("RTI external HMRC results establish guarded accepted and rejected evidence
     assert.match(liveLifecycle,new RegExp(evidence));
 });
 
+test("RTI and report preview actions open formatted dialogs instead of notification payloads",async()=>{
+  const [page,mirror,installed,styles,mirrorStyles,installedStyles]=await Promise.all([
+    readFile("app/page.tsx","utf8"),readFile("migration/epos-compatible/frontend/src/modules/payroll/PayrollWorkspace.tsx","utf8"),readFile("../Client App/frontend/src/modules/payroll/PayrollWorkspace.tsx","utf8"),readFile("app/globals.css","utf8"),readFile("migration/epos-compatible/frontend/src/modules/payroll/payroll.css","utf8"),readFile("../Client App/frontend/src/modules/payroll/payroll.css","utf8"),
+  ]);
+  for(const workspace of [page,mirror,installed]){
+    assert.match(workspace,/onClick=\{\(\)=>draft\?setPreviewOpen\(true\):toast\("Generate the draft first\."\)\}>Preview totals<\/button>/);
+    assert.doesNotMatch(workspace,/toast\(draft\?JSON\.stringify/);
+    assert.match(workspace,/function ReportPreviewModal/);
+    assert.match(workspace,/RECONCILED REPORT PREVIEW/);
+    assert.match(workspace,/const \[previewModalOpen,setPreviewModalOpen\]=useState\(false\)/);
+    assert.match(workspace,/setPreview\(\{columns:body\.columns,rows:body\.rows\}\); setPreviewModalOpen\(true\)/);
+    assert.match(workspace,/previewModalOpen&&preview&&<ReportPreviewModal/);
+    assert.doesNotMatch(workspace,/toast\(`\$\{report\} reconciled from finalised payroll\.`\)/);
+  }
+  assert.match(styles,/\.report-preview-modal\{/);
+  assert.match(mirrorStyles,/\.payroll-module \.report-preview-modal\{/);
+  assert.match(installedStyles,/\.payroll-module \.report-preview-modal\{/);
+});
+
 test("HMRC liability deductions never render a misleading negative zero",async()=>{
   const page=await readFile("app/page.tsx","utf8");
   assert.match(page,/const deductionMoney = \(n: number\) => n > 0 \? `−\$\{money\(n\)\}` : money\(0\)/);
