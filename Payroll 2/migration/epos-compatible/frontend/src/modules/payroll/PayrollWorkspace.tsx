@@ -56,8 +56,9 @@ type PayrollEntryDraft=Partial<Pick<Employee,"pay"|"hours"|"rate"|"payItems"|"po
 type PersistedPeriod={id:number;periodNumber:number;status:string;payDate?:string|null};
 type PersistedRun={id:number;payPeriodId:number;employeeId:number;grossPay:number;taxablePay:number;nicablePay:number;payeTax:number;employeeNic:number;employerNic:number;employeePension:number;employerPension:number;statutoryPay:number;netPay:number;payrollNote?:string|null;rtiSnapshot?:string|null;pensionSnapshot?:string|null;status:string};
 type PersistedItem={id:number;payRunId:number;type:PayLine["type"];name:string;quantity:number;rate:number;amount:number;taxable:boolean;nicable:boolean;pensionable:boolean;recurringItemId?:number|null};
-type PayrollWorkflowStatus={rti:{count:number;periods:number[]};pensions:{count:number;periods:number[]}};
-const emptyPayrollWorkflowStatus:PayrollWorkflowStatus={rti:{count:0,periods:[]},pensions:{count:0,periods:[]}};
+type RtiWorkflowTask={type:"FPS"|"EPS_NO_PAYMENT";periodNumber:number;taxMonth:number;reason:string};
+type PayrollWorkflowStatus={rti:{count:number;periods:number[];tasks:RtiWorkflowTask[]};pensions:{count:number;periods:number[]}};
+const emptyPayrollWorkflowStatus:PayrollWorkflowStatus={rti:{count:0,periods:[],tasks:[]},pensions:{count:0,periods:[]}};
 type PayrollOpeningBalance={id:number;employeeId:number;taxYear:string;firstPayFlowPeriod:number;grossPay:number;taxablePay:number;payeTax:number;nicablePay:number;employeeNic:number;employerNic:number;studentLoan:number;postgraduateLoan:number;statutoryPay:number;employeePension:number;employerPension:number;netPay:number;nicCategoryBreakdown?:string;source?:string;notes?:string|null;payloadChecksum?:string};
 type CalculationHistory={ytdTaxablePay:number;ytdTaxPaid:number;ytdNicablePay:number;ytdEmployeeNic:number;ytdEmployerNic:number};
 
@@ -668,11 +669,24 @@ export function PayrollApp({admin,memberships,activeEmployerId,setActiveEmployer
   }
 
   async function processPayroll(action:"draft"|"finalise",sourceEmployees=employees,operationSource:"manual"|"pay-details-csv"="manual") {
-    if(!sourceEmployees.length)return toast("Add at least one employee before finalising payroll.");
+    if(action==="draft"&&!sourceEmployees.length)return toast("Add at least one employee before saving a payroll draft.");
     const firstOpen=nextOpenPeriod(completedPeriods,maximumPeriods);
     if (period !== firstOpen) return toast("Earlier periods must be finalised first.");
     const activeEmployees=sourceEmployees.filter(e=>employeeActiveInRange(e.startDate,e.leavingDate,currentScheduledPeriod.periodStart,currentScheduledPeriod.periodEnd)||(e.postLeavingPayment&&e.leavingDate&&Date.parse(`${e.leavingDate}T00:00:00Z`)<isoDay(currentScheduledPeriod.periodStart)));
-    if(!activeEmployees.length)return toast("No employees are active within this payroll period.");
+    if(action==="draft"&&!activeEmployees.length)return toast("No employees are active within this payroll period.");
+    const hasEnteredEmployeePayments=activeEmployees.some(employee=>{
+      const enteredLines=[...(employee.payItems||[]),...recurringPayItemRecords.filter(item=>item.employeeId===employee.id&&item.startPeriod<=period&&item.endPeriod>=period)];
+      return Math.abs(Number(employee.pay||0))>=0.005||Math.abs(Number(employee.hours||0)*Number(employee.rate||0))>=0.005||
+        enteredLines.some(item=>Math.abs(Number(item.amount??Number(item.quantity??1)*Number(item.rate??0)))>=0.005);
+    });
+    let confirmNoEmployeePayments=false;
+    if(action==="finalise"&&!hasEnteredEmployeePayments){
+      const rtiFollowUp=payFrequency==="monthly"
+        ?"RTI will show an Employer Payment Summary task declaring no payment for this tax month."
+        :"RTI will track this zero-pay period and, once every pay date in the tax month is complete, create an Employer Payment Summary task only if the whole month has no employee payments.";
+      confirmNoEmployeePayments=window.confirm(`No employee payments are entered for period ${period} (tax month ${currentScheduledPeriod.taxMonth}).\n\nIf you continue, the payroll period will be finalised. ${rtiFollowUp} No FPS is required for a period without employee payment activity.\n\nContinue?`);
+      if(!confirmNoEmployeePayments)return false;
+    }
     const records = activeEmployees.map(e => ({
       employeeId:e.id,
       payrollId: e.payrollId||fallbackPayrollId(e,taxYear),
@@ -705,13 +719,18 @@ export function PayrollApp({admin,memberships,activeEmployerId,setActiveEmployer
       ],
     }));
     try {
-      const response = await payrollFetch("/api/pay-runs", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({ action,source:operationSource, employerId, taxYear, periodNumber:period, payDate:currentScheduledPeriod.payDate,employees:records }) });
+      const response = await payrollFetch("/api/pay-runs", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({ action,source:operationSource, employerId, taxYear, periodNumber:period, payDate:currentScheduledPeriod.payDate,confirmNoEmployeePayments,employees:records }) });
       const result=await response.json();
       if (!response.ok) throw new Error(result.error || "Finalisation failed");
       await loadPayrollRecords();
       setPeriodEntryDrafts(current=>Object.fromEntries(Object.entries(current).filter(([key])=>!key.startsWith(`${period}:`))));
       if(action==="finalise"&&period < maximumPeriods) setPeriod(period + 1);
-      const downstream=action==="finalise"?` RTI is ready for review and submission${result.workflowTasks?.pensionReady?", and pension contributions are ready for provider submission":""}.`:"";
+      const rtiDownstream=result.workflowTasks?.rtiType==="EPS_NO_PAYMENT"
+        ?` RTI now has an EPS no-payment task for tax month ${result.workflowTasks.taxMonth}; review and submit it before that month can close.`
+        :result.workflowTasks?.rtiType==="RTI_MONTH_REVIEW"
+          ?` RTI has recorded this zero-pay period and will decide the tax-month EPS requirement when all pay dates in that month are complete.`
+        :" RTI now has an FPS task ready for review and submission.";
+      const downstream=action==="finalise"?`${rtiDownstream}${result.workflowTasks?.pensionReady?" Pension contributions are also ready for provider submission.":""}`:"";
       toast(action==="finalise"
         ?period<maximumPeriods?`Period ${period} finalised and saved.${downstream} Period ${period+1} is now open.`:`Period ${maximumPeriods} finalised and saved.${downstream} The payroll year is complete; finish the year-end checks before creating the next tax year.`
         :`Period ${period} draft saved.`);
@@ -873,7 +892,7 @@ export function PayrollApp({admin,memberships,activeEmployerId,setActiveEmployer
       {active === "Payroll" && <>
         <section className="toolbar">
           <button onClick={()=>processPayroll("draft")} disabled={!canPayrollWrite||!payrollRulesAvailable||periodLocked||!employees.length}><Icon>↧</Icon>Save draft</button>
-          <button className="primary-tool" onClick={()=>processPayroll("finalise")} disabled={!canPayrollWrite||!payrollRulesAvailable||periodLocked||!employees.length}><Icon>✓</Icon>{periodLocked?"Payslips finalised":"Finalise payslips"}</button>
+          <button className="primary-tool" onClick={()=>processPayroll("finalise")} disabled={!canPayrollWrite||!payrollRulesAvailable||periodLocked}><Icon>✓</Icon>{periodLocked?"Payslips finalised":"Finalise payslips"}</button>
           <button onClick={reopenPayroll} disabled={!canPayrollWrite||!periodLocked||period!==Math.max(0,...finalised)} title="Only payroll users can reopen the latest finalised period"><Icon>↺</Icon>Reopen payslips</button>
           <button disabled={!periodLocked} onClick={() => downloadPayrollReport("payslips","html",`payslips-${taxYear.replace("/","-")}-period-${period}.html`,period)}><Icon>↗</Icon>Create payslips</button>
           <button disabled={!canPayrollWrite||!periodLocked} onClick={()=>setModal("email-payslips")} title="Preview a tokenised message and record a validated batch; outbound transmission requires an approved email provider"><Icon>✉</Icon>Email payslips</button>
@@ -962,7 +981,7 @@ export function PayrollApp({admin,memberships,activeEmployerId,setActiveEmployer
         </section>:<section className="empty-payroll"><div><span className="eyebrow">GET STARTED</span><h1>Add your first employee</h1><p>The payroll year is ready. Create an employee record to enter pay, calculate deductions and finalise Period {period}.</p><button className="primary" disabled={!canEmployeeWrite} onClick={addEmployee}>＋ Add employee</button></div></section>}
       </>}
 
-	      {active !== "Payroll" && <ModulePage active={active} employerName={employerName} employees={employees} finalised={finalised} completed={completedPeriods} canEmployeeWrite={canEmployeeWrite} onOpenEmployee={(id) => {setSelectedId(id);setModal("employee");}} onAddEmployee={addEmployee} onSwitchEmployer={setActiveEmployerId} onDataChanged={loadPayrollRecords} toast={toast} />}
+	      {active !== "Payroll" && <ModulePage active={active} employerName={employerName} employees={employees} finalised={finalised} completed={completedPeriods} workflowStatus={workflowStatus} canEmployeeWrite={canEmployeeWrite} onOpenEmployee={(id) => {setSelectedId(id);setModal("employee");}} onAddEmployee={addEmployee} onSwitchEmployer={setActiveEmployerId} onDataChanged={loadPayrollRecords} toast={toast} />}
       {notice && <div className={`toast ${noticeError?"error":""}`}>{noticeError?"!":"✓"} {notice}</div>}
       {modal === "employee" && employee&&<EmployeeModal employee={employee} tab={formTab} setTab={setFormTab} update={updateEmployee} close={closeEmployeeEditor} save={saveEmployeeRecord} remove={deleteEmployeeRecord} invite={createPortalInvite} canInvite={employeeDefaults.some(item=>item.id===employee.id)} />}
       {modal === "calendar" && employee&&<CalendarModal employee={employee} period={period} close={() => setModal(null)} saved={(message,event,keepOpen) => { if(event)updateEmployee({statutoryPayPreview:statutoryPayAllocationForRange(event,currentScheduledPeriod.periodStart,currentScheduledPeriod.periodEnd).pay});loadLeaveRecords().catch(()=>undefined);if(!keepOpen)setModal(null);toast(message); }} />}
@@ -1036,7 +1055,7 @@ function SummaryLine({ label, value, strong, highlight,format="money" }: { label
   return <div className={`summary-line ${strong ? "strong" : ""} ${highlight ? "highlight" : ""}`}><span>{label}</span><b>{format==="number"?value.toLocaleString("en-GB"):money(value)}</b></div>;
 }
 
-function ModulePage({ active, employerName, employees, finalised,completed,canEmployeeWrite,onOpenEmployee, onAddEmployee,onSwitchEmployer,onDataChanged, toast }: { active: string; employerName:string;employees: Employee[];finalised:number[];completed:number[];canEmployeeWrite:boolean; onOpenEmployee: (id:number) => void; onAddEmployee: () => void;onSwitchEmployer:(id:number)=>void;onDataChanged:()=>Promise<void>; toast: (s: string) => void }) {
+function ModulePage({ active, employerName, employees, finalised,completed,workflowStatus,canEmployeeWrite,onOpenEmployee, onAddEmployee,onSwitchEmployer,onDataChanged, toast }: { active: string; employerName:string;employees: Employee[];finalised:number[];completed:number[];workflowStatus:PayrollWorkflowStatus;canEmployeeWrite:boolean; onOpenEmployee: (id:number) => void; onAddEmployee: () => void;onSwitchEmployer:(id:number)=>void;onDataChanged:()=>Promise<void>; toast: (s: string) => void }) {
   const taxYear=useTaxYear(),payFrequency=usePayFrequency(),firstPayDate=useFirstPayDate();
   const schedule=useMemo(()=>scheduledPayPeriods(taxYear,payFrequency,firstPayDate||undefined),[taxYear,payFrequency,firstPayDate]),frequencyRule=payrollFrequencyRule(payFrequency);
   const [employeeSort,setEmployeeSort]=useState("name-asc"),[historyEmployee,setHistoryEmployee]=useState<Employee|null>(null);
@@ -1064,7 +1083,7 @@ function ModulePage({ active, employerName, employees, finalised,completed,canEm
   };
   const c = config[active];
   return <section className="module" data-module={active.toLowerCase()}>
-    <div className="module-head"><div><span className="eyebrow">{employerName.toUpperCase()} · {taxYear}</span><h1>{c.title}</h1><p>{c.subtitle}</p></div>{active==="Employees"&&<button className="primary" disabled={!canEmployeeWrite} onClick={onAddEmployee}>＋ Add employee</button>}</div>
+    {active!=="RTI"&&<div className="module-head"><div><span className="eyebrow">{employerName.toUpperCase()} · {taxYear}</span><h1>{c.title}</h1><p>{c.subtitle}</p></div>{active==="Employees"&&<button className="primary" disabled={!canEmployeeWrite} onClick={onAddEmployee}>＋ Add employee</button>}</div>}
     <div className="module-content">
     {active === "Employees" ? <><EmployerCalendarWorkspace canWrite={canEmployeeWrite} toast={toast}/><div className="data-card employee-register"><div className="register-toolbar"><div><b>Employee register</b><small>{sortedEmployees.length} visible record{sortedEmployees.length===1?"":"s"}</small></div><label><span>Order employees</span><select aria-label="Order employees" value={employeeSort} onChange={event=>setEmployeeSort(event.target.value)}><option value="name-asc">Name · A–Z</option><option value="name-desc">Name · Z–A</option><option value="department-asc">Department</option><option value="payroll-asc">Payroll ID</option><option value="status-asc">Employment status</option><option value="start-desc">Newest starters</option><option value="start-asc">Oldest starters</option></select></label></div><div className="report-table-scroll"><table><thead><tr><th>Employee</th><th>Payroll ID</th><th>Department</th><th>Tax code</th><th>Normal {frequencyRule.label.toLowerCase()} pay</th><th>Status</th><th>Actions</th></tr></thead><tbody>{sortedEmployees.map(e => <tr key={e.id}><td><b>{e.name}</b><small>{e.email}</small></td><td>{e.payrollId||"—"}<small>{e.startDate?`Started ${formatUkDate(e.startDate)}`:"Start date missing"}</small></td><td>{e.department||"Unassigned"}</td><td>{e.taxCode}</td><td>{money(periodicBasePay(e,payFrequency))}</td><td><span className={`status ${e.status === "Review" ? "amber" : ""}`}>{e.status}</span></td><td><div className="inline-actions"><button onClick={()=>setHistoryEmployee(e)}>History</button><button disabled={!canEmployeeWrite} onClick={()=>onOpenEmployee(e.id)}>{canEmployeeWrite?"Edit":"View only"}</button></div></td></tr>)}</tbody></table></div></div></> : active==="Analysis"?<AnalysisWorkspace toast={toast}/>: active === "Employer" ? <EmployerWorkspace toast={toast}/> : active === "CIS" ? <CisWorkspace toast={toast} /> : active === "RTI" ? <RtiWorkspace toast={toast} employees={employees} finalised={finalised} migrated={completed.filter(periodNumber=>!finalised.includes(periodNumber))} onDataChanged={onDataChanged}/> : active === "HMRC" ? <HmrcWorkspace toast={toast} onDataChanged={onDataChanged} /> : active === "Pensions" ? <PensionsWorkspace toast={toast} employees={employees} finalised={finalised} onDataChanged={onDataChanged}/> : active === "Reports" ? <ReportsWorkspace toast={toast} employerName={employerName} employees={employees} finalised={finalised}/> : active === "Clients" ? <><AccessWorkspace toast={toast} onSwitchEmployer={onSwitchEmployer}/><AgentWorkspace toast={toast}/></> : active === "Tools" ? <><UtilitiesWorkspace/><MidYearStartWorkspace toast={toast} employees={employees} completed={completed} finalised={finalised} onDataChanged={onDataChanged}/><DataToolsWorkspace toast={toast}/><ScenarioWorkspace toast={toast}/></> : <ModuleContent active={active} toast={toast} />}
     <FeatureLibrary active={active} toast={toast} />

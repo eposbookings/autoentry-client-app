@@ -1306,6 +1306,26 @@
 .payroll-module label.field:has(select[aria-label="Contribution period"]){display:none}
 @media(max-width:800px){.payroll-module .module-period-wrap{height:auto;min-height:70px}.payroll-module .module-period-wrap .period-label{flex-basis:86px;width:86px}.payroll-module .module-period-wrap .periods button{flex-basis:88px;min-width:88px}}
 
+/* RTI workspace hierarchy: filing types first, then the payroll/tax-month navigator. */
+.payroll-module .module[data-module="rti"] .module-content{padding-top:0}
+.payroll-module .module[data-module="rti"] .operational-workspace>.submission-cards{
+  order:-2;
+  grid-template-columns:repeat(5,minmax(180px,1fr));
+  gap:10px;
+  margin-bottom:0;
+  padding-bottom:2px;
+  overflow-x:auto;
+}
+.payroll-module .module[data-module="rti"] .operational-workspace>.submission-cards>button{min-width:0}
+.payroll-module .module[data-module="rti"] .operational-workspace>.subnav{order:-1}
+.payroll-module .module-period-wrap .periods button.has-notifications{justify-content:flex-end;padding-top:22px}
+.payroll-module .module-period-wrap .periods button.has-notifications>span:first-child,.payroll-module .module-period-wrap .periods button.has-notifications>i{display:none}
+.payroll-module .module-period-wrap .periods button.has-notifications>b{margin:0;font-size:13px}
+.payroll-module .period-notifications{position:absolute;top:5px;left:5px;right:5px;display:flex;justify-content:center;gap:3px;overflow:visible!important;max-width:none!important}
+.payroll-module .period-notifications em{display:inline-flex;align-items:center;gap:3px;min-width:36px;height:17px;justify-content:center;border-radius:9px;background:#b42121;color:#fff;padding:0 5px;font-style:normal;line-height:1;box-shadow:0 0 0 1px #fff,0 1px 3px #75141444}
+.payroll-module .period-notifications small{font-size:7px;font-weight:800;letter-spacing:.25px}.payroll-module .period-notifications strong{font-size:9px}
+.payroll-module .module-period-wrap .periods button.current .period-notifications em{background:#fff;color:#9d1717!important;box-shadow:0 0 0 1px #ffffffaa,0 1px 3px #073f3f66}.payroll-module .module-period-wrap .periods button.current .period-notifications em *{color:#9d1717!important}
+
 /* Detailed RTI draft review */
 .payroll-module .rti-preview-open{grid-column:1/-1;justify-self:start;border-color:#087b79;color:#075f5d;background:#eaf6f4}
 .payroll-module .rti-preview-modal{width:min(1180px,calc(100vw - 36px));max-width:1180px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden}
@@ -1314,3 +1334,9 @@
 .payroll-module .rti-preview-body{display:grid;grid-template-columns:1fr 1fr;grid-auto-rows:max-content;align-items:start;gap:16px;padding:20px 24px;overflow-y:auto;overflow-x:hidden;background:#f4f7f8}.payroll-module .rti-preview-body>section{align-self:start;height:auto;min-width:0;max-height:none;border:1px solid #ccdadd;border-radius:9px;background:#fff;overflow:visible}.payroll-module .rti-preview-body h3{margin:0;padding:12px 15px;background:#eaf1f2;border-radius:8px 8px 0 0;font-size:15px;text-transform:uppercase;letter-spacing:.04em}.payroll-module .rti-preview-body h4{margin:12px 15px 5px;font-size:16px}.payroll-module .rti-preview-title{display:flex;align-items:center;justify-content:space-between;gap:12px;background:#eaf1f2;border-radius:8px 8px 0 0;padding-right:10px}.payroll-module .rti-preview-title h3{flex:1}.payroll-module .rti-preview-title select{max-width:290px}
 .payroll-module .rti-preview-row{display:grid;grid-template-columns:minmax(180px,44%) minmax(0,1fr);gap:16px;padding:8px 14px;border-top:1px solid #e1e8ea}.payroll-module .rti-preview-row span{color:#536970;font-style:italic}.payroll-module .rti-preview-row strong{min-width:0;overflow-wrap:anywhere;word-break:break-word}.payroll-module .rti-preview-row strong:not(:has(*)){line-height:1.35}.payroll-module .rti-ni-section{grid-column:1/-1}.payroll-module .rti-ni-section table{margin:0}.payroll-module .rti-payload-preview{margin:0;padding:20px 24px;overflow:auto;flex:1;background:#15252b;color:#d8f0ec;font-size:12px;line-height:1.5}.payroll-module .rti-preview-modal>footer{display:flex;justify-content:flex-end;padding:12px 24px;border-top:1px solid #d6e1e3;background:#fff}
 @media(max-width:760px){.payroll-module .rti-preview-body{grid-template-columns:1fr}.payroll-module .rti-ni-section{grid-column:auto}.payroll-module .rti-preview-row{grid-template-columns:1fr;gap:3px}.payroll-module .rti-preview-title{align-items:flex-start;flex-direction:column;padding:0 10px 10px}.payroll-module .rti-preview-title select{max-width:100%;width:100%}}
+
+/* Keep RTI month/period buttons readable when their filing state is shown above the label. */
+.payroll-module .module-period-wrap .periods button.compact-status:not(.has-notifications){justify-content:flex-end;padding-top:20px}
+.payroll-module .module-period-wrap .periods button.compact-status:not(.has-notifications)>span:first-child{display:none}
+.payroll-module .module-period-wrap .periods button.compact-status:not(.has-notifications)>i{top:6px;left:5px;right:5px;width:auto;text-align:center;font-size:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.payroll-module .module-period-wrap .periods button.compact-status:not(.has-notifications)>b{margin:0;font-size:13px}

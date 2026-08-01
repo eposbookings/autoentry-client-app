@@ -1964,19 +1964,34 @@ test("employer payslip editor persists branding and drives payroll and portal do
   assert.match(design,/payflow-payslip-design-1/);assert.match(design,/Payment after leaving/);assert.match(design,/Employer contributions \(not deducted from pay\)/);
 });
 
-test("payroll finalisation creates real RTI and pension workflow counters",async()=>{
+test("payroll finalisation creates payment-aware RTI and pension workflow tasks",async()=>{
   const [page,payRuns,styles]=await Promise.all([
     readFile("app/page.tsx","utf8"),readFile("app/api/pay-runs/route.ts","utf8"),readFile("app/globals.css","utf8"),
   ]);
-  assert.match(payRuns,/workflowTasks:\{rtiReady:true,pensionReady:pensionSubmissionReady\}/);
+  assert.match(payRuns,/const rtiTypes=noEmployeePayments/);assert.match(payRuns,/statutoryRecovery>0\?\["EPS_RECOVERY"\]/);
+  assert.match(payRuns,/hasEmployeePaymentActivity/);assert.match(payRuns,/acceptedNoPaymentTaxMonths/);
+  assert.match(payRuns,/const confirmedEmptyPayroll=input\.action==="finalise"&&input\.confirmNoEmployeePayments===true/);
+  assert.match(payRuns,/const rtiTasks:RtiWorkflowTask\[\]/);assert.match(payRuns,/monthComplete&&hasPayFlowPeriod&&!hasPayments/);
+  assert.match(payRuns,/type:"EPS_RECOVERY"/);assert.match(payRuns,/statutoryPayByType/);assert.match(payRuns,/statutoryRecoveryByType/);
   assert.match(payRuns,/completedRtiPeriodIds/);assert.match(payRuns,/preparedPensionPeriodIds/);
   assert.match(payRuns,/rtiReadyPeriods/);assert.match(payRuns,/pensionReadyPeriods/);
   assert.match(page,/PayrollWorkflowStatus/);assert.match(page,/className="workflow-badge"/);
-  assert.match(page,/RTI is ready for review and submission/);
-  assert.match(page,/pension contributions are ready for provider submission/);
+  assert.match(page,/No employee payments are entered for period/);
+  assert.match(page,/action==="draft"&&!sourceEmployees\.length/);
+  assert.match(page,/RTI now has an EPS no-payment task/);
+  assert.match(page,/Pension contributions are also ready for provider submission/);
   assert.match(page,/await loadHistory\(\);await onDataChanged\(\)/);
   assert.match(page,/ready for submission/);assert.match(page,/Generate provider file for period/);
   assert.match(styles,/\.mainnav \.workflow-badge/);assert.match(styles,/#c93434/);
+});
+
+test("RTI navigation puts five filing types before the period strip and removes the duplicate heading",async()=>{
+  const [page,styles]=await Promise.all([readFile("app/page.tsx","utf8"),readFile("app/globals.css","utf8")]);
+  assert.match(page,/active!=="RTI"&&<div className="module-head">/);
+  assert.match(styles,/\.module\[data-module="rti"\] \.operational-workspace>\.submission-cards\{/);
+  assert.match(styles,/grid-template-columns:repeat\(5,minmax\(180px,1fr\)\)/);
+  assert.match(styles,/\.operational-workspace>\.submission-cards[\s\S]*?order:-2/);
+  assert.match(styles,/\.operational-workspace>\.subnav\{order:-1\}/);
 });
 
 test("employee portal requests cannot overwrite newer payroll master data",async()=>{
@@ -2745,12 +2760,22 @@ test("RTI EPS declarations reconcile to payroll and statutory records",async()=>
   assert.match(page,/unpreparedFpsPeriods=rtiSchedule\.filter/);
   assert.match(page,/finalised payroll \{unpreparedFpsPeriods\.length===1\?"period has":"periods have"\} no FPS package/);
   assert.match(page,/External filing evidence required/);
+  assert.match(page,/acceptedNoPaymentEpsForMonth/);
+  assert.match(page,/Not required · no-payment EPS accepted/);
+  assert.match(page,/Not applicable · no FPS required/);
+  assert.match(page,/Not required unless adjustments · FPS complete/);
+  assert.match(page,/fpsRequirementComplete/);
+  assert.match(page,/body\.submission\?\.status==="accepted"/);
+  assert.match(page,/setEpsTaxMonth\(completedPeriod\+1\)/);
+  assert.match(page,/workspace moved to the next period/);
+  assert.match(page,/RTI period remains open/);
+  assert.doesNotMatch(page,/done:\["accepted","submitted"\]\.includes/);
   assert.match(page,/\"Submission schedule\"/);
   assert.match(page,/\["Earlier Year Update","BACS hash code","Agent authority FBI2"\]\.includes\(item\)\?"HMRC retired"/);
   assert.match(page,/“Prepared” is not an HMRC submission/);
   assert.match(page,/Not transmitted/);
   assert.match(page,/H · Correction to earlier submission/);
-  assert.match(page,/accepted baseline required/);
+  assert.match(page,/correction only/);
   assert.match(page,/validated or test-ready local package must be replaced with a normal FPS instead/);
   assert.match(page,/rtiHistory=history\s*\.filter/);
   assert.match(page,/P30 HMRC payment schedule/);

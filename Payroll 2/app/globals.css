@@ -1304,6 +1304,19 @@
 label.field:has(select[aria-label="Contribution period"]){display:none}
 @media(max-width:800px){.module-period-wrap{height:auto;min-height:70px}.module-period-wrap .period-label{flex-basis:86px;width:86px}.module-period-wrap .periods button{flex-basis:88px;min-width:88px}}
 
+/* RTI workspace hierarchy: filing types first, then the payroll/tax-month navigator. */
+.module[data-module="rti"] .module-content{padding-top:0}
+.module[data-module="rti"] .operational-workspace>.submission-cards{
+  order:-2;
+  grid-template-columns:repeat(5,minmax(180px,1fr));
+  gap:10px;
+  margin-bottom:0;
+  padding-bottom:2px;
+  overflow-x:auto;
+}
+.module[data-module="rti"] .operational-workspace>.submission-cards>button{min-width:0}
+.module[data-module="rti"] .operational-workspace>.subnav{order:-1}
+
 /* Detailed RTI draft review */
 .rti-preview-open{grid-column:1/-1;justify-self:start;border-color:#087b79;color:#075f5d;background:#eaf6f4}
 .rti-preview-modal{width:min(1180px,calc(100vw - 36px));max-width:1180px;max-height:92vh;display:flex;flex-direction:column;overflow:hidden}

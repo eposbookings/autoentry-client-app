@@ -56,8 +56,9 @@ type PayrollEntryDraft=Partial<Pick<Employee,"pay"|"hours"|"rate"|"payItems"|"po
 type PersistedPeriod={id:number;periodNumber:number;status:string;payDate?:string|null};
 type PersistedRun={id:number;payPeriodId:number;employeeId:number;grossPay:number;taxablePay:number;nicablePay:number;payeTax:number;employeeNic:number;employerNic:number;employeePension:number;employerPension:number;statutoryPay:number;netPay:number;payrollNote?:string|null;rtiSnapshot?:string|null;pensionSnapshot?:string|null;status:string};
 type PersistedItem={id:number;payRunId:number;type:PayLine["type"];name:string;quantity:number;rate:number;amount:number;taxable:boolean;nicable:boolean;pensionable:boolean;recurringItemId?:number|null};
-type PayrollWorkflowStatus={rti:{count:number;periods:number[]};pensions:{count:number;periods:number[]}};
-const emptyPayrollWorkflowStatus:PayrollWorkflowStatus={rti:{count:0,periods:[]},pensions:{count:0,periods:[]}};
+type RtiWorkflowTask={type:"FPS"|"EPS_NO_PAYMENT";periodNumber:number;taxMonth:number;reason:string};
+type PayrollWorkflowStatus={rti:{count:number;periods:number[];tasks:RtiWorkflowTask[]};pensions:{count:number;periods:number[]}};
+const emptyPayrollWorkflowStatus:PayrollWorkflowStatus={rti:{count:0,periods:[],tasks:[]},pensions:{count:0,periods:[]}};
 type PayrollOpeningBalance={id:number;employeeId:number;taxYear:string;firstPayFlowPeriod:number;grossPay:number;taxablePay:number;payeTax:number;nicablePay:number;employeeNic:number;employerNic:number;studentLoan:number;postgraduateLoan:number;statutoryPay:number;employeePension:number;employerPension:number;netPay:number;nicCategoryBreakdown?:string;source?:string;notes?:string|null;payloadChecksum?:string};
 type CalculationHistory={ytdTaxablePay:number;ytdTaxPaid:number;ytdNicablePay:number;ytdEmployeeNic:number;ytdEmployerNic:number};
 
@@ -661,11 +662,24 @@ export function PayrollApp({admin,memberships,activeEmployerId,setActiveEmployer
   }
 
   async function processPayroll(action:"draft"|"finalise",sourceEmployees=employees,operationSource:"manual"|"pay-details-csv"="manual") {
-    if(!sourceEmployees.length)return toast("Add at least one employee before finalising payroll.");
+    if(action==="draft"&&!sourceEmployees.length)return toast("Add at least one employee before saving a payroll draft.");
     const firstOpen=nextOpenPeriod(completedPeriods,maximumPeriods);
     if (period !== firstOpen) return toast("Earlier periods must be finalised first.");
     const activeEmployees=sourceEmployees.filter(e=>employeeActiveInRange(e.startDate,e.leavingDate,currentScheduledPeriod.periodStart,currentScheduledPeriod.periodEnd)||(e.postLeavingPayment&&e.leavingDate&&Date.parse(`${e.leavingDate}T00:00:00Z`)<isoDay(currentScheduledPeriod.periodStart)));
-    if(!activeEmployees.length)return toast("No employees are active within this payroll period.");
+    if(action==="draft"&&!activeEmployees.length)return toast("No employees are active within this payroll period.");
+    const hasEnteredEmployeePayments=activeEmployees.some(employee=>{
+      const enteredLines=[...(employee.payItems||[]),...recurringPayItemRecords.filter(item=>item.employeeId===employee.id&&item.startPeriod<=period&&item.endPeriod>=period)];
+      return Math.abs(Number(employee.pay||0))>=0.005||Math.abs(Number(employee.hours||0)*Number(employee.rate||0))>=0.005||
+        enteredLines.some(item=>Math.abs(Number(item.amount??Number(item.quantity??1)*Number(item.rate??0)))>=0.005);
+    });
+    let confirmNoEmployeePayments=false;
+    if(action==="finalise"&&!hasEnteredEmployeePayments){
+      const rtiFollowUp=payFrequency==="monthly"
+        ?"RTI will show an Employer Payment Summary task declaring no payment for this tax month."
+        :"RTI will track this zero-pay period and, once every pay date in the tax month is complete, create an Employer Payment Summary task only if the whole month has no employee payments.";
+      confirmNoEmployeePayments=window.confirm(`No employee payments are entered for period ${period} (tax month ${currentScheduledPeriod.taxMonth}).\n\nIf you continue, the payroll period will be finalised. ${rtiFollowUp} No FPS is required for a period without employee payment activity.\n\nContinue?`);
+      if(!confirmNoEmployeePayments)return false;
+    }
     const records = activeEmployees.map(e => ({
       employeeId:e.id,
       payrollId: e.payrollId||fallbackPayrollId(e,taxYear),
@@ -698,13 +712,18 @@ export function PayrollApp({admin,memberships,activeEmployerId,setActiveEmployer
       ],
     }));
     try {
-      const response = await fetch("/api/pay-runs", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({ action,source:operationSource, employerId, taxYear, periodNumber:period, payDate:currentScheduledPeriod.payDate,employees:records }) });
+      const response = await fetch("/api/pay-runs", { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({ action,source:operationSource, employerId, taxYear, periodNumber:period, payDate:currentScheduledPeriod.payDate,confirmNoEmployeePayments,employees:records }) });
       const result=await response.json();
       if (!response.ok) throw new Error(result.error || "Finalisation failed");
       await loadPayrollRecords();
       setPeriodEntryDrafts(current=>Object.fromEntries(Object.entries(current).filter(([key])=>!key.startsWith(`${period}:`))));
       if(action==="finalise"&&period < maximumPeriods) setPeriod(period + 1);
-      const downstream=action==="finalise"?` RTI is ready for review and submission${result.workflowTasks?.pensionReady?", and pension contributions are ready for provider submission":""}.`:"";
+      const rtiDownstream=result.workflowTasks?.rtiType==="EPS_NO_PAYMENT"
+        ?` RTI now has an EPS no-payment task for tax month ${result.workflowTasks.taxMonth}; review and submit it before that month can close.`
+        :result.workflowTasks?.rtiType==="RTI_MONTH_REVIEW"
+          ?` RTI has recorded this zero-pay period and will decide the tax-month EPS requirement when all pay dates in that month are complete.`
+        :" RTI now has an FPS task ready for review and submission.";
+      const downstream=action==="finalise"?`${rtiDownstream}${result.workflowTasks?.pensionReady?" Pension contributions are also ready for provider submission.":""}`:"";
       toast(action==="finalise"
         ?period<maximumPeriods?`Period ${period} finalised and saved.${downstream} Period ${period+1} is now open.`:`Period ${maximumPeriods} finalised and saved.${downstream} The payroll year is complete; finish the year-end checks before creating the next tax year.`
         :`Period ${period} draft saved.`);
@@ -866,7 +885,7 @@ export function PayrollApp({admin,memberships,activeEmployerId,setActiveEmployer
       {active === "Payroll" && <>
         <section className="toolbar">
           <button onClick={()=>processPayroll("draft")} disabled={!canPayrollWrite||!payrollRulesAvailable||periodLocked||!employees.length}><Icon>↧</Icon>Save draft</button>
-          <button className="primary-tool" onClick={()=>processPayroll("finalise")} disabled={!canPayrollWrite||!payrollRulesAvailable||periodLocked||!employees.length}><Icon>✓</Icon>{periodLocked?"Payslips finalised":"Finalise payslips"}</button>
+          <button className="primary-tool" onClick={()=>processPayroll("finalise")} disabled={!canPayrollWrite||!payrollRulesAvailable||periodLocked}><Icon>✓</Icon>{periodLocked?"Payslips finalised":"Finalise payslips"}</button>
           <button onClick={reopenPayroll} disabled={!canPayrollWrite||!periodLocked||period!==Math.max(0,...finalised)} title="Only payroll users can reopen the latest finalised period"><Icon>↺</Icon>Reopen payslips</button>
           <button disabled={!periodLocked} onClick={() => downloadPayrollReport("payslips","html",`payslips-${taxYear.replace("/","-")}-period-${period}.html`,period)}><Icon>↗</Icon>Create payslips</button>
           <button disabled={!canPayrollWrite||!periodLocked} onClick={()=>setModal("email-payslips")} title="Preview a tokenised message and record a validated batch; outbound transmission requires an approved email provider"><Icon>✉</Icon>Email payslips</button>
@@ -955,7 +974,7 @@ export function PayrollApp({admin,memberships,activeEmployerId,setActiveEmployer
         </section>:<section className="empty-payroll"><div><span className="eyebrow">GET STARTED</span><h1>Add your first employee</h1><p>The payroll year is ready. Create an employee record to enter pay, calculate deductions and finalise Period {period}.</p><button className="primary" disabled={!canEmployeeWrite} onClick={addEmployee}>＋ Add employee</button></div></section>}
       </>}
 
-	      {active !== "Payroll" && <ModulePage active={active} employerName={employerName} employees={employees} finalised={finalised} completed={completedPeriods} canEmployeeWrite={canEmployeeWrite} onOpenEmployee={(id) => {setSelectedId(id);setModal("employee");}} onAddEmployee={addEmployee} onSwitchEmployer={setActiveEmployerId} onDataChanged={loadPayrollRecords} toast={toast} />}
+	      {active !== "Payroll" && <ModulePage active={active} employerName={employerName} employees={employees} finalised={finalised} completed={completedPeriods} workflowStatus={workflowStatus} canEmployeeWrite={canEmployeeWrite} onOpenEmployee={(id) => {setSelectedId(id);setModal("employee");}} onAddEmployee={addEmployee} onSwitchEmployer={setActiveEmployerId} onDataChanged={loadPayrollRecords} toast={toast} />}
       {notice && <div className={`toast ${noticeError?"error":""}`}>{noticeError?"!":"✓"} {notice}</div>}
       {modal === "employee" && employee&&<EmployeeModal employee={employee} tab={formTab} setTab={setFormTab} update={updateEmployee} close={closeEmployeeEditor} save={saveEmployeeRecord} remove={deleteEmployeeRecord} invite={createPortalInvite} canInvite={employeeDefaults.some(item=>item.id===employee.id)} />}
       {modal === "calendar" && employee&&<CalendarModal employee={employee} period={period} close={() => setModal(null)} saved={(message,event,keepOpen) => { if(event)updateEmployee({statutoryPayPreview:statutoryPayAllocationForRange(event,currentScheduledPeriod.periodStart,currentScheduledPeriod.periodEnd).pay});loadLeaveRecords().catch(()=>undefined);if(!keepOpen)setModal(null);toast(message); }} />}
@@ -1029,7 +1048,7 @@ function SummaryLine({ label, value, strong, highlight,format="money" }: { label
   return <div className={`summary-line ${strong ? "strong" : ""} ${highlight ? "highlight" : ""}`}><span>{label}</span><b>{format==="number"?value.toLocaleString("en-GB"):money(value)}</b></div>;
 }
 
-function ModulePage({ active, employerName, employees, finalised,completed,canEmployeeWrite,onOpenEmployee, onAddEmployee,onSwitchEmployer,onDataChanged, toast }: { active: string; employerName:string;employees: Employee[];finalised:number[];completed:number[];canEmployeeWrite:boolean; onOpenEmployee: (id:number) => void; onAddEmployee: () => void;onSwitchEmployer:(id:number)=>void;onDataChanged:()=>Promise<void>; toast: (s: string) => void }) {
+function ModulePage({ active, employerName, employees, finalised,completed,workflowStatus,canEmployeeWrite,onOpenEmployee, onAddEmployee,onSwitchEmployer,onDataChanged, toast }: { active: string; employerName:string;employees: Employee[];finalised:number[];completed:number[];workflowStatus:PayrollWorkflowStatus;canEmployeeWrite:boolean; onOpenEmployee: (id:number) => void; onAddEmployee: () => void;onSwitchEmployer:(id:number)=>void;onDataChanged:()=>Promise<void>; toast: (s: string) => void }) {
   const taxYear=useTaxYear(),payFrequency=usePayFrequency(),firstPayDate=useFirstPayDate();
   const schedule=useMemo(()=>scheduledPayPeriods(taxYear,payFrequency,firstPayDate||undefined),[taxYear,payFrequency,firstPayDate]),frequencyRule=payrollFrequencyRule(payFrequency);
   const [employeeSort,setEmployeeSort]=useState("name-asc"),[historyEmployee,setHistoryEmployee]=useState<Employee|null>(null);
@@ -1057,7 +1076,7 @@ function ModulePage({ active, employerName, employees, finalised,completed,canEm
   };
   const c = config[active];
   return <section className="module" data-module={active.toLowerCase()}>
-    <div className="module-head"><div><span className="eyebrow">{employerName.toUpperCase()} · {taxYear}</span><h1>{c.title}</h1><p>{c.subtitle}</p></div>{active==="Employees"&&<button className="primary" disabled={!canEmployeeWrite} onClick={onAddEmployee}>＋ Add employee</button>}</div>
+    {active!=="RTI"&&<div className="module-head"><div><span className="eyebrow">{employerName.toUpperCase()} · {taxYear}</span><h1>{c.title}</h1><p>{c.subtitle}</p></div>{active==="Employees"&&<button className="primary" disabled={!canEmployeeWrite} onClick={onAddEmployee}>＋ Add employee</button>}</div>}
     <div className="module-content">
     {active === "Employees" ? <><EmployerCalendarWorkspace canWrite={canEmployeeWrite} toast={toast}/><div className="data-card employee-register"><div className="register-toolbar"><div><b>Employee register</b><small>{sortedEmployees.length} visible record{sortedEmployees.length===1?"":"s"}</small></div><label><span>Order employees</span><select aria-label="Order employees" value={employeeSort} onChange={event=>setEmployeeSort(event.target.value)}><option value="name-asc">Name · A–Z</option><option value="name-desc">Name · Z–A</option><option value="department-asc">Department</option><option value="payroll-asc">Payroll ID</option><option value="status-asc">Employment status</option><option value="start-desc">Newest starters</option><option value="start-asc">Oldest starters</option></select></label></div><div className="report-table-scroll"><table><thead><tr><th>Employee</th><th>Payroll ID</th><th>Department</th><th>Tax code</th><th>Normal {frequencyRule.label.toLowerCase()} pay</th><th>Status</th><th>Actions</th></tr></thead><tbody>{sortedEmployees.map(e => <tr key={e.id}><td><b>{e.name}</b><small>{e.email}</small></td><td>{e.payrollId||"—"}<small>{e.startDate?`Started ${formatUkDate(e.startDate)}`:"Start date missing"}</small></td><td>{e.department||"Unassigned"}</td><td>{e.taxCode}</td><td>{money(periodicBasePay(e,payFrequency))}</td><td><span className={`status ${e.status === "Review" ? "amber" : ""}`}>{e.status}</span></td><td><div className="inline-actions"><button onClick={()=>setHistoryEmployee(e)}>History</button><button disabled={!canEmployeeWrite} onClick={()=>onOpenEmployee(e.id)}>{canEmployeeWrite?"Edit":"View only"}</button></div></td></tr>)}</tbody></table></div></div></> : active==="Analysis"?<AnalysisWorkspace toast={toast}/>: active === "Employer" ? <EmployerWorkspace toast={toast}/> : active === "CIS" ? <CisWorkspace toast={toast} /> : active === "RTI" ? <RtiWorkspace toast={toast} employees={employees} finalised={finalised} migrated={completed.filter(periodNumber=>!finalised.includes(periodNumber))} onDataChanged={onDataChanged}/> : active === "HMRC" ? <HmrcWorkspace toast={toast} onDataChanged={onDataChanged} /> : active === "Pensions" ? <PensionsWorkspace toast={toast} employees={employees} finalised={finalised} onDataChanged={onDataChanged}/> : active === "Reports" ? <ReportsWorkspace toast={toast} employerName={employerName} employees={employees} finalised={finalised}/> : active === "Clients" ? <><AccessWorkspace toast={toast} onSwitchEmployer={onSwitchEmployer}/><AgentWorkspace toast={toast}/></> : active === "Tools" ? <><UtilitiesWorkspace/><MidYearStartWorkspace toast={toast} employees={employees} completed={completed} finalised={finalised} onDataChanged={onDataChanged}/><DataToolsWorkspace toast={toast}/><ScenarioWorkspace toast={toast}/></> : <ModuleContent active={active} toast={toast} />}
     <FeatureLibrary active={active} toast={toast} />
@@ -1823,6 +1842,7 @@ function RtiWorkspace({ toast,employees,finalised,migrated,onDataChanged }: { to
   const [epsCisSuffered,setEpsCisSuffered]=useState(0),[finalSubmission,setFinalSubmission]=useState(false),[ceasedIndicator,setCeasedIndicator]=useState(false),[cessationDate,setCessationDate]=useState(`${taxYearStartYear(taxYear)+1}-04-05`);
   const [draft,setDraft]=useState<RtiDraftPreview|null>(null),[previewOpen,setPreviewOpen]=useState(false);
   const [history,setHistory]=useState<Array<{id:number;type:string;status:string;dueDate?:string;createdAt?:string;preparedAt?:string;submittedAt?:string;correlationId?:string;irMark?:string;response?:string;payloadChecksum?:string;payload?:string}>>([]);
+  const [historyLoaded,setHistoryLoaded]=useState(false),[autoPositioned,setAutoPositioned]=useState(false);
   const [rtiResultId,setRtiResultId]=useState(0),[rtiOutcome,setRtiOutcome]=useState("accepted"),[rtiAcknowledgement,setRtiAcknowledgement]=useState(""),[rtiResponseCode,setRtiResponseCode]=useState(""),[rtiResponseMessage,setRtiResponseMessage]=useState(""),[rtiSubmittedAt,setRtiSubmittedAt]=useState("");
   const [employerIdentity,setEmployerIdentity]=useState({name:"Selected employer",payeReference:"Not configured"});
   const latestFinalisedPeriod=finalised.length?Math.max(...finalised):1;
@@ -1831,9 +1851,6 @@ function RtiWorkspace({ toast,employees,finalised,migrated,onDataChanged }: { to
   const [epsTaxMonth,setEpsTaxMonth]=useState(latestFinalisedTaxMonth);
   const activeSubmissionPeriod=selected==="EPS"?epsTaxMonth:submissionPeriod;
   useEffect(()=>{setSubmissionPeriod(latestFinalisedPeriod);setEpsTaxMonth(latestFinalisedTaxMonth);},[latestFinalisedPeriod,latestFinalisedTaxMonth]);
-  useEffect(()=>{
-    if(["FPS","Additional FPS"].includes(selected)&&!finalised.includes(submissionPeriod))setSubmissionPeriod(latestFinalisedPeriod);
-  },[selected,submissionPeriod,latestFinalisedPeriod,finalised]);
   useEffect(()=>{
     const validFinal=selected==="EPS"?epsTaxMonth===12:["FPS","Additional FPS"].includes(selected)&&submissionPeriod===paySchedule.length;
     if(!validFinal)setFinalSubmission(false);
@@ -1855,15 +1872,38 @@ function RtiWorkspace({ toast,employees,finalised,migrated,onDataChanged }: { to
   const latestSubmission=(type:string)=>rtiHistory.find(item=>item.type===type&&(!["FPS","EPS","Additional FPS"].includes(type)||
     Number(submissionPayload(item).periodNumber)===(type==="EPS"?epsTaxMonth:submissionPeriod)));
   const latestStatus=(type:string,fallback:string)=>latestSubmission(type)?.status||fallback;
+  const acceptedEpsForMonth=(taxMonth:number)=>rtiHistory.find(item=>item.type==="EPS"&&item.status==="accepted"&&Number(submissionPayload(item).periodNumber)===taxMonth);
+  const acceptedNoPaymentEpsForMonth=(taxMonth:number)=>{
+    const accepted=acceptedEpsForMonth(taxMonth);
+    return accepted&&Boolean(submissionPayload(accepted).noPaymentForPeriod)?accepted:undefined;
+  };
+  const acceptedFpsForPeriod=(periodNumber:number)=>rtiHistory.find(item=>item.type==="FPS"&&item.status==="accepted"&&Number(submissionPayload(item).periodNumber)===periodNumber);
+  const allFpsCompleteForMonth=(taxMonth:number)=>{
+    const scheduled=paySchedule.filter(item=>item.taxMonth===taxMonth);
+    return scheduled.length>0&&scheduled.every(item=>Boolean(acceptedFpsForPeriod(item.periodNumber))||migrated.includes(item.periodNumber));
+  };
+  const selectedPayrollTaxMonth=paySchedule.find(item=>item.periodNumber===submissionPeriod)?.taxMonth||1;
+  const selectedNoPaymentClosure=acceptedNoPaymentEpsForMonth(selectedPayrollTaxMonth);
+  const selectedAcceptedFps=acceptedFpsForPeriod(submissionPeriod);
   const submissions = [
-    ["FPS","Full Payment Submission",`Period ${submissionPeriod}`,latestStatus("FPS","Draft")],
-    ["EPS","Employer Payment Summary",`Tax month ${epsTaxMonth}`,latestStatus("EPS","Available")],
+    ["FPS","Full Payment Submission",`Period ${submissionPeriod}`,selectedNoPaymentClosure?"Not required · no-payment EPS accepted":latestStatus("FPS","Draft")],
+    ["EPS","Employer Payment Summary",`Tax month ${epsTaxMonth}`,latestStatus("EPS",allFpsCompleteForMonth(epsTaxMonth)?"Not required unless adjustments · FPS complete":"Available")],
     ["NVR","NINO verification request","Withdrawn 3 February 2025","HMRC suspended"],
-    ["Additional FPS","Additional FPS",`Period ${submissionPeriod} · accepted baseline required`,latestStatus("Additional FPS","Awaiting HMRC baseline")],
+    ["Additional FPS","Additional FPS",`Period ${submissionPeriod} · correction only`,selectedNoPaymentClosure?"Not applicable · no FPS required":selectedAcceptedFps?latestStatus("Additional FPS","Not required · correction only"):latestStatus("Additional FPS","Awaiting HMRC baseline")],
     ["EXB","Expenses & benefits",taxYear,latestStatus("EXB","Available")],
   ];
-  async function loadHistory(){const response=await fetch(`/api/submissions?employerId=${employerId}&taxYear=${encodeURIComponent(taxYear)}`),body=await response.json();if(response.ok)setHistory(body);}
+  async function loadHistory(){const response=await fetch(`/api/submissions?employerId=${employerId}&taxYear=${encodeURIComponent(taxYear)}`),body=await response.json();if(response.ok){setHistory(body);setHistoryLoaded(true);}}
   useEffect(()=>{loadHistory().catch(()=>toast("RTI submission history could not be loaded."));},[]);
+  useEffect(()=>{
+    if(!historyLoaded||autoPositioned)return;
+    const firstOutstandingFps=paySchedule.find(item=>!acceptedFpsForPeriod(item.periodNumber)&&!acceptedNoPaymentEpsForMonth(item.taxMonth));
+    const firstOutstandingEps=Array.from({length:12},(_,index)=>index+1).find(taxMonth=>!acceptedEpsForMonth(taxMonth)&&!allFpsCompleteForMonth(taxMonth));
+    if(firstOutstandingFps)setSubmissionPeriod(firstOutstandingFps.periodNumber);
+    else if(paySchedule.length)setSubmissionPeriod(paySchedule.at(-1)!.periodNumber);
+    if(firstOutstandingEps)setEpsTaxMonth(firstOutstandingEps);
+    else setEpsTaxMonth(12);
+    setAutoPositioned(true);
+  },[historyLoaded,autoPositioned,history,paySchedule]);
   useEffect(()=>{
     const existing=latestSubmission(selected);
     if(!existing||!["validated","test-ready","accepted"].includes(existing.status)){setDraft(null);setDeclaration(false);setPreviewOpen(false);return;}
@@ -1874,6 +1914,7 @@ function RtiWorkspace({ toast,employees,finalised,migrated,onDataChanged }: { to
   useEffect(()=>{fetch(`/api/employer?employerId=${employerId}`).then(response=>response.json()).then(body=>{if(body.employer)setEmployerIdentity({name:body.employer.name,payeReference:body.employer.payeReference||"Not configured"});}).catch(()=>toast("RTI employer identity could not be loaded."));},[]);
   async function validateSubmission() {
     if(selected==="NVR")return toast("HMRC withdrew NINO Verification Requests on 3 February 2025. Complete the employee's date of birth, gender and address, leave the NINO blank, and report them on the FPS.");
+    if(["FPS","Additional FPS"].includes(selected)&&!finalised.includes(submissionPeriod))return toast(`Finalise payroll period ${submissionPeriod} before generating its RTI package.`);
     if(selected==="FPS"&&draft?.status==="accepted")return toast("This FPS already has accepted HMRC evidence. Use Additional FPS for a later correction; the accepted package must remain unchanged.");
     setFiling(true);
     try {
@@ -1896,27 +1937,54 @@ function RtiWorkspace({ toast,employees,finalised,migrated,onDataChanged }: { to
     } catch(error){toast(error instanceof Error?error.message:"The filing package could not be prepared.");}
   }
   async function recordRtiFilingResult(){
+    const resultPackage=rtiHistory.find(item=>item.id===rtiResultId);
     const response=await fetch("/api/submissions",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({
       action:"record-filing-result",id:rtiResultId,employerId,outcome:rtiOutcome,submittedAt:rtiSubmittedAt,
       acknowledgementReference:rtiAcknowledgement,responseCode:rtiResponseCode,responseMessage:rtiResponseMessage,evidenceSource:"external-import",
     })}),body=await response.json();
     if(!response.ok)return toast(body.error);
     setRtiAcknowledgement("");setRtiResponseCode("");setRtiResponseMessage("");await loadHistory();await onDataChanged();
-    toast(`External HMRC ${rtiOutcome} evidence recorded. PayFlow did not transmit this return.`);
+    if(body.submission?.status==="accepted"&&resultPackage){
+      const payload:any=submissionPayload(resultPackage),completedPeriod=Number(payload.periodNumber||0);
+      setDraft(null);setDeclaration(false);setPreviewOpen(false);setRtiResultId(0);
+      if(resultPackage.type==="EPS"){
+        setEpsNoPayment(false);setEpsEmploymentAllowance(false);setEpsCisSuffered(0);setFinalSubmission(false);setCeasedIndicator(false);
+        if(completedPeriod>=1&&completedPeriod<12)setEpsTaxMonth(completedPeriod+1);
+      }else if(["FPS","Additional FPS"].includes(resultPackage.type)&&completedPeriod>=1&&completedPeriod<paySchedule.length){
+        setSubmissionPeriod(completedPeriod+1);
+        if(resultPackage.type==="Additional FPS")setSelected("FPS");
+      }
+      toast("External HMRC acceptance recorded. The completed RTI requirement is closed and the workspace moved to the next period. PayFlow did not transmit this return.",true);
+      return;
+    }
+    toast(`External HMRC ${rtiOutcome} evidence recorded. The RTI period remains open because PayFlow did not receive an accepted result.`);
   }
   const totals=draft?.totals||{},recoveries=draft?.recoveries||{};
   const acceptedFpsLocked=selected==="FPS"&&draft?.status==="accepted";
   const fallbackEpsWindow=cisTaxMonthDates(epsTaxMonth,taxYear);
   const epsReviewWindow=draft?.reportingWindow||{start:fallbackEpsWindow.start,end:fallbackEpsWindow.end,deadline:fallbackEpsWindow.due};
-  const rtiSchedule=paySchedule.map(scheduled=>{
+  const rtiScheduleBase=paySchedule.map(scheduled=>{
     const periodNumber=scheduled.periodNumber,payDate={iso:scheduled.payDate,label:new Intl.DateTimeFormat("en-GB",{day:"numeric",month:"short",year:"numeric",timeZone:"UTC"}).format(new Date(`${scheduled.payDate}T00:00:00Z`))},epsDue=rtiEpsDeadline(scheduled.taxMonth,taxYear);
     const payrollFinalised=finalised.includes(periodNumber);
     const payrollMigrated=migrated.includes(periodNumber);
     const fps=rtiHistory.find(item=>item.type==="FPS"&&Number(submissionPayload(item).periodNumber)===periodNumber);
     const eps=rtiHistory.find(item=>item.type==="EPS"&&Number(submissionPayload(item).periodNumber)===scheduled.taxMonth);
-    const fpsStatus=fps?.status||(payrollFinalised?"Not prepared":payrollMigrated?"Processed in prior system":"Awaiting payroll");
-    const fpsNeedsAction=payrollFinalised&&!["accepted","submitted"].includes(fpsStatus);
-    return {...scheduled,periodNumber,payDate,epsDue,payrollFinalised,payrollMigrated,fpsStatus,fpsNeedsAction,epsStatus:eps?.status||(payrollMigrated?"Prior system":"Only if required")};
+    const noPaymentEps=acceptedNoPaymentEpsForMonth(scheduled.taxMonth);
+    const rawFpsStatus=fps?.status||(payrollFinalised?"Not prepared":payrollMigrated?"Processed in prior system":"Awaiting payroll");
+    const fpsStatus=noPaymentEps?"Not required · no-payment EPS accepted":rawFpsStatus;
+    const fpsRequirementComplete=Boolean(noPaymentEps)||rawFpsStatus==="accepted"||payrollMigrated;
+    const fpsNeedsAction=payrollFinalised&&!fpsRequirementComplete;
+    return {...scheduled,periodNumber,payDate,epsDue,payrollFinalised,payrollMigrated,rawFpsStatus,fpsStatus,fpsRequirementComplete,fpsNeedsAction,epsSubmissionStatus:eps?.status};
+  });
+  const rtiSchedule=rtiScheduleBase.map(item=>{
+    const monthRows=rtiScheduleBase.filter(row=>row.taxMonth===item.taxMonth);
+    const noPaymentClosed=Boolean(acceptedNoPaymentEpsForMonth(item.taxMonth));
+    const allFpsComplete=monthRows.length>0&&monthRows.every(row=>row.rawFpsStatus==="accepted"||row.payrollMigrated);
+    const monthClosed=noPaymentClosed||allFpsComplete;
+    const epsStatus=item.epsSubmissionStatus==="accepted"
+      ?noPaymentClosed?"Accepted · no-payment month closed":"Accepted"
+      :allFpsComplete?"Only if required · FPS complete":item.epsSubmissionStatus||(item.payrollMigrated?"Prior system":"Only if required");
+    return {...item,monthClosed,epsStatus};
   });
   const unpreparedFpsPeriods=rtiSchedule.filter(item=>item.payrollFinalised&&item.fpsStatus==="Not prepared");
   const filingOptions=<div className="form-grid form-pad">
@@ -1931,7 +1999,7 @@ function RtiWorkspace({ toast,employees,finalised,migrated,onDataChanged }: { to
     {(selected==="FPS"||selected==="Additional FPS")&&<Check text="This is the final submission for the tax year" checked={finalSubmission} disabled={submissionPeriod!==paySchedule.length} onChange={setFinalSubmission}/>}
     <div className="embedded-evidence-form"><h3>Record external RTI result</h3><p>Use this only after an accredited adapter or HMRC filing service transmitted the exact package. This imports evidence; PayFlow does not claim transmission.</p><label className="field"><span>Test-ready RTI package</span><select value={rtiResultId} onChange={event=>setRtiResultId(Number(event.target.value))}><option value={0}>Select package…</option>{rtiHistory.filter(item=>["test-ready","submitted"].includes(item.status)&&item.type!=="NVR").map(item=><option key={item.id} value={item.id}>#{item.id} · {item.type}</option>)}</select></label><label className="field"><span>HMRC result</span><select value={rtiOutcome} onChange={event=>setRtiOutcome(event.target.value)}><option value="accepted">Accepted</option><option value="rejected">Rejected</option></select></label><Field label="External submission date and time" value={rtiSubmittedAt} type="datetime-local" onChange={setRtiSubmittedAt}/><Field label="Acknowledgement / correlation reference" value={rtiAcknowledgement} onChange={setRtiAcknowledgement}/><Field label="HMRC response code" value={rtiResponseCode} onChange={setRtiResponseCode}/><Field label={rtiOutcome==="rejected"?"Rejection message":"HMRC response message"} value={rtiResponseMessage} onChange={setRtiResponseMessage}/><button className="primary" disabled={!rtiResultId||rtiAcknowledgement.trim().length<6||!rtiSubmittedAt||(rtiOutcome==="rejected"&&rtiResponseMessage.trim().length<3)} onClick={recordRtiFilingResult}>Record external result</button></div>
   </div>;
-  const rtiPeriodSelector=selected==="EPS"?<ModulePeriodBar title={taxYear} subtitle="RTI tax months" ariaLabel="RTI tax month" value={epsTaxMonth} items={Array.from({length:12},(_,index)=>{const value=index+1,existing=rtiHistory.find(item=>item.type==="EPS"&&Number(submissionPayload(item).periodNumber)===value),status=existing?.status||"Only if required";return{value,prefix:`M${value}`,label:months[index],status,done:["accepted","submitted"].includes(status)};})} onSelect={value=>{setEpsTaxMonth(value);setDraft(null);setDeclaration(false);}}/>:["FPS","Additional FPS"].includes(selected)?<ModulePeriodBar title={taxYear} subtitle={`${payrollFrequencyRule(payFrequency).label} RTI periods`} ariaLabel="RTI payroll period" value={submissionPeriod} items={rtiSchedule.map(item=>({value:item.periodNumber,prefix:`P${item.periodNumber}`,label:payFrequency==="monthly"?months[item.taxMonth-1]:new Intl.DateTimeFormat("en-GB",{day:"2-digit",month:"short",timeZone:"UTC"}).format(new Date(`${item.payDate.iso}T00:00:00Z`)),status:item.fpsStatus,disabled:!item.payrollFinalised,done:["accepted","submitted"].includes(item.fpsStatus),title:`Pay date ${item.payDate.label}`}))} onSelect={value=>{setSubmissionPeriod(value);setDraft(null);setDeclaration(false);}}/>:null;
+  const rtiPeriodSelector=selected==="EPS"?<ModulePeriodBar title={taxYear} subtitle="RTI tax months" ariaLabel="RTI tax month" value={epsTaxMonth} items={Array.from({length:12},(_,index)=>{const value=index+1,existing=rtiHistory.find(item=>item.type==="EPS"&&Number(submissionPayload(item).periodNumber)===value),fpsComplete=allFpsCompleteForMonth(value),status=existing?.status||(fpsComplete?"Not required unless adjustments · FPS complete":"Only if required");return{value,prefix:`M${value}`,label:months[index],status,done:status==="accepted"||fpsComplete};})} onSelect={value=>{setEpsTaxMonth(value);setDraft(null);setDeclaration(false);}}/>:["FPS","Additional FPS"].includes(selected)?<ModulePeriodBar title={taxYear} subtitle={`${payrollFrequencyRule(payFrequency).label} RTI periods`} ariaLabel="RTI payroll period" value={submissionPeriod} items={rtiSchedule.map(item=>({value:item.periodNumber,prefix:`P${item.periodNumber}`,label:payFrequency==="monthly"?months[item.taxMonth-1]:new Intl.DateTimeFormat("en-GB",{day:"2-digit",month:"short",timeZone:"UTC"}).format(new Date(`${item.payDate.iso}T00:00:00Z`)),status:item.fpsStatus,done:item.fpsRequirementComplete,title:`Pay date ${item.payDate.label}`}))} onSelect={value=>{setSubmissionPeriod(value);setDraft(null);setDeclaration(false);}}/>:null;
   const selectionOptions={map:(_render:unknown)=>rtiPeriodSelector};
   return <div className="operational-workspace"><div className="subnav" aria-label={selected==="EPS"?"RTI tax month":"RTI payroll period"}>{selectionOptions.map(value=><button key={value} className={activeSubmissionPeriod===value?"active":""} onClick={()=>{if(selected==="EPS")setEpsTaxMonth(value);else setSubmissionPeriod(value);setDraft(null);setDeclaration(false);}}>{selected==="EPS"?`Tax month ${value}`:`Period ${value}`}</button>)}</div>{unpreparedFpsPeriods.length>0&&<div className="portal-message"><b>{unpreparedFpsPeriods.length} finalised payroll {unpreparedFpsPeriods.length===1?"period has":"periods have"} no FPS package.</b> Prepare each outstanding period ({unpreparedFpsPeriods.map(item=>item.periodNumber).join(", ")}) and record the correct late-reporting reason where required. Later periods remain available so catch-up work can be completed in the correct order.</div>}<div className="submission-cards">{submissions.map(([code,name,period,status])=><button key={code} className={selected===code?"selected":""} onClick={()=>{setSelected(code);setDraft(null);setDeclaration(false);}}><span>{code}</span><b>{name}</b><small>{period}</small><i>{status}</i></button>)}</div><div className="operation-grid"><section className="operation-card"><div className="card-head"><div><h2>{submissions.find(s=>s[0]===selected)?.[1]}</h2><p>{employerIdentity.name} · PAYE {employerIdentity.payeReference}</p></div><span className={`status ${draft?.status==="validated"?"":"amber"}`}>{selected==="NVR"?"HMRC suspended":draft?.status||"Not generated"}</span></div><div className="validation-list"><div><span>✓</span><p><b>Employer identifiers</b><small>Checked when the draft is generated</small></p></div><div><span>{draft?"✓":"·"}</span><p><b>Employee records</b><small>{draft?`${draft.employeeCount} records loaded from finalised payroll`:"Awaiting generation"}</small></p></div><div><span>{draft?"✓":"·"}</span><p><b>Period and year-to-date values</b><small>{draft?"Totals reconcile to immutable finalised pay runs and imported opening balances":"Awaiting reconciliation"}</small></p></div><div className="warning"><span>!</span><p><b>External gateway</b><small>Live transmission is disabled until HMRC recognition and credentials are configured</small></p></div></div>{filingOptions}{selected!=="NVR"&&<Check text="I confirm this return is complete and correct" checked={declaration} onChange={setDeclaration}/>}<div className="operation-footer"><button disabled={selected==="NVR"} onClick={()=>toast(draft?JSON.stringify(selected==="EPS"?recoveries:totals):"Generate the draft first.")}>Preview totals</button><button disabled={filing||selected==="NVR"} onClick={validateSubmission}>{filing?"Validating…":"Generate & validate"}</button><button className="primary" disabled={selected==="NVR"||filing||!draft||draft.status!=="validated"||!declaration} onClick={prepareFiling}>Prepare filing package</button></div></section><aside className="calculation-panel"><span>{selected==="EPS"?"EPS recovery and levy":"Submission totals"}</span>{selected==="EPS"?<><SummaryLine label="Statutory pay recovered" value={recoveries.statutoryPayRecovered||0}/><SummaryLine label="CIS deductions suffered" value={recoveries.cisDeductionsSuffered||0}/><SummaryLine label="Apprenticeship Levy" value={recoveries.apprenticeshipLevy||0} strong highlight/></>:<><SummaryLine label="Employees" value={draft?.employeeCount||0} format="number"/><SummaryLine label="Gross pay" value={totals.grossPay||0}/><SummaryLine label="PAYE tax" value={totals.payeTax||0}/><SummaryLine label="Employee NIC" value={totals.employeeNic||0}/><SummaryLine label="Employer NIC" value={totals.employerNic||0}/><SummaryLine label="Net pay" value={totals.netPay||0} strong highlight/></>}<small>{selected==="NVR"?"Use FPS identity matching for employees whose NINO is unknown.":selected==="EPS"?"Values are reconciled from statutory leave, CIS records and the cumulative levy calculation.":"Displayed totals are for the selected finalised payroll period; FPS year-to-date values also include audited migration openings."}</small></aside></div><section className="operation-card"><div className="card-head"><div><h2>RTI submission schedule</h2><p>FPS is due on or before each pay date processed in PayFlow. Imported periods were processed in the previous payroll system and do not create PayFlow filing tasks.</p></div><span>{finalised.length} PayFlow periods finalised · {migrated.length} imported</span></div><div className="report-table-scroll"><table><thead><tr><th>Payroll period</th><th>Payroll</th><th>Pay date / FPS deadline</th><th>FPS filing state</th><th>EPS tax month / deadline</th><th>EPS filing state</th></tr></thead><tbody>{rtiSchedule.map(item=><tr key={item.periodNumber}><td><button onClick={()=>{if(item.payrollFinalised){setSubmissionPeriod(item.periodNumber);setSelected("FPS");setDraft(null);setDeclaration(false);}}}>Period {item.periodNumber} · {payFrequency==="monthly"?months[item.taxMonth-1]:`week ${item.taxWeekNumber}`}</button></td><td><span className={`status ${item.payrollFinalised||item.payrollMigrated?"":"amber"}`}>{item.payrollFinalised?"Finalised":item.payrollMigrated?"Imported history":"Awaiting payroll"}</span></td><td>{item.payDate.label}</td><td><span className={`status ${item.fpsNeedsAction?"amber":""}`}>{item.fpsStatus}</span>{item.fpsNeedsAction&&<small>External filing evidence required</small>}</td><td>Month {item.taxMonth} · {item.epsDue.label}</td><td>{item.epsStatus}</td></tr>)}</tbody></table></div></section><section className="operation-card"><div className="card-head"><div><h2>RTI submission history</h2><p>Validated, superseded and adapter-ready packages retained for this employer. “Prepared” is not an HMRC submission.</p></div><span>{rtiHistory.length} records</span></div><table><thead><tr><th>ID</th><th>Type</th><th>Status</th><th>Due / pay date</th><th>Prepared</th><th>HMRC submitted</th><th>Correlation</th></tr></thead><tbody>{rtiHistory.slice(0,25).map(item=><tr key={item.id}><td>#{item.id}</td><td><b>{item.type}</b></td><td><span className={`status ${item.status==="invalid"?"amber":""}`}>{item.status}</span></td><td>{formatUkDate(item.dueDate)}</td><td>{formatUkDate(item.preparedAt)}</td><td>{formatUkDate(item.submittedAt,"Not transmitted")}</td><td>{item.correlationId||"Local draft"}</td></tr>)}</tbody></table></section></div>;
 }
