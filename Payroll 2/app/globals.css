@@ -33,6 +33,7 @@
 .report-colour-field>div{display:flex;gap:8px}.report-colour-field input[type=color]{width:52px;height:40px;padding:3px;cursor:pointer}.report-colour-field input[type=text],.report-colour-field input:not([type]){flex:1;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;text-transform:uppercase}
 .neonatal-evidence{margin-top:18px;padding:16px;border:1px solid #cce6e0;border-radius:8px;background:#f7fbfa}.neonatal-evidence .portal-message.valid{border-color:#8bc8bd;background:#e8f6f2;color:#075f59}
 .embedded-evidence-form{grid-column:1/-1;margin-top:14px;padding:15px;border:1px solid #d8e3e5;border-radius:8px;background:#f8fbfb}.embedded-evidence-form h3{margin:0 0 4px;font-size:14px}.embedded-evidence-form p{margin:0 0 14px;color:#6d7c83;font-size:11px;line-height:1.45}.embedded-evidence-form .primary{margin-top:10px}
+.rti-result-modal{width:min(760px,calc(100vw - 36px));max-height:92vh}.rti-result-modal>header{align-items:flex-start;gap:18px}.rti-result-modal>header h2{margin:3px 0 5px}.rti-result-modal>header p{margin:0;color:#65787f;line-height:1.45}.rti-result-modal .form-body{overflow:auto}.rti-result-modal .form-grid{grid-template-columns:1fr}.rti-result-modal>footer{display:flex;justify-content:flex-end;gap:10px}
 
 .feature-library{border:1px solid #dce4e7;border-radius:10px;background:#f8fafb}
 .feature-library>summary{cursor:pointer;list-style:none;padding:12px 15px;display:flex;justify-content:space-between;align-items:center;color:#405158;font-size:12px;font-weight:700}
