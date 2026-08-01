@@ -6,16 +6,54 @@ DEPLOY_BRANCH="${1:?Deploy branch is required}"
 REBUILD_BACKEND="${2:?Backend rebuild flag is required}"
 DEPLOY_MODE="${3:-deploy}"
 RECLAIM_DOCKER_SPACE="${4:-false}"
+EXPECTED_RELEASE_COMMIT="${5:?Immutable release commit is required}"
+BACKEND_ROLLBACK_READY=false
+API_ROLLBACK_IMAGE=""
+PAYROLL_ROLLBACK_IMAGE=""
 
 cleanup_deploy_artifacts() {
   rm -f /tmp/autoentry-client-app-deploy/frontend-build.tar.gz \
+    /tmp/autoentry-client-app-deploy/frontend-build.tar.gz.sha256 \
     /tmp/autoentry-client-app-deploy/backend-images.tar.gz \
-    /tmp/autoentry-client-app-deploy/backend-image-ids.txt
+    /tmp/autoentry-client-app-deploy/backend-images.tar.gz.sha256
 }
+
+restore_previous_backend() {
+  if [ "$BACKEND_ROLLBACK_READY" != "true" ]; then
+    return
+  fi
+  echo "Restoring the previous healthy backend images"
+  docker image tag "$API_ROLLBACK_IMAGE" autoentry-client-app-api:latest
+  docker image tag "$PAYROLL_ROLLBACK_IMAGE" autoentry-client-app-payroll-worker:latest
+  docker compose up -d --no-build payroll-worker api
+  docker compose ps -a
+  BACKEND_ROLLBACK_READY=false
+}
+
+deployment_error() {
+  status=$?
+  trap - ERR
+  set +e
+  echo "Deployment failed at line $1: $2 (exit $status)" >&2
+  restore_previous_backend
+  exit "$status"
+}
+
 trap cleanup_deploy_artifacts EXIT
-trap 'status=$?; echo "Deployment failed at line $LINENO: $BASH_COMMAND (exit $status)" >&2; exit "$status"' ERR
+trap 'deployment_error "$LINENO" "$BASH_COMMAND"' ERR
 
 cd /opt/autoentry-client-app
+
+if ! [[ "$EXPECTED_RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "Invalid immutable release commit: $EXPECTED_RELEASE_COMMIT"
+  exit 1
+fi
+
+echo "Verifying transferred release artifacts"
+(cd /tmp/autoentry-client-app-deploy && sha256sum -c frontend-build.tar.gz.sha256)
+if [ "$REBUILD_BACKEND" = "true" ]; then
+  (cd /tmp/autoentry-client-app-deploy && sha256sum -c backend-images.tar.gz.sha256)
+fi
 
 DEPLOY_TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP_ROOT="$HOME/autoentry-deploy-backups/$DEPLOY_TIMESTAMP"
@@ -93,6 +131,34 @@ if [ "$DUMP_EXIT" -ne 0 ] || [ "$DUMP_BYTES" -le 0 ]; then
 fi
 mv "$DUMP_TEMP" "$BACKUP_ROOT/mysql.sql"
 
+PAYROLL_DATA_DIR="/opt/autoentry-client-app/Payroll 2/data"
+PAYROLL_DATABASE="$PAYROLL_DATA_DIR/payroll.sqlite"
+if [ -f "$PAYROLL_DATABASE" ]; then
+  echo "Creating a consistent payroll SQLite backup"
+  PAYROLL_BACKUP_TEMP=".deployment-backup-$DEPLOY_TIMESTAMP.sqlite"
+  PAYROLL_BACKUP_SCRIPT='const { DatabaseSync } = require("node:sqlite"); const source = new DatabaseSync("/data/payroll.sqlite"); source.exec("PRAGMA busy_timeout=60000"); const target = process.env.PAYROLL_BACKUP_PATH.replaceAll("\u0027", "\u0027\u0027"); source.exec(`VACUUM INTO \u0027${target}\u0027`); source.close(); const backup = new DatabaseSync(process.env.PAYROLL_BACKUP_PATH, { readOnly: true }); const result = backup.prepare("PRAGMA integrity_check").get(); backup.close(); if (result.integrity_check !== "ok") throw new Error(`Payroll backup integrity check failed: ${result.integrity_check}`);'
+  PAYROLL_CONTAINER="$(timeout 15 docker compose ps -q payroll-worker || true)"
+  if [ -n "$PAYROLL_CONTAINER" ] && [ "$(docker inspect -f '{{.State.Running}}' "$PAYROLL_CONTAINER" 2>/dev/null || echo false)" = "true" ]; then
+    timeout 120 docker exec \
+      -e "PAYROLL_BACKUP_PATH=/data/$PAYROLL_BACKUP_TEMP" \
+      "$PAYROLL_CONTAINER" \
+      node -e "$PAYROLL_BACKUP_SCRIPT"
+  else
+    echo "The payroll worker is stopped; using its current image for the consistent backup"
+    timeout 120 docker run --rm \
+      --entrypoint node \
+      -v "$PAYROLL_DATA_DIR:/data" \
+      -e "PAYROLL_BACKUP_PATH=/data/$PAYROLL_BACKUP_TEMP" \
+      autoentry-client-app-payroll-worker:latest \
+      -e "$PAYROLL_BACKUP_SCRIPT"
+  fi
+  mv "$PAYROLL_DATA_DIR/$PAYROLL_BACKUP_TEMP" "$BACKUP_ROOT/payroll.sqlite"
+  sha256sum "$BACKUP_ROOT/payroll.sqlite" > "$BACKUP_ROOT/payroll.sqlite.sha256"
+  echo "Payroll SQLite backup completed and passed integrity_check"
+else
+  echo "No payroll SQLite database exists yet; skipping payroll backup"
+fi
+
 LEGACY_UPLOAD_COUNT="$(find "$LEGACY_UPLOADS" -type f 2>/dev/null | wc -l)"
 CURRENT_UPLOAD_COUNT_BEFORE="$(find "$CURRENT_UPLOADS" -type f 2>/dev/null | wc -l)"
 if [ "$LEGACY_UPLOAD_COUNT" -gt "$CURRENT_UPLOAD_COUNT_BEFORE" ]; then
@@ -120,6 +186,10 @@ echo "Syncing branch: $DEPLOY_BRANCH"
 git fetch origin "$DEPLOY_BRANCH"
 git checkout "$DEPLOY_BRANCH"
 git reset --hard "origin/$DEPLOY_BRANCH"
+if [ "$(git rev-parse HEAD)" != "$EXPECTED_RELEASE_COMMIT" ]; then
+  echo "The branch moved after this release was built. Expected $EXPECTED_RELEASE_COMMIT but the VPS checked out $(git rev-parse HEAD). Refusing a mixed release; run the workflow again."
+  exit 1
+fi
 
 echo "Preparing persistent upload storage"
 mkdir -p "$CURRENT_UPLOADS"
@@ -150,10 +220,14 @@ if [ "$CURRENT_UPLOAD_COUNT" -lt "$LEGACY_UPLOAD_COUNT" ]; then
 fi
 echo "Upload migration verified: $CURRENT_UPLOAD_COUNT files available in the current upload path."
 
-echo "Installing prebuilt frontend files"
-rm -rf "Client App/frontend/build"
-mkdir -p "Client App/frontend/build"
-tar -xzf /tmp/autoentry-client-app-deploy/frontend-build.tar.gz -C "Client App/frontend/build"
+echo "Staging prebuilt frontend files without changing the live frontend"
+FRONTEND_STAGING="/tmp/autoentry-client-app-deploy/frontend-build"
+mkdir "$FRONTEND_STAGING"
+tar -xzf /tmp/autoentry-client-app-deploy/frontend-build.tar.gz -C "$FRONTEND_STAGING"
+if [ ! -s "$FRONTEND_STAGING/index.html" ]; then
+  echo "The staged frontend has no index.html; refusing to replace the live frontend."
+  exit 1
+fi
 
 echo "VPS is now on:"
 git log --oneline -1
@@ -162,11 +236,6 @@ git status --short
 if [ "$REBUILD_BACKEND" = "true" ]; then
   echo "Loading prebuilt backend images"
   ls -lh /tmp/autoentry-client-app-deploy/backend-images.tar.gz
-  IMAGE_MANIFEST="/tmp/autoentry-client-app-deploy/backend-image-ids.txt"
-  if [ ! -s "$IMAGE_MANIFEST" ]; then
-    echo "The backend image identity manifest is missing; refusing to deploy images that cannot be verified."
-    exit 1
-  fi
   echo "Disk before Docker load:"
   df -h
   echo "Docker storage before Docker load:"
@@ -195,22 +264,29 @@ if [ "$REBUILD_BACKEND" = "true" ]; then
   timeout 600 sh -c 'gzip -dc /tmp/autoentry-client-app-deploy/backend-images.tar.gz | docker load'
   load_finished="$(date +%s)"
   echo "Docker images loaded in $((load_finished - load_started)) seconds"
-  EXPECTED_API_ID="$(sed -n 's/^api=//p' "$IMAGE_MANIFEST" | tail -n 1)"
-  EXPECTED_PAYROLL_ID="$(sed -n 's/^payroll-worker=//p' "$IMAGE_MANIFEST" | tail -n 1)"
-  ACTUAL_API_ID="$(docker image inspect --format '{{.Id}}' autoentry-client-app-api:latest)"
-  ACTUAL_PAYROLL_ID="$(docker image inspect --format '{{.Id}}' autoentry-client-app-payroll-worker:latest)"
-  if [ -z "$EXPECTED_API_ID" ] || [ -z "$EXPECTED_PAYROLL_ID" ] || [ "$ACTUAL_API_ID" != "$EXPECTED_API_ID" ] || [ "$ACTUAL_PAYROLL_ID" != "$EXPECTED_PAYROLL_ID" ]; then
-    echo "Backend image verification failed after Docker load."
-    echo "API expected=$EXPECTED_API_ID actual=$ACTUAL_API_ID"
-    echo "Payroll expected=$EXPECTED_PAYROLL_ID actual=$ACTUAL_PAYROLL_ID"
+  API_RELEASE_IMAGE="autoentry-client-app-api:$EXPECTED_RELEASE_COMMIT"
+  PAYROLL_RELEASE_IMAGE="autoentry-client-app-payroll-worker:$EXPECTED_RELEASE_COMMIT"
+  API_RELEASE_LABEL="$(docker image inspect --format '{{ index .Config.Labels "net.eposbookings.release.commit" }}' "$API_RELEASE_IMAGE")"
+  PAYROLL_RELEASE_LABEL="$(docker image inspect --format '{{ index .Config.Labels "net.eposbookings.release.commit" }}' "$PAYROLL_RELEASE_IMAGE")"
+  if [ "$API_RELEASE_LABEL" != "$EXPECTED_RELEASE_COMMIT" ] || [ "$PAYROLL_RELEASE_LABEL" != "$EXPECTED_RELEASE_COMMIT" ]; then
+    echo "Backend release-label verification failed after Docker load."
+    echo "API expected=$EXPECTED_RELEASE_COMMIT actual=$API_RELEASE_LABEL"
+    echo "Payroll expected=$EXPECTED_RELEASE_COMMIT actual=$PAYROLL_RELEASE_LABEL"
     exit 1
   fi
-  echo "Both backend image identities match the GitHub build artifact"
+  echo "Both backend images match immutable release $EXPECTED_RELEASE_COMMIT"
+  API_ROLLBACK_IMAGE="autoentry-client-app-api:rollback-$DEPLOY_TIMESTAMP"
+  PAYROLL_ROLLBACK_IMAGE="autoentry-client-app-payroll-worker:rollback-$DEPLOY_TIMESTAMP"
+  if docker image inspect autoentry-client-app-api:latest >/dev/null 2>&1 && docker image inspect autoentry-client-app-payroll-worker:latest >/dev/null 2>&1; then
+    docker image tag autoentry-client-app-api:latest "$API_ROLLBACK_IMAGE"
+    docker image tag autoentry-client-app-payroll-worker:latest "$PAYROLL_ROLLBACK_IMAGE"
+    BACKEND_ROLLBACK_READY=true
+    echo "Previous backend images retained as rollback-$DEPLOY_TIMESTAMP"
+  fi
+  docker image tag "$API_RELEASE_IMAGE" autoentry-client-app-api:latest
+  docker image tag "$PAYROLL_RELEASE_IMAGE" autoentry-client-app-payroll-worker:latest
   docker compose up -d --no-build payroll-worker api
 fi
-
-echo "Restarting lightweight web containers"
-docker compose up -d --force-recreate frontend nginx
 
 echo "Payroll worker health check"
 for attempt in $(seq 1 60); do
@@ -229,11 +305,13 @@ for attempt in $(seq 1 60); do
   if [ "$PAYROLL_RUNNING" != "true" ]; then
     echo "Payroll worker stopped before becoming healthy. Recent logs:"
     docker compose logs --tail=160 payroll-worker
+    restore_previous_backend
     exit 1
   fi
   if [ "$attempt" -eq 60 ]; then
     echo "Payroll worker did not become healthy within five minutes. Recent logs:"
     docker compose logs --tail=200 payroll-worker
+    restore_previous_backend
     exit 1
   fi
   echo "Payroll worker not ready yet ($attempt/60; health=$PAYROLL_HEALTH)..."
@@ -241,16 +319,19 @@ for attempt in $(seq 1 60); do
 done
 
 echo "Health check"
+API_HEALTHY=false
 for attempt in $(seq 1 180); do
   if curl -fsS http://localhost:8000/api/health; then
     echo
     echo "API is healthy"
-    exit 0
+    API_HEALTHY=true
+    break
   fi
   API_CONTAINER="$(docker compose ps -q api)"
   if [ -z "$API_CONTAINER" ] || [ "$(docker inspect -f '{{.State.Running}}' "$API_CONTAINER" 2>/dev/null || echo false)" != "true" ]; then
     echo "API container stopped before becoming healthy. Recent logs:"
     docker compose logs --tail=160 api
+    restore_previous_backend
     exit 1
   fi
   echo "API not ready yet ($attempt/180); schema upgrade or startup is still running..."
@@ -261,6 +342,40 @@ for attempt in $(seq 1 180); do
   sleep 5
 done
 
-echo "API did not become healthy within 15 minutes. Recent logs:"
-docker compose logs --tail=200 api
+if [ "$API_HEALTHY" != "true" ]; then
+  echo "API did not become healthy within 15 minutes. Recent logs:"
+  docker compose logs --tail=200 api
+  restore_previous_backend
+  exit 1
+fi
+
+echo "Restarting lightweight web containers after backend health verification"
+FRONTEND_PREVIOUS_AVAILABLE=false
+if [ -d "Client App/frontend/build" ]; then
+  mv "Client App/frontend/build" "$BACKUP_ROOT/frontend-build"
+  FRONTEND_PREVIOUS_AVAILABLE=true
+fi
+mv "$FRONTEND_STAGING" "Client App/frontend/build"
+docker compose up -d --force-recreate frontend nginx
+
+echo "Frontend health check"
+for attempt in $(seq 1 30); do
+  if curl -fsS http://localhost:3000/ >/dev/null; then
+    echo "Frontend is healthy"
+    docker compose ps
+    exit 0
+  fi
+  echo "Frontend not ready yet ($attempt/30)..."
+  sleep 2
+done
+
+echo "Frontend did not become healthy within one minute. Recent logs:"
+docker compose logs --tail=120 frontend nginx
+if [ "$FRONTEND_PREVIOUS_AVAILABLE" = "true" ] && [ -d "$BACKUP_ROOT/frontend-build" ]; then
+  echo "Restoring the previous frontend build"
+  mv "Client App/frontend/build" "$BACKUP_ROOT/frontend-build.failed"
+  mv "$BACKUP_ROOT/frontend-build" "Client App/frontend/build"
+  docker compose up -d --force-recreate frontend nginx
+fi
+restore_previous_backend
 exit 1
