@@ -3376,3 +3376,23 @@ test("RTI, CIS and pension workspaces share payroll-style period navigation with
   assert.match(styles,/\.module-period-wrap/);
   assert.match(styles,/\.cis-workspace>\.subnav:not\(\.cis-section-nav\)/);
 });
+
+test("main payroll period strip keeps its label visible and distinguishes open, completed and future periods",async()=>{
+  const [page,styles,mirrorPage,mirrorStyles]=await Promise.all([
+    readFile("app/page.tsx","utf8"),
+    readFile("app/globals.css","utf8"),
+    readFile("migration/epos-compatible/frontend/src/modules/payroll/PayrollWorkspace.tsx","utf8"),
+    readFile("migration/epos-compatible/frontend/src/modules/payroll/payroll.css","utf8"),
+  ]);
+  for(const source of [page,mirrorPage]){
+    assert.match(source,/className="period-wrap payroll-period-wrap"/);
+    assert.match(source,/n === open \? "open" : ""/);
+    assert.match(source,/locked \? "future" : ""/);
+  }
+  assert.match(styles,/\.payroll-period-wrap\{[\s\S]*?height:76px;[\s\S]*?min-height:76px;/);
+  assert.match(styles,/\.payroll-period-wrap \.periods button\.done:not\(\.open\)[\s\S]*?background:#e8f2fb!important;/);
+  assert.match(styles,/\.payroll-period-wrap \.periods button\.future[\s\S]*?background:#f2eff8!important;/);
+  assert.match(styles,/\.payroll-period-wrap \.periods button\.open[\s\S]*?background:linear-gradient\(135deg,#087b79,#075f61\)!important;/);
+  assert.match(mirrorStyles,/\.payroll-module \.payroll-period-wrap\{[\s\S]*?height:76px;[\s\S]*?min-height:76px;/);
+  assert.match(mirrorStyles,/\.payroll-module \.payroll-period-wrap \.periods button\.future/);
+});

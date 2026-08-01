@@ -1323,3 +1323,55 @@
 .payroll-module .cis-workspace>.subnav:not(.cis-section-nav){display:none}.payroll-module .cis-section-nav{align-items:center}.payroll-module .cis-section-nav .inline-select{margin-left:auto}
 .payroll-module label.field:has(select[aria-label="Contribution period"]){display:none}
 @media(max-width:800px){.payroll-module .module-period-wrap{height:auto;min-height:70px}.payroll-module .module-period-wrap .period-label{flex-basis:86px;width:86px}.payroll-module .module-period-wrap .periods button{flex-basis:88px;min-width:88px}}
+
+/* Main payroll period states: keep the year label visible and make status clear at a glance. */
+.payroll-module .payroll-period-wrap{
+  height:76px;
+  min-height:76px;
+  overflow:visible;
+}
+.payroll-module .payroll-period-wrap .period-label{
+  min-height:60px;
+  overflow:visible;
+}
+.payroll-module .payroll-period-wrap .period-label small{
+  display:block;
+  line-height:1.35;
+  overflow:visible;
+}
+.payroll-module .payroll-period-wrap .periods button.done:not(.open),
+.payroll-module .payroll-period-wrap .periods button.done.current:not(.open),
+.payroll-module .payroll-period-wrap .periods button.done[aria-current="true"]:not(.open){
+  background:#e8f2fb!important;
+  border-color:#78abc8!important;
+  color:#155b78!important;
+  box-shadow:0 1px 4px rgba(21,91,120,.14)!important;
+}
+.payroll-module .payroll-period-wrap .periods button.done:not(.open) b,
+.payroll-module .payroll-period-wrap .periods button.done:not(.open) i{
+  color:#155b78!important;
+}
+.payroll-module .payroll-period-wrap .periods button.future,
+.payroll-module .payroll-period-wrap .periods button.future:disabled{
+  background:#f2eff8!important;
+  border-color:#b9afd0!important;
+  color:#655a7a!important;
+  box-shadow:0 1px 3px rgba(84,69,112,.1)!important;
+  opacity:1!important;
+}
+.payroll-module .payroll-period-wrap .periods button.future b,
+.payroll-module .payroll-period-wrap .periods button.future i{
+  color:#554b69!important;
+}
+.payroll-module .payroll-period-wrap .periods button.open,
+.payroll-module .payroll-period-wrap .periods button.open:disabled{
+  background:linear-gradient(135deg,#087b79,#075f61)!important;
+  border-color:#075f61!important;
+  color:#fff!important;
+  box-shadow:0 0 0 2px #fff,0 0 0 4px rgba(8,123,121,.26),0 4px 10px rgba(7,95,97,.18)!important;
+}
+.payroll-module .payroll-period-wrap .periods button.open *{color:#fff!important}
+
+@media(max-width:1180px){
+  .payroll-module .payroll-period-wrap{height:64px;min-height:64px;overflow:hidden}
+}
