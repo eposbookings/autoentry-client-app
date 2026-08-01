@@ -120,6 +120,22 @@ if [ -d "$BACKUP_ROOT/legacy-uploads" ]; then
   cp -an "$BACKUP_ROOT/legacy-uploads/." "$CURRENT_UPLOADS/"
 fi
 
+echo "Checking payroll integration secret"
+PAYROLL_SECRET="$(sed -n 's/^PAYROLL_INTEGRATION_SECRET=//p' .env | tail -n 1)"
+if [ "${#PAYROLL_SECRET}" -lt 32 ]; then
+  cp .env "$BACKUP_ROOT/env.before-payroll-secret"
+  PAYROLL_SECRET="$(openssl rand -hex 32)"
+  if grep -q '^PAYROLL_INTEGRATION_SECRET=' .env; then
+    sed -i "s/^PAYROLL_INTEGRATION_SECRET=.*/PAYROLL_INTEGRATION_SECRET=$PAYROLL_SECRET/" .env
+  else
+    printf '\nPAYROLL_INTEGRATION_SECRET=%s\n' "$PAYROLL_SECRET" >> .env
+  fi
+  chmod 600 .env
+  echo "Generated and persisted a new payroll integration secret"
+else
+  echo "Existing payroll integration secret is configured"
+fi
+
 CURRENT_UPLOAD_COUNT="$(find "$CURRENT_UPLOADS" -type f 2>/dev/null | wc -l)"
 if [ "$CURRENT_UPLOAD_COUNT" -lt "$LEGACY_UPLOAD_COUNT" ]; then
   echo "Upload migration verification failed: expected at least $LEGACY_UPLOAD_COUNT files, found $CURRENT_UPLOAD_COUNT."
@@ -137,17 +153,19 @@ git log --oneline -1
 git status --short
 
 if [ "$REBUILD_BACKEND" = "true" ]; then
-  echo "Loading prebuilt API image"
-  ls -lh /tmp/autoentry-client-app-deploy/api-image.tar.gz
+  echo "Loading prebuilt backend images"
+  ls -lh /tmp/autoentry-client-app-deploy/backend-images.tar.gz
   echo "Disk before Docker load:"
   df -h
   echo "Docker storage before Docker load:"
   docker system df || true
   load_started="$(date +%s)"
-  timeout 600 sh -c 'gzip -dc /tmp/autoentry-client-app-deploy/api-image.tar.gz | docker load'
+  timeout 600 sh -c 'gzip -dc /tmp/autoentry-client-app-deploy/backend-images.tar.gz | docker load'
   load_finished="$(date +%s)"
-  echo "Docker image loaded in $((load_finished - load_started)) seconds"
-  docker compose up -d --no-build api
+  echo "Docker images loaded in $((load_finished - load_started)) seconds"
+  docker image inspect autoentry-client-app-api:latest >/dev/null
+  docker image inspect autoentry-client-app-payroll-worker:latest >/dev/null
+  docker compose up -d --no-build payroll-worker api
 fi
 
 echo "Restarting lightweight web containers"
