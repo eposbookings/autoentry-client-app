@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { api, formatApiError, API } from "@/lib/api";
+import { formatUkDate, formatUkDateTime } from "@/lib/date";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1534,8 +1535,8 @@ function PublishConfirmationPanel({ draft, onCancel, onConfirm, busy }) {
       <div className="mt-3 grid gap-2 text-sm md:grid-cols-2 xl:grid-cols-4">
         <ReadonlyFact label="Customer" value={draft.customer_name || "Not set"} />
         <ReadonlyFact label="Invoice number" value={draft.sales_invoice_number || draft.reference || "Not set"} />
-        <ReadonlyFact label="Invoice date" value={draft.invoice_date || draft.date || "Not set"} />
-        <ReadonlyFact label="Due date" value={draft.due_date || "Not set"} />
+        <ReadonlyFact label="Invoice date" value={formatUkDate(draft.invoice_date || draft.date, "Not set")} />
+        <ReadonlyFact label="Due date" value={formatUkDate(draft.due_date, "Not set")} />
         <ReadonlyFact label="Net / VAT / Gross" value={`${draft.net || "0.00"} / ${draft.vat || "0.00"} / ${draft.total || "0.00"}`} />
         <ReadonlyFact label="Destination" value="Accounts Receivable" />
         <ReadonlyFact label="Debit" value="Debtors control" />
@@ -2644,9 +2645,7 @@ function tabLabel(tab) {
 }
 
 function formatDateTime(value) {
-  if (!value) return "Not dated";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  return formatUkDateTime(value, "Not dated");
 }
 
 function isPdfFile(filename) {

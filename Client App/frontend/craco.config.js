@@ -151,6 +151,26 @@ if (isDevServer) {
   }
 }
 
+// The visual-edits wrapper can replace the webpack configure callback in
+// development. Apply the TypeScript resolver last so lazy-loaded payroll
+// modules resolve identically in `craco start` and production builds.
+const configureWebpack = webpackConfig.webpack?.configure;
+webpackConfig.webpack ??= {};
+webpackConfig.webpack.configure = (resolvedConfig, context) => {
+  const configured = typeof configureWebpack === "function"
+    ? configureWebpack(resolvedConfig, context)
+    : resolvedConfig;
+  configured.resolve ??= {};
+  configured.resolve.extensions = [
+    ".tsx",
+    ".ts",
+    ...(configured.resolve.extensions || []).filter(
+      (extension) => extension !== ".tsx" && extension !== ".ts"
+    ),
+  ];
+  return configured;
+};
+
 const configureDevServer = webpackConfig.devServer;
 webpackConfig.devServer = (devServerConfig) =>
   makeDevServerV5Compatible(configureDevServer(devServerConfig));

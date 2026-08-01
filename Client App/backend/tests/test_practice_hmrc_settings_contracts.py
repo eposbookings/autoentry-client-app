@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from fastapi import HTTPException
 
@@ -43,6 +45,34 @@ def test_hmrc_settings_routes_are_registered():
     routes = {(route.path, method) for route in server.api.routes for method in (route.methods or set())}
     assert ("/api/admin/accountancy/hmrc-settings", "GET") in routes
     assert ("/api/admin/accountancy/hmrc-settings", "PUT") in routes
+
+
+def test_hmrc_settings_save_uses_a_valid_utc_timestamp(monkeypatch):
+    async def no_existing_settings(*_args, **_kwargs):
+        return None
+
+    class RecordingSession:
+        def __init__(self):
+            self.executed = []
+            self.committed = False
+
+        async def execute(self, statement):
+            self.executed.append(statement)
+
+        async def commit(self):
+            self.committed = True
+
+    monkeypatch.setattr(server, "one", no_existing_settings)
+    session = RecordingSession()
+    response = asyncio.run(server.update_practice_hmrc_settings(
+        server.PracticeHmrcSettingsIn(environment="test"),
+        {"practice_id": "practice-1", "id": "admin-1"},
+        session,
+    ))
+
+    assert response["updated_at"].endswith("+00:00")
+    assert session.executed
+    assert session.committed is True
 
 
 @pytest.mark.parametrize(

@@ -40,3 +40,14 @@ export function formatApiError(err) {
     return "Something went wrong.";
   }
 }
+
+export function authenticatedFetch(input, init = {}) {
+  const headers = new Headers(init.headers || {});
+  if (bearerToken && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${bearerToken}`);
+  }
+  const target = typeof input === "string" && input.startsWith("/api/")
+    ? `${BACKEND_URL || ""}${input}`
+    : input;
+  return fetch(target, { credentials: "include", ...init, headers });
+}

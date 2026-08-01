@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { Badge } from "@/components/ui/badge";
 import { Building2, Plus, Search, ArrowRight } from "lucide-react";
 import { toast } from "sonner";
+import { formatUkDate } from "@/lib/date";
 
 export default function AdminClients() {
   const [clients, setClients] = useState([]);
@@ -158,7 +159,7 @@ export default function AdminClients() {
                   <div className="mt-2 grid gap-2 text-xs sm:grid-cols-3">
                     <Summary label="Company no." value={form.company_number} />
                     <Summary label="Status" value={form.company_status} />
-                    <Summary label="Incorporated" value={form.incorporation_date} />
+                    <Summary label="Incorporated" value={formatUkDate(form.incorporation_date)} />
                   </div>
                 )}
                 {contacts.length > 0 && (

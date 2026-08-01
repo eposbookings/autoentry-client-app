@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { api, formatApiError } from "@/lib/api";
+import { formatUkDateTime } from "@/lib/date";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -234,11 +235,11 @@ export default function AdminPlatform() {
           </div>
           <div className="grid gap-4 xl:grid-cols-2">
             <Panel title="Recent activity">
-              {safeArray(workspace.activity).slice(0, 8).map((item) => <Row key={item.id} title={item.summary || item.action} subtitle={`${item.module || "platform"} · ${item.created_at || ""}`} />)}
+              {safeArray(workspace.activity).slice(0, 8).map((item) => <Row key={item.id} title={item.summary || item.action} subtitle={`${item.module || "platform"} · ${formatUkDateTime(item.created_at, "Not dated")}`} />)}
               {!safeArray(workspace.activity).length && <Empty text="No platform activity recorded yet." />}
             </Panel>
             <Panel title="System health">
-              {healthRows.map((item) => <Row key={item.component} title={item.component} subtitle={item.checked_at || `Backlog: ${item.backlog ?? item.processing_backlog ?? "-"}`} badge={item.status} />)}
+              {healthRows.map((item) => <Row key={item.component} title={item.component} subtitle={item.checked_at ? formatUkDateTime(item.checked_at) : `Backlog: ${item.backlog ?? item.processing_backlog ?? "-"}`} badge={item.status} />)}
             </Panel>
           </div>
         </TabsContent>
@@ -335,7 +336,7 @@ export default function AdminPlatform() {
 
         <TabsContent value="activity">
           <Panel title="Global activity feed">
-            {safeArray(workspace.activity).map((item) => <Row key={item.id} title={item.summary || item.action} subtitle={`${item.module} · ${item.record_id || ""} · ${item.created_at || ""}`} badge={item.action} />)}
+            {safeArray(workspace.activity).map((item) => <Row key={item.id} title={item.summary || item.action} subtitle={`${item.module} · ${item.record_id || ""} · ${formatUkDateTime(item.created_at, "Not dated")}`} badge={item.action} />)}
             {!safeArray(workspace.activity).length && <Empty text="No activity recorded yet." />}
           </Panel>
         </TabsContent>

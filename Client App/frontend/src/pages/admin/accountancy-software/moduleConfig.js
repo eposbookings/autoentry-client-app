@@ -129,10 +129,10 @@ export const MODULE_DETAILS = {
   },
   gl: {
     title: "General Ledger",
-    manage: ["Transactions", "Journals", "Account Activity", "Trial Balance"],
+    manage: ["Transactions", "Journals", "Account Activity"],
     statLabel: "Posted journals",
     stat: (workspace) => workspace?.summary?.journals || 0,
-    tabs: ["Transactions", "Journals", "Account Activity", "Trial Balance"],
+    tabs: ["Transactions", "Journals", "Account Activity"],
   },
   coa: {
     title: "Chart of Accounts",
@@ -150,10 +150,10 @@ export const MODULE_DETAILS = {
   },
   reports: {
     title: "Reports",
-    manage: ["Profit and Loss", "Balance Sheet", "Management Reports", "VAT Reports", "Sales Reports", "Purchase Reports", "Bank Reports"],
+    manage: ["Profit and Loss", "Balance Sheet", "Trial Balance", "Management Reports", "VAT Reports", "Sales Reports", "Purchase Reports", "Bank Reports"],
     statLabel: "Net profit",
     stat: (workspace) => formatMoney(workspace?.reports?.dashboard?.net_profit || workspace?.reports?.profit_and_loss?.profit),
-    tabs: ["Profit and Loss", "Balance Sheet", "Management Reports", "VAT Reports", "Sales Reports", "Purchase Reports", "Bank Reports", "Custom Reports", "Report Scheduler", "Exports", "Settings"],
+    tabs: ["Profit and Loss", "Balance Sheet", "Trial Balance", "Management Reports", "VAT Reports", "Sales Reports", "Purchase Reports", "Bank Reports", "Custom Reports", "Report Scheduler", "Exports", "Settings"],
   },
   settings: {
     title: "Settings",

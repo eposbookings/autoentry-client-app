@@ -12,6 +12,9 @@ import pytest
 import requests
 from PIL import Image
 
+if not os.environ.get("REACT_APP_BACKEND_URL"):
+    pytest.skip("Live backend regression test requires REACT_APP_BACKEND_URL.", allow_module_level=True)
+
 BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/")
 ADMIN_EMAIL = "admin@eposaccountancy.co.uk"
 ADMIN_PASSWORD = "12345Sived"

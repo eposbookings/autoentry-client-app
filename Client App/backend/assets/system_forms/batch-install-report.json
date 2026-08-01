@@ -1,0 +1,91 @@
+{
+  "completed_at": "2026-07-30T22:57:58.599Z",
+  "installed": 12,
+  "failed": 0,
+  "results": [
+    {
+      "form_code": "SA100-2026",
+      "status": "installed",
+      "field_count": 496,
+      "pdf_path": "C:\\Users\\deevi\\OneDrive\\Documents\\GitHub\\EPOS Accountancy App\\Client App\\backend\\assets\\system_forms\\SA100-2026-system-fillable.pdf",
+      "manifest_path": "C:\\Users\\deevi\\OneDrive\\Documents\\GitHub\\EPOS Accountancy App\\Client App\\backend\\assets\\system_forms\\SA100-2026-system-fillable.field-map.json"
+    },
+    {
+      "form_code": "SA101-2026",
+      "status": "installed",
+      "field_count": 514,
+      "pdf_path": "C:\\Users\\deevi\\OneDrive\\Documents\\GitHub\\EPOS Accountancy App\\Client App\\backend\\assets\\system_forms\\SA101-2026-system-fillable.pdf",
+      "manifest_path": "C:\\Users\\deevi\\OneDrive\\Documents\\GitHub\\EPOS Accountancy App\\Client App\\backend\\assets\\system_forms\\SA101-2026-system-fillable.field-map.json"
+    },
+    {
+      "form_code": "SA102-2026",
+      "status": "installed",
+      "field_count": 366,
+      "pdf_path": "C:\\Users\\deevi\\OneDrive\\Documents\\GitHub\\EPOS Accountancy App\\Client App\\backend\\assets\\system_forms\\SA102-2026-system-fillable.pdf",
+      "manifest_path": "C:\\Users\\deevi\\OneDrive\\Documents\\GitHub\\EPOS Accountancy App\\Client App\\backend\\assets\\system_forms\\SA102-2026-system-fillable.field-map.json"
+    },
+    {
+      "form_code": "SA103S-2026",
+      "status": "installed",
+      "field_count": 241,
+      "pdf_path": "C:\\Users\\deevi\\OneDrive\\Documents\\GitHub\\EPOS Accountancy App\\Client App\\backend\\assets\\system_forms\\SA103S-2026-system-fillable.pdf",
+      "manifest_path": "C:\\Users\\deevi\\OneDrive\\Documents\\GitHub\\EPOS Accountancy App\\Client App\\backend\\assets\\system_forms\\SA103S-2026-system-fillable.field-map.json"
+    },
+    {
+      "form_code": "SA103F-2026",
+      "status": "installed",
+      "field_count": 782,
+      "pdf_path": "C:\\Users\\deevi\\OneDrive\\Documents\\GitHub\\EPOS Accountancy App\\Client App\\backend\\assets\\system_forms\\SA103F-2026-system-fillable.pdf",
+      "manifest_path": "C:\\Users\\deevi\\OneDrive\\Documents\\GitHub\\EPOS Accountancy App\\Client App\\backend\\assets\\system_forms\\SA103F-2026-system-fillable.field-map.json"
+    },
+    {
+      "form_code": "SA104S-2026",
+      "status": "installed",
+      "field_count": 200,
+      "pdf_path": "C:\\Users\\deevi\\OneDrive\\Documents\\GitHub\\EPOS Accountancy App\\Client App\\backend\\assets\\system_forms\\SA104S-2026-system-fillable.pdf",
+      "manifest_path": "C:\\Users\\deevi\\OneDrive\\Documents\\GitHub\\EPOS Accountancy App\\Client App\\backend\\assets\\system_forms\\SA104S-2026-system-fillable.field-map.json"
+    },
+    {
+      "form_code": "SA105-2026",
+      "status": "installed",
+      "field_count": 241,
+      "pdf_path": "C:\\Users\\deevi\\OneDrive\\Documents\\GitHub\\EPOS Accountancy App\\Client App\\backend\\assets\\system_forms\\SA105-2026-system-fillable.pdf",
+      "manifest_path": "C:\\Users\\deevi\\OneDrive\\Documents\\GitHub\\EPOS Accountancy App\\Client App\\backend\\assets\\system_forms\\SA105-2026-system-fillable.field-map.json"
+    },
+    {
+      "form_code": "SA106-2026",
+      "status": "installed",
+      "field_count": 1398,
+      "pdf_path": "C:\\Users\\deevi\\OneDrive\\Documents\\GitHub\\EPOS Accountancy App\\Client App\\backend\\assets\\system_forms\\SA106-2026-system-fillable.pdf",
+      "manifest_path": "C:\\Users\\deevi\\OneDrive\\Documents\\GitHub\\EPOS Accountancy App\\Client App\\backend\\assets\\system_forms\\SA106-2026-system-fillable.field-map.json"
+    },
+    {
+      "form_code": "SA107-2026",
+      "status": "installed",
+      "field_count": 229,
+      "pdf_path": "C:\\Users\\deevi\\OneDrive\\Documents\\GitHub\\EPOS Accountancy App\\Client App\\backend\\assets\\system_forms\\SA107-2026-system-fillable.pdf",
+      "manifest_path": "C:\\Users\\deevi\\OneDrive\\Documents\\GitHub\\EPOS Accountancy App\\Client App\\backend\\assets\\system_forms\\SA107-2026-system-fillable.field-map.json"
+    },
+    {
+      "form_code": "SA108-2026",
+      "status": "installed",
+      "field_count": 633,
+      "pdf_path": "C:\\Users\\deevi\\OneDrive\\Documents\\GitHub\\EPOS Accountancy App\\Client App\\backend\\assets\\system_forms\\SA108-2026-system-fillable.pdf",
+      "manifest_path": "C:\\Users\\deevi\\OneDrive\\Documents\\GitHub\\EPOS Accountancy App\\Client App\\backend\\assets\\system_forms\\SA108-2026-system-fillable.field-map.json"
+    },
+    {
+      "form_code": "SA109-2026",
+      "status": "installed",
+      "field_count": 210,
+      "pdf_path": "C:\\Users\\deevi\\OneDrive\\Documents\\GitHub\\EPOS Accountancy App\\Client App\\backend\\assets\\system_forms\\SA109-2026-system-fillable.pdf",
+      "manifest_path": "C:\\Users\\deevi\\OneDrive\\Documents\\GitHub\\EPOS Accountancy App\\Client App\\backend\\assets\\system_forms\\SA109-2026-system-fillable.field-map.json"
+    },
+    {
+      "form_code": "SA110-2026",
+      "status": "installed",
+      "field_count": 179,
+      "pdf_path": "C:\\Users\\deevi\\OneDrive\\Documents\\GitHub\\EPOS Accountancy App\\Client App\\backend\\assets\\system_forms\\SA110-2026-system-fillable.pdf",
+      "manifest_path": "C:\\Users\\deevi\\OneDrive\\Documents\\GitHub\\EPOS Accountancy App\\Client App\\backend\\assets\\system_forms\\SA110-2026-system-fillable.field-map.json"
+    }
+  ]
+}

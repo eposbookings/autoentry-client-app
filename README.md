@@ -10,7 +10,8 @@ Current Client App handover: see [PROJECT_NOTES.md](<./Client App/PROJECT_NOTES.
 
 - Frontend: React, React Router, Tailwind CSS, shadcn/ui, Axios, sonner.
 - Backend: FastAPI, SQLAlchemy async, MySQL, Pillow, pypdf/reportlab, smtplib.
-- Database: MySQL / SQL.
+- Payroll: lazy React module plus a private, signed TypeScript payroll worker.
+- Database: MySQL / SQL, with a dedicated SQLite volume for the existing payroll ledger.
 - Deployment: Docker Compose on the 20i VPS.
 
 ## Repository Layout
@@ -24,6 +25,7 @@ Client App/
   frontend/
     src/                 React application
     public/              Browser assets and official form previews
+Payroll 2/               Complete payroll source, migrations, tests and worker data
 PDF Editor and Viewer/
   src/                   Fieldcraft Electron application
   package.json           Fieldcraft runtime and dependencies
@@ -39,6 +41,7 @@ Backend (`Client App/backend/.env`):
 - `FRONTEND_URL` - public frontend origin used after OAuth callbacks.
 - `BACKEND_URL` - public backend origin used to build OAuth callback defaults.
 - `JWT_SECRET`
+- `PAYROLL_INTEGRATION_SECRET` - a separate random value of at least 32 characters, shared only by FastAPI and the private payroll worker
 - `FERNET_KEY` - preserve this; it decrypts saved SMTP/OpenAI settings.
 - `COOKIE_SECURE` - use `true` on HTTPS/live.
 - `ADMIN_EMAIL`
@@ -60,7 +63,11 @@ Frontend (`Client App/frontend/.env`):
 
 All backend API routes are prefixed with `/api`.
 
+Payroll is mounted at `/admin/payroll/:clientId`. The menu is populated only from clients whose `service_settings.payroll.enabled` flag is true. Every `/api/payroll/*` request repeats EPOS authentication, practice ownership, active-client and service-entitlement checks before the private worker is called.
+
 ## Local Development
+
+On Windows, `Start Client App.cmd` starts the frontend, FastAPI backend and private Payroll worker together with one temporary shared signing secret.
 
 Frontend:
 
@@ -103,6 +110,7 @@ REACT_APP_BACKEND_URL=https://eposbookings.net
 CORS_ORIGINS=https://eposbookings.net,https://www.eposbookings.net,http://45.8.225.73
 FRONTEND_URL=https://eposbookings.net
 BACKEND_URL=https://eposbookings.net
+PAYROLL_INTEGRATION_SECRET=replace-with-a-separate-random-secret-of-at-least-32-characters
 COOKIE_SECURE=true
 QUICKBOOKS_ENVIRONMENT=production
 QUICKBOOKS_REDIRECT_URI=https://eposbookings.net/api/integrations/quickbooks/callback

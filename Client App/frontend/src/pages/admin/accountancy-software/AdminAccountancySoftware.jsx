@@ -6,6 +6,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import OfficialFormPreview from "@/components/official-forms/OfficialFormPreview";
+import OfficialFormDetails from "@/components/official-forms/OfficialFormDetails";
 import {
   ArrowRight,
   Activity,
@@ -873,6 +875,7 @@ function ModuleWorkspace(props) {
     busy,
   } = props;
   const [filters, setFilters] = useState({
+    report_period: "custom",
     date_from: "",
     date_to: "",
     financial_year_id: "",
@@ -966,7 +969,7 @@ function ModuleWorkspace(props) {
 
     if (module === "audit") return <AuditTrailWorkspace clientId={workspace.client?.id} />;
 
-    if (module === "reports") return <LazyReportsWorkspace workspace={workspace} activeReport={moduleTab} filters={filters} />;
+    if (module === "reports") return <LazyReportsWorkspace workspace={workspace} activeReport={moduleTab} filters={filters} setFilters={setFilters} />;
 
     if (module === "settings") {
       if (moduleTab === "Accounting Settings") {
@@ -1188,11 +1191,6 @@ function LazyGeneralLedger({ workspace, moduleTab, filters, detail, setHeaderCon
   if (moduleTab === "Transactions") return <PaginatedGlTransactions workspace={workspace} filters={filters} />;
   if (moduleTab === "Journals") return <PaginatedGlJournals workspace={workspace} filters={filters} setHeaderContext={setHeaderContext} />;
   if (moduleTab === "Account Activity") return <PaginatedGlAccountActivity workspace={workspace} filters={filters} />;
-  if (moduleTab === "Trial Balance") {
-    const requestParams = glQueryParams(filters, 1, DEFAULT_PAGE_SIZE);
-    requestParams.set("mode", "as_at");
-    return <LazyModuleWorkspace workspace={workspace} endpoint={`gl/trial-balance?${requestParams}`} field="reports">{(loaded) => <TrialBalanceReport workspace={loaded} filters={filters} />}</LazyModuleWorkspace>;
-  }
   return <PlaceholderModulePanel title={moduleTab} moduleTitle={detail.title} />;
 }
 
@@ -1221,7 +1219,6 @@ function LegacyLazyGeneralLedger({ workspace, moduleTab, filters, detail }) {
   if (moduleTab === "Transactions") return <TransactionsWorkspace workspace={loaded} filters={filters} />;
   if (moduleTab === "Journals") return <JournalTable journals={journals} />;
   if (moduleTab === "Account Activity") return <AccountActivityWorkspace workspace={loaded} filters={filters} />;
-  if (moduleTab === "Trial Balance") return <TrialBalanceReport workspace={loaded} />;
   return <PlaceholderModulePanel title={moduleTab} moduleTitle={detail.title} />;
 }
 
@@ -3599,6 +3596,7 @@ function YearEndAccountsWorkspace({ workspace, tab }) {
   const [ct600Fields, setCt600Fields] = useState(flattenCt600Fields(initialData));
   const flattenSaFields = (sourceData = {}) => Object.fromEntries(
     [
+      ...Object.entries(sourceData.hmrc?.self_assessment_form?.saved_values || {}),
       ...(sourceData.hmrc?.self_assessment_form?.sections || []).flatMap((section) =>
         (section.fields || []).map((field) => [field.key, field.value])
       ),
@@ -3611,11 +3609,6 @@ function YearEndAccountsWorkspace({ workspace, tab }) {
   const [ct600AutoFields, setCt600AutoFields] = useState(initialData.hmrc?.auto_values || {});
   const [companiesHouseSections, setCompaniesHouseSections] = useState(flattenCompaniesHouseSections(initialData));
   const [companiesHouseCustomSections, setCompaniesHouseCustomSections] = useState(customCompaniesHouseSections(initialData));
-  const [ct600PdfUrl, setCt600PdfUrl] = useState("");
-  const [ct600PdfLoading, setCt600PdfLoading] = useState(false);
-  const [ct600PdfError, setCt600PdfError] = useState("");
-  const [ct600PdfRefresh, setCt600PdfRefresh] = useState(0);
-  const [destinationSubTabs, setDestinationSubTabs] = useState({ HMRC: "details", "Companies House": "details" });
 
   useEffect(() => {
     setData(initialData);
@@ -3626,44 +3619,6 @@ function YearEndAccountsWorkspace({ workspace, tab }) {
     setCompaniesHouseSections(flattenCompaniesHouseSections(initialData));
     setCompaniesHouseCustomSections(customCompaniesHouseSections(initialData));
   }, [initialData]);
-
-  useEffect(() => {
-    const packId = data.active_pack?.id;
-    const previewIsOpen = tab === "HMRC" && destinationSubTabs.HMRC === "preview" && data.hmrc?.workflow_enabled;
-    if (!clientId || !previewIsOpen) {
-      setCt600PdfUrl("");
-      setCt600PdfLoading(false);
-      setCt600PdfError("");
-      return undefined;
-    }
-    if (!packId) {
-      setCt600PdfUrl("/ct600-2026-v3/CT600_2026_fillable_all_fields_X.pdf");
-      setCt600PdfLoading(false);
-      setCt600PdfError("");
-      return undefined;
-    }
-    let active = true;
-    let objectUrl = "";
-    setCt600PdfLoading(true);
-    setCt600PdfError("");
-    api.get(`/admin/accounting/clients/${clientId}/year-end-accounts/packs/${packId}/ct600.pdf?read_only=true`, { responseType: "blob" })
-      .then((response) => {
-        if (!active) return;
-        if (!(response.data instanceof Blob) || !response.data.size) throw new Error("The populated CT600 PDF response was empty.");
-        objectUrl = window.URL.createObjectURL(response.data);
-        setCt600PdfUrl(objectUrl);
-      })
-      .catch((error) => {
-        if (!active) return;
-        setCt600PdfUrl("");
-        setCt600PdfError(formatApiError(error) || "The populated CT600 preview could not be loaded.");
-      })
-      .finally(() => { if (active) setCt600PdfLoading(false); });
-    return () => {
-      active = false;
-      if (objectUrl) window.URL.revokeObjectURL(objectUrl);
-    };
-  }, [clientId, ct600PdfRefresh, data.active_pack?.id, data.active_pack?.updated_at, data.hmrc?.workflow_enabled, destinationSubTabs.HMRC, tab]);
 
   async function reload(packId = data.active_pack?.id) {
     const { data: response } = await api.get(`/admin/accounting/clients/${clientId}/year-end-accounts/workspace`, { params: packId ? { pack_id: packId } : {} });
@@ -3738,6 +3693,18 @@ function YearEndAccountsWorkspace({ workspace, tab }) {
     );
     return run(
       "Self Assessment details saved",
+      () => api.put(`/admin/accounting/clients/${clientId}/year-end-accounts/packs/${data.active_pack.id}`, { self_assessment_fields: overrides })
+    );
+  }
+
+  function saveSelfAssessmentSelection(nextFields) {
+    if (!data.active_pack?.id) return;
+    const automatic = data.hmrc?.self_assessment_form?.auto_values || {};
+    const overrides = Object.fromEntries(
+      Object.entries(nextFields).filter(([key, value]) => String(value ?? "") !== String(automatic[key] ?? ""))
+    );
+    return run(
+      "Supplementary form selection saved",
       () => api.put(`/admin/accounting/clients/${clientId}/year-end-accounts/packs/${data.active_pack.id}`, { self_assessment_fields: overrides })
     );
   }
@@ -3833,6 +3800,30 @@ function YearEndAccountsWorkspace({ workspace, tab }) {
     }
   }
 
+  async function downloadSelfAssessmentForm(formCode) {
+    if (!pack?.id || !formCode) return;
+    setSaving(true);
+    try {
+      const code = `${String(formCode).toUpperCase().replace(/-2026$/, "")}-2026`;
+      const response = await api.get(
+        `/admin/accounting/clients/${clientId}/year-end-accounts/packs/${pack.id}/self-assessment/${code}.pdf`,
+        { responseType: "blob" }
+      );
+      const url = window.URL.createObjectURL(response.data);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${String(data.companies_house?.accounts_preview?.title || "taxpayer").replace(/[^a-z0-9]+/gi, "-")}-${code}.pdf`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      toast.error(formatApiError(error));
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function deleteGeneratedOutput(output) {
     if (!window.confirm(`Delete ${output.metadata?.filename || "this generated draft"}?`)) return;
     return run(
@@ -3859,6 +3850,14 @@ function YearEndAccountsWorkspace({ workspace, tab }) {
   const taxonomySelection = taxonomy.selection || {};
   const compliance = data.compliance || {};
   const destination = tab === "HMRC" ? data.hmrc : tab === "Companies House" ? data.companies_house : null;
+  const liveCompaniesHousePreview = data.companies_house ? {
+    ...(data.companies_house.accounts_preview || {}),
+    section_options: (data.companies_house.section_options || []).map((section) => ({
+      ...section,
+      enabled: section.required || !!companiesHouseSections[section.id],
+    })),
+    custom_sections: companiesHouseCustomSections,
+  } : {};
 
   if (tab === "Overview") {
     return (
@@ -3902,7 +3901,7 @@ function YearEndAccountsWorkspace({ workspace, tab }) {
                   <Info label="Format" value={pack.accounts_format} />
                   <Info label="Status" value={pack.status} />
                   <Info label="Snapshot" value={pack.contents?.snapshot_hash ? `${String(pack.contents.snapshot_hash).slice(0, 12)}…` : "Not created"} />
-                  <Info label="Available posted data" value={postingCoverage.first_posted_date ? `${postingCoverage.first_posted_date} to ${postingCoverage.last_posted_date}` : "No posted journals"} />
+                  <Info label="Available posted data" value={postingCoverage.first_posted_date ? `${formatDate(postingCoverage.first_posted_date)} to ${formatDate(postingCoverage.last_posted_date)}` : "No posted journals"} />
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <Button type="button" onClick={snapshotPack} disabled={saving || pack.locked_snapshot}><RefreshCw className="mr-2 h-4 w-4" />Create / refresh snapshot</Button>
@@ -3916,7 +3915,7 @@ function YearEndAccountsWorkspace({ workspace, tab }) {
             ) : (
               <form className="space-y-3" onSubmit={createPack}>
                 <div className="grid gap-3 md:grid-cols-2">
-                  {years.length ? <div><Label className="text-xs">Financial year</Label><select value={packForm.financial_year_id} onChange={(event) => setPackForm((current) => ({ ...current, financial_year_id: event.target.value }))} className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm">{years.map((year) => <option key={year.id} value={year.id}>{year.name || `${year.start_date} - ${year.end_date}`}</option>)}</select></div> : <><Field label="Accounts period start" type="date" value={packForm.period_from} onChange={(value) => setPackForm((current) => ({ ...current, period_from: value }))} /><Field label="Accounts period end" type="date" value={packForm.period_to} onChange={(value) => setPackForm((current) => ({ ...current, period_to: value }))} /></>}
+                  {years.length ? <div><Label className="text-xs">Financial year</Label><select value={packForm.financial_year_id} onChange={(event) => setPackForm((current) => ({ ...current, financial_year_id: event.target.value }))} className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm">{years.map((year) => <option key={year.id} value={year.id}>{year.name || `${formatDate(year.start_date)} - ${formatDate(year.end_date)}`}</option>)}</select></div> : <><Field label="Accounts period start" type="date" value={packForm.period_from} onChange={(value) => setPackForm((current) => ({ ...current, period_from: value }))} /><Field label="Accounts period end" type="date" value={packForm.period_to} onChange={(value) => setPackForm((current) => ({ ...current, period_to: value }))} /></>}
                   <div><Label className="text-xs">Accounting standard</Label><select value={packForm.accounts_standard} onChange={(event) => setPackForm((current) => normaliseYearEndSelection(current, { accounts_standard: event.target.value }))} className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm"><option value="FRS_105">FRS 105 - Micro-entities</option><option value="FRS_102_1A">FRS 102 Section 1A - Small entities</option><option value="FRS_102">FRS 102 - Full</option><option value="IFRS">UK-adopted IFRS</option></select></div>
                   <div><Label className="text-xs">Accounts format</Label><select value={packForm.accounts_format} onChange={(event) => setPackForm((current) => normaliseYearEndSelection(current, { accounts_format: event.target.value }))} className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm">{(packForm.company_trading_status === "dormant" ? ["dormant"] : YEAR_END_STANDARD_FORMATS[packForm.accounts_standard] || []).map((value) => <option key={value} value={value}>{YEAR_END_FORMAT_LABELS[value]}</option>)}</select></div>
                   <div><Label className="text-xs">Trading status</Label><select value={packForm.company_trading_status} onChange={(event) => setPackForm((current) => normaliseYearEndSelection(current, { company_trading_status: event.target.value }))} className="mt-1 h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm"><option value="trading">Trading</option><option value="dormant">Dormant</option><option value="non_trading">Non-trading</option></select></div>
@@ -3937,13 +3936,25 @@ function YearEndAccountsWorkspace({ workspace, tab }) {
   }
 
   if (tab === "Accounts Preview") {
+    const trialBalance = Array.isArray(data.trial_balance) ? data.trial_balance : [];
+    const trialBalanceSummary = data.trial_balance_summary || {};
     return (
       <div className="space-y-4">
-        <div className="grid gap-3 md:grid-cols-3">
-          <SummaryCard label="Turnover" value={formatMoney(statements.profit_and_loss?.turnover)} tone="emerald" />
-          <SummaryCard label="Profit / loss" value={formatMoney(statements.profit_and_loss?.profit)} tone="blue" />
-          <SummaryCard label="Balance sheet net" value={formatMoney(statements.balance_sheet?.net_assets)} tone="stone" />
-        </div>
+        <Panel title="Trial Balance">
+          <ReportTable
+            rows={trialBalance}
+            columns={[["code", "Code"], ["name", "Account"], ["statement", "Statement"], ["debit", "Debit", "money"], ["credit", "Credit", "money"], ["filing_status", "Status"]]}
+            empty="No Trial Balance balances are available for this accounts period."
+            compact
+          />
+          {trialBalance.length ? (
+            <div className="flex flex-wrap justify-end gap-x-8 gap-y-2 border-t border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-700">
+              <span>Total debit: {formatMoney(trialBalanceSummary.debit_total)}</span>
+              <span>Total credit: {formatMoney(trialBalanceSummary.credit_total)}</span>
+              <span className={Number(trialBalanceSummary.difference || 0) === 0 ? "text-emerald-700" : "text-red-700"}>Difference: {formatMoney(trialBalanceSummary.difference)}</span>
+            </div>
+          ) : null}
+        </Panel>
         <div className="grid gap-4 xl:grid-cols-2">
           <Panel title="Profit and loss preview"><ReportTable rows={statements.profit_and_loss?.rows || []} columns={[["label", "Line"], ["amount", "Current", "money"], ["comparative", "Comparative", "money"]]} empty="No mapped profit and loss lines." compact /></Panel>
           <Panel title="Balance sheet preview"><ReportTable rows={statements.balance_sheet?.rows || []} columns={[["label", "Line"], ["amount", "Current", "money"], ["comparative", "Comparative", "money"]]} empty="No mapped balance sheet lines." compact /></Panel>
@@ -3955,57 +3966,37 @@ function YearEndAccountsWorkspace({ workspace, tab }) {
   }
 
   if (destination) {
-    const destinationSubTab = destinationSubTabs[tab] || "details";
-    const selectDestinationSubTab = (nextTab) => {
-      setDestinationSubTabs((current) => ({ ...current, [tab]: nextTab }));
-    };
     return (
       <div className="space-y-4">
-        <div className="flex gap-1 rounded-lg border border-stone-200 bg-stone-100 p-1">
-          <button type="button" onClick={() => selectDestinationSubTab("details")} className={`rounded-md px-4 py-2 text-sm font-semibold transition ${destinationSubTab === "details" ? "bg-white text-stone-950 shadow-sm" : "text-stone-600 hover:text-stone-900"}`}>
-            Details &amp; sections
-          </button>
-          <button type="button" onClick={() => selectDestinationSubTab("preview")} className={`rounded-md px-4 py-2 text-sm font-semibold transition ${destinationSubTab === "preview" ? "bg-white text-stone-950 shadow-sm" : "text-stone-600 hover:text-stone-900"}`}>
-            Preview
-          </button>
-        </div>
-        {destinationSubTab === "details" ? (
-          <>
-            <div className="grid gap-3 md:grid-cols-3">
-              <SummaryCard label="Destination" value={destination.destination} tone="blue" />
-              <SummaryCard label="Package status" value={destination.status} tone={destination.status === "Ready" ? "emerald" : "amber"} />
-              <SummaryCard label="Submission method" value={destination.submission_method} tone="stone" />
-            </div>
-            <div className="grid gap-4 xl:grid-cols-2">
-              <Panel title="Required package components"><ReportTable rows={destination.components || []} columns={[["name", "Component"], ["format", "Format"], ["status", "Status"]]} compact /></Panel>
-              <Panel title="Destination checks"><ComplianceIssues issues={destination.blockers || []} empty="No destination blockers." /></Panel>
-            </div>
-            {tab === "HMRC" ? (
-              destination.workflow_enabled ? <>
-                {destination.workflow_profile === "sole_trader" ? (
-                  <SelfAssessmentEditor form={destination.self_assessment_form} values={saFields} setValues={setSaFields} onSave={saveSelfAssessmentForm} onReset={resetSelfAssessmentForm} disabled={saving || pack?.locked_snapshot} />
-                ) : <>
-                <Panel title="HMRC return type">
-                  <div className="flex flex-wrap gap-2">
-                    {(destination.forms || []).map((form) => (
-                      <Button key={form.id} type="button" variant={form.id === destination.selected_form ? "default" : "outline"} disabled={form.id !== "ct600"}>
-                        {form.label}{form.status !== "Available" ? ` - ${form.status}` : ""}
-                      </Button>
-                    ))}
-                  </div>
-                  <p className="mt-3 text-sm text-stone-600">The standard CT600 workflow is enabled from the Limited company selection in Client Settings. Specialist supplementary returns remain deferred until their eligibility rules are implemented.</p>
-                </Panel>
-                <Ct600FormEditor form={destination.ct600_form} editorSections={destination.editor_sections || []} visibleBoxes={destination.visible_boxes || []} automaticBoxes={destination.auto_boxes || []} values={ct600Fields} setValues={setCt600Fields} onSave={saveCt600Form} disabled={saving || pack?.locked_snapshot} />
-                <Panel title="CT600 completion map"><ReportTable rows={destination.ct600_sections || []} columns={[["section", "Section"], ["boxes", "Boxes"], ["status", "Status"]]} compact /></Panel>
-                </>}
-              </> : (
-                <Panel title="CT600 workflow not enabled">
-                  <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-                    Select <strong>Limited company</strong> as the client type in Client Settings to enable the standard CT600 workflow. Other entity types will be introduced with their own filing rules later.
-                  </div>
-                </Panel>
-              )
-            ) : (
+        {tab === "HMRC" ? (
+          destination.workflow_enabled ? <>
+            {destination.workflow_profile === "sole_trader" ? (
+              <SelfAssessmentEditor clientId={clientId} packId={pack?.id} form={destination.self_assessment_form} values={saFields} setValues={setSaFields} onSave={saveSelfAssessmentForm} onReset={resetSelfAssessmentForm} onSupplementaryChange={saveSelfAssessmentSelection} onDownload={downloadSelfAssessmentForm} downloadDisabled={saving || !pack} disabled={saving || pack?.locked_snapshot} />
+            ) : <>
+              <Panel title="HMRC return type">
+                <div className="flex flex-wrap gap-2">
+                  {(destination.forms || []).map((form) => (
+                    <Button key={form.id} type="button" variant={form.id === destination.selected_form ? "default" : "outline"} disabled={form.id !== "ct600"}>
+                      {form.label}{form.status !== "Available" ? ` - ${form.status}` : ""}
+                    </Button>
+                  ))}
+                </div>
+                <p className="mt-3 text-sm text-stone-600">The standard CT600 workflow is enabled from the Limited company selection in Client Settings. Specialist supplementary returns remain deferred until their eligibility rules are implemented.</p>
+              </Panel>
+              <Ct600FormEditor form={destination.ct600_form} editorSections={destination.editor_sections || []} visibleBoxes={destination.visible_boxes || []} automaticBoxes={destination.auto_boxes || []} values={ct600Fields} setValues={setCt600Fields} onSave={saveCt600Form} disabled={saving || pack?.locked_snapshot} />
+              <div className="flex justify-end"><Button type="button" variant="outline" onClick={downloadFillableCt600} disabled={saving || !pack}>Download populated fillable CT600 PDF</Button></div>
+              <Panel title="CT600 completion map"><ReportTable rows={destination.ct600_sections || []} columns={[["section", "Section"], ["boxes", "Boxes"], ["status", "Status"]]} compact /></Panel>
+            </>}
+          </> : (
+            <Panel title="CT600 workflow not enabled">
+              <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                Select <strong>Limited company</strong> as the client type in Client Settings to enable the standard CT600 workflow. Other entity types will be introduced with their own filing rules later.
+              </div>
+            </Panel>
+          )
+        ) : (
+          <div className="grid items-start gap-4 xl:grid-cols-[22rem_minmax(0,1fr)]">
+            <aside className="min-w-0 xl:sticky xl:top-4 xl:max-h-[calc(100vh-7rem)] xl:overflow-y-auto xl:pr-1">
               <CompaniesHouseSectionOptions
                 sections={destination.section_options || []}
                 values={companiesHouseSections}
@@ -4014,34 +4005,13 @@ function YearEndAccountsWorkspace({ workspace, tab }) {
                 setCustomSections={setCompaniesHouseCustomSections}
                 onSave={saveCompaniesHouseSections}
                 disabled={saving || pack?.locked_snapshot}
+                compact
               />
-            )}
-          </>
-        ) : (
-          <>
-            {tab === "HMRC" ? (
-              destination.workflow_enabled ? <>
-                {destination.workflow_profile === "sole_trader" ? (
-                  <SelfAssessmentPreview
-                    form={destination.self_assessment_form}
-                    values={saFields}
-                    pdfForms={destination.self_assessment_pdf_forms || []}
-                    clientId={clientId}
-                    packId={pack?.id}
-                  />
-                ) : <>
-                  <ExactCt600SubmissionPreview preview={destination.form_preview} form={destination.ct600_form} pdfUrl={ct600PdfUrl} loading={ct600PdfLoading} error={ct600PdfError} onRetry={() => setCt600PdfRefresh((current) => current + 1)} />
-                  <div className="flex justify-end"><Button type="button" onClick={downloadFillableCt600} disabled={saving || !pack}>Download populated fillable CT600 PDF</Button></div>
-                </>}
-              </> : (
-                <Panel title="CT600 preview unavailable">
-                  <p className="text-sm text-stone-600">The CT600 preview is available after the client type is set to Limited company in Client Settings.</p>
-                </Panel>
-              )
-            ) : (
-              <CompaniesHouseAccountsPages preview={destination.accounts_preview} />
-            )}
-          </>
+            </aside>
+            <main className="min-w-0">
+              <CompaniesHouseAccountsPages preview={liveCompaniesHousePreview} />
+            </main>
+          </div>
         )}
       </div>
     );
@@ -4097,7 +4067,7 @@ function YearEndAccountsWorkspace({ workspace, tab }) {
           {postingCoverage.total_posted && !postingCoverage.posted_in_period ? (
             <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
               <div className="font-semibold">The accounts period excludes all posted Trial Balance data.</div>
-              <p className="mt-1">Posted journals run from {postingCoverage.first_posted_date} to {postingCoverage.last_posted_date}. Confirm the legal accounts period before changing it.</p>
+              <p className="mt-1">Posted journals run from {formatDate(postingCoverage.first_posted_date)} to {formatDate(postingCoverage.last_posted_date)}. Confirm the legal accounts period before changing it.</p>
               <Button type="button" variant="outline" className="mt-2" onClick={() => setSettingsForm((current) => ({ ...current, period_from: postingCoverage.first_posted_date, period_to: postingCoverage.last_posted_date }))}>Copy available posting dates</Button>
             </div>
           ) : null}
@@ -4240,7 +4210,7 @@ function LegacySelfAssessmentPreview({ form, values }) {
 const SA100_SUPPLEMENTARY_PAGES = [
   ["employment", "SA102", "Employment", "For each employment, directorship or office held."],
   ["self_employment", "SA103S / SA103F", "Self-employment", "Required for this sole trader; short or full pages depend on eligibility.", true],
-  ["partnership", "SA104S / SA104F", "Partnership", "For income as a partner in a business partnership."],
+  ["partnership", "SA104S", "Partnership (short)", "For partnership income where the short partnership pages are appropriate."],
   ["uk_property", "SA105", "UK property", "For UK property and relevant property income."],
   ["foreign", "SA106", "Foreign", "For foreign income, gains, foreign tax or relief."],
   ["trusts", "SA107", "Trusts etc.", "For income from trusts, settlements or estates."],
@@ -4276,11 +4246,38 @@ function SelfAssessmentField({ field, value, disabled, onChange }) {
         {field.max_length ? <span>{String(value ?? "").length}/{field.max_length} characters</span> : null}
         {field.max_digits ? <span>{String(value ?? "").replace(/\D/g, "").length}/{field.max_digits} digits</span> : null}
       </span>
+      {field.mapping_warning ? <span className="mt-1 block text-[11px] font-semibold text-amber-700">{field.mapping_warning}</span> : null}
     </label>
   );
 }
 
-function SupplementaryFormEditor({ supplementary, values, setValues, disabled }) {
+function SupplementaryFormEditor({ supplementary, values, setValues, disabled, clientId, packId }) {
+  if (supplementary) {
+    return (
+      <OfficialFormDetails
+        title={`${supplementary.code} - ${supplementary.title}`}
+        formCode={supplementary.code}
+        endpoint={`/admin/accounting/clients/${clientId}/year-end-accounts/packs/${packId}/self-assessment/${supplementary.code}-2026.pdf?read_only=true&editor=true`}
+        headerItems={[
+          { label: "Your name", value: "Automatically populated from the client record" },
+          { label: "Unique Taxpayer Reference", value: "Automatically populated from the client record" },
+        ]}
+        fields={supplementary.fields || []}
+        values={values}
+        setValues={setValues}
+        disabled={disabled}
+        renderField={(field) => (
+          <SelfAssessmentField
+            field={field}
+            value={values[field.key]}
+            disabled={disabled}
+            onChange={(value) => setValues((current) => ({ ...current, [field.key]: value }))}
+          />
+        )}
+        emptyMessage="The official form is installed, but no active numbered boxes could be read from its artwork."
+      />
+    );
+  }
   return (
     <Panel title={`${supplementary.code} — ${supplementary.title}`}>
       <div className="mb-4 grid gap-3 rounded-md border border-[#96d8d6] bg-[#edf8f7] p-3 md:grid-cols-2">
@@ -4306,7 +4303,7 @@ function SupplementaryFormEditor({ supplementary, values, setValues, disabled })
   );
 }
 
-function SelfAssessmentEditor({ form, values, setValues, onSave, onReset, disabled }) {
+function SelfAssessmentEditor({ clientId, packId, form, values, setValues, onSave, onReset, onSupplementaryChange, onDownload, downloadDisabled, disabled }) {
   const [activeEditorForm, setActiveEditorForm] = useState("SA100");
   const selectedSupplementaryForms = (form?.supplementary_forms || []).filter((supplementary) => values[supplementary.selection_key]);
   const selfEmploymentCode = values.self_employment ? (values.self_employment_schedule || "SA103S") : "";
@@ -4335,7 +4332,11 @@ function SelfAssessmentEditor({ form, values, setValues, onSave, onReset, disabl
               {SA100_SUPPLEMENTARY_PAGES.map(([key, code, label, help, locked]) => (
                 <label key={key} className={`block rounded-md border p-3 ${values[key] ? "border-emerald-300 bg-emerald-50" : "border-stone-200 bg-white"}`}>
                   <span className="flex items-center gap-2">
-                    <input type="checkbox" checked={!!values[key]} disabled={disabled || locked} onChange={(event) => setValues((current) => ({ ...current, [key]: event.target.checked }))} />
+                    <input type="checkbox" checked={!!values[key]} disabled={disabled || locked} onChange={(event) => {
+                      const nextValues = { ...values, [key]: event.target.checked };
+                      setValues(nextValues);
+                      onSupplementaryChange?.(nextValues);
+                    }} />
                     <strong className="text-sm">{code}</strong><span className="ml-auto text-[11px] font-semibold text-emerald-800">{values[key] ? "Included" : "Not included"}</span>
                   </span>
                   <span className="mt-1 block text-xs font-semibold">{label}</span><span className="mt-1 block text-[11px] leading-4 text-stone-500">{help}</span>
@@ -4355,26 +4356,35 @@ function SelfAssessmentEditor({ form, values, setValues, onSave, onReset, disabl
               ))}
             </div>
           </div>
-          {(form.sections || []).filter((section) => section.id !== "supplementary" && section.id !== "self_employment" && activeEditorForm === "SA100").map((section) => (
-            <Panel key={section.id} title={section.title}>
-              <div className="grid gap-3 md:grid-cols-2">
-                {(section.fields || []).map((field) => <SelfAssessmentField key={field.key} field={field} value={values[field.key]} disabled={disabled} onChange={(value) => setValues((current) => ({ ...current, [field.key]: value }))} />)}
-              </div>
-            </Panel>
-          ))}
-          {activeEditorForm === selfEmploymentCode ? (form.sections || []).filter((section) => section.id === "self_employment").map((section) => (
-            <Panel key={section.id} title={`${selfEmploymentCode} — Self-employment`}>
-              <div className="grid gap-3 md:grid-cols-2">
-                {(section.fields || []).map((field) => <SelfAssessmentField key={field.key} field={field} value={values[field.key]} disabled={disabled} onChange={(value) => setValues((current) => ({ ...current, [field.key]: value }))} />)}
-              </div>
-            </Panel>
-          )) : null}
+          {activeEditorForm === "SA100" ? (
+            <OfficialFormDetails
+              title="SA100 - Main tax return"
+              formCode="SA100"
+              endpoint={`/admin/accounting/clients/${clientId}/year-end-accounts/packs/${packId}/self-assessment/SA100-2026.pdf?read_only=true&editor=true`}
+              fields={(form.sections || []).filter((section) => !["supplementary", "self_employment"].includes(section.id)).flatMap((section) => section.fields || [])}
+              values={values}
+              setValues={setValues}
+              disabled={disabled}
+            />
+          ) : null}
+          {activeEditorForm === selfEmploymentCode ? (
+            <OfficialFormDetails
+              title={`${selfEmploymentCode} - Self-employment`}
+              formCode={selfEmploymentCode}
+              endpoint={`/admin/accounting/clients/${clientId}/year-end-accounts/packs/${packId}/self-assessment/${selfEmploymentCode}-2026.pdf?read_only=true&editor=true`}
+              fields={(form.sections || []).filter((section) => section.id === "self_employment").flatMap((section) => section.fields || [])}
+              values={values}
+              setValues={setValues}
+              disabled={disabled}
+            />
+          ) : null}
           {selectedSupplementaryForms.filter((supplementary) => supplementary.code === activeEditorForm).map((supplementary) => (
-            <SupplementaryFormEditor key={supplementary.code} supplementary={supplementary} values={values} setValues={setValues} disabled={disabled} />
+            <SupplementaryFormEditor key={supplementary.code} supplementary={supplementary} values={values} setValues={setValues} disabled={disabled} clientId={clientId} packId={packId} />
           ))}
         </main>
       </div>
       <div className="flex justify-end gap-2">
+        <Button type="button" variant="outline" onClick={() => onDownload?.(activeEditorForm)} disabled={downloadDisabled}>Download saved {activeEditorForm} PDF</Button>
         <Button type="button" variant="outline" onClick={onReset} disabled={disabled}>Reset to automatic</Button>
         <Button type="button" onClick={onSave} disabled={disabled}>Save Self Assessment details</Button>
       </div>
@@ -4467,8 +4477,6 @@ function FormArtworkPage({ src, alt, overlays, values }) {
 
 function SelfAssessmentPreview({ form, values, pdfForms = [], clientId, packId }) {
   const [activePackage, setActivePackage] = useState("SA100");
-  const [nativePdfUrl, setNativePdfUrl] = useState("");
-  const [nativePdfError, setNativePdfError] = useState("");
   const previewValues = { ...values, ...(form?.auto_values || {}) };
   const selfEmploymentPackage = previewValues.self_employment ? {
     code: previewValues.self_employment_schedule === "SA103S" ? "SA103S" : "SA103F",
@@ -4482,27 +4490,30 @@ function SelfAssessmentPreview({ form, values, pdfForms = [], clientId, packId }
   }, [activePackage, packageCodes]);
   const activePdfStatus = pdfForms.find((item) => item.form_code === `${activePackage}-2026`);
   const nativeAvailable = !!activePdfStatus?.available;
-  useEffect(() => {
-    let active = true;
-    let objectUrl = "";
-    setNativePdfUrl("");
-    setNativePdfError("");
-    if (!nativeAvailable || !clientId || !packId) return undefined;
-    api.get(`/admin/accounting/clients/${clientId}/year-end-accounts/packs/${packId}/self-assessment/${activePackage}-2026.pdf?read_only=true`, { responseType: "blob" })
-      .then((response) => {
-        if (!active) return;
-        objectUrl = URL.createObjectURL(response.data);
-        setNativePdfUrl(objectUrl);
-      })
-      .catch((error) => {
-        if (active) setNativePdfError(formatApiError(error) || "The populated system PDF could not be loaded.");
-      });
-    return () => {
-      active = false;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [activePackage, clientId, nativeAvailable, packId]);
+  const populatedFormRevision = JSON.stringify(previewValues);
+  const nativePdfUrl = "";
+  const nativePdfError = "";
   if (!form) return <Panel title="Self Assessment preview"><p className="text-sm text-stone-600">No return is available yet.</p></Panel>;
+  if (nativeAvailable) {
+    const registeredPackages = packages.map((item) => {
+      const status = pdfForms.find((formStatus) => formStatus.form_code === `${item.code}-2026`);
+      return {
+        ...item,
+        status: status?.status,
+        available: !!status?.available,
+      };
+    });
+    return (
+      <OfficialFormPreview
+        forms={registeredPackages}
+        activeCode={activePackage}
+        onActiveCodeChange={setActivePackage}
+        endpoint={`/admin/accounting/clients/${clientId}/year-end-accounts/packs/${packId}/self-assessment/${activePackage}-2026.pdf?read_only=true`}
+        revision={populatedFormRevision}
+        banner="Read-only official form preview. Amend values in Details & sections; every module now uses the shared package viewer."
+      />
+    );
+  }
   return (
     <div className="mx-auto max-w-[900px] space-y-4">
       <div className="rounded-md border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900">Read-only official SA100 2026 preview. Amend values in Details &amp; sections. The two information-sheet pages are intentionally excluded.</div>
@@ -5009,7 +5020,7 @@ function Ct600OfficialTable({ layout, fieldsByBox, values, automaticBoxSet, disa
   );
 }
 
-function CompaniesHouseSectionOptions({ sections = [], values = {}, setValues, customSections = [], setCustomSections, onSave, disabled }) {
+function CompaniesHouseSectionOptions({ sections = [], values = {}, setValues, customSections = [], setCustomSections, onSave, disabled, compact = false }) {
   const addCustomSection = () => {
     const id = `custom_${Date.now()}`;
     setCustomSections((current) => [...current, { id, title: "New accounts section", content: "", enabled: true, custom: true }]);
@@ -5023,7 +5034,7 @@ function CompaniesHouseSectionOptions({ sections = [], values = {}, setValues, c
   return (
     <Panel title="Companies House accounts contents">
       <p className="mb-3 text-sm text-stone-600">Required statutory sections remain fixed. Optional sections can be selected, and additional narrative sections can be created and edited for the accounts preview.</p>
-      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+      <div className={compact ? "grid gap-2" : "grid gap-2 md:grid-cols-2 xl:grid-cols-3"}>
         {sections.map((section) => (
           <label key={section.id} className="flex items-center gap-3 rounded-md border border-stone-200 p-3 text-sm">
             <input
@@ -5037,14 +5048,14 @@ function CompaniesHouseSectionOptions({ sections = [], values = {}, setValues, c
         ))}
       </div>
       <div className="mt-5 border-t border-stone-200 pt-4">
-        <div className="flex items-center justify-between gap-3">
+        <div className={compact ? "flex flex-col items-stretch gap-3" : "flex items-center justify-between gap-3"}>
           <div><h4 className="font-semibold text-stone-900">Additional sections</h4><p className="text-xs text-stone-500">Add narrative disclosures or schedules. Their filing eligibility will still be checked during iXBRL validation.</p></div>
           <Button type="button" variant="outline" onClick={addCustomSection} disabled={disabled}><Plus className="mr-2 h-4 w-4" />Add another section</Button>
         </div>
         <div className="mt-3 space-y-3">
           {customSections.map((section) => (
             <div key={section.id} className="rounded-md border border-stone-200 bg-stone-50 p-3">
-              <div className="flex items-center gap-3">
+              <div className={compact ? "grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2" : "flex items-center gap-3"}>
                 <input type="checkbox" checked={section.enabled !== false} disabled={disabled} onChange={(event) => updateCustomSection(section.id, { enabled: event.target.checked })} />
                 <Input value={section.title || ""} disabled={disabled} onChange={(event) => updateCustomSection(section.id, { title: event.target.value })} placeholder="Section title" className="h-9 flex-1 bg-white" />
                 <Button type="button" size="sm" variant="outline" disabled={disabled} onClick={() => removeCustomSection(section.id)} aria-label={`Remove ${section.title || "custom section"}`}><Trash2 className="h-4 w-4" /></Button>
@@ -5055,7 +5066,7 @@ function CompaniesHouseSectionOptions({ sections = [], values = {}, setValues, c
           {!customSections.length ? <p className="rounded-md border border-dashed border-stone-300 py-6 text-center text-sm text-stone-500">No additional sections have been added.</p> : null}
         </div>
       </div>
-      <div className="mt-4 flex justify-end"><Button type="button" onClick={onSave} disabled={disabled}>Save Companies House contents</Button></div>
+      <div className={`mt-4 flex ${compact ? "justify-stretch" : "justify-end"}`}><Button type="button" className={compact ? "w-full" : ""} onClick={onSave} disabled={disabled}>Save Companies House contents</Button></div>
     </Panel>
   );
 }
@@ -5517,7 +5528,7 @@ function CompaniesHouseSubmissionPreview({ preview = {} }) {
         <div className="rounded border border-slate-300 p-5 text-sm text-slate-700">
           <div className="font-bold text-slate-900">Approval and signature</div>
           <p className="mt-2">{approval.audit_basis || "Audit exemption or auditor-report basis not yet selected."}</p>
-          <p className="mt-3">Approved by the board and authorised for issue on <strong>{approval.date || "—"}</strong>.</p>
+          <p className="mt-3">Approved by the board and authorised for issue on <strong>{approval.date ? formatDate(approval.date) : "—"}</strong>.</p>
           <p className="mt-3 border-t border-slate-200 pt-3">Signed on behalf of the board by <strong>{approval.director || "—"}</strong>, Director.</p>
         </div>
       </div>
@@ -7125,6 +7136,109 @@ function reportQueryParams(filters, page, pageSize, extra = {}) {
   return glQueryParams(filters, page, pageSize, extra);
 }
 
+const REPORT_PERIOD_OPTIONS = [
+  ["custom", "Custom date"],
+  ["today", "Today"],
+  ["this_month", "This month"],
+  ["last_month", "Last month"],
+  ["year_to_date", "Year to date"],
+  ["last_year", "Last year"],
+];
+
+function localDateValue(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function reportPeriodDates(period, now = new Date()) {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (period === "today") return [localDateValue(today), localDateValue(today)];
+  if (period === "this_month") return [localDateValue(new Date(today.getFullYear(), today.getMonth(), 1)), localDateValue(today)];
+  if (period === "last_month") {
+    return [
+      localDateValue(new Date(today.getFullYear(), today.getMonth() - 1, 1)),
+      localDateValue(new Date(today.getFullYear(), today.getMonth(), 0)),
+    ];
+  }
+  if (period === "year_to_date") return [localDateValue(new Date(today.getFullYear(), 0, 1)), localDateValue(today)];
+  if (period === "last_year") {
+    return [
+      localDateValue(new Date(today.getFullYear() - 1, 0, 1)),
+      localDateValue(new Date(today.getFullYear() - 1, 11, 31)),
+    ];
+  }
+  return ["", ""];
+}
+
+function ReportPeriodFilter({ filters, setFilters }) {
+  const period = filters?.report_period || "custom";
+  const invalidRange = !!(filters?.date_from && filters?.date_to && filters.date_from > filters.date_to);
+
+  function selectPeriod(nextPeriod) {
+    const [dateFrom, dateTo] = reportPeriodDates(nextPeriod);
+    setFilters((current) => ({
+      ...current,
+      report_period: nextPeriod,
+      ...(nextPeriod === "custom" ? {} : { date_from: dateFrom, date_to: dateTo }),
+      financial_year_id: "",
+      period_id: "",
+    }));
+  }
+
+  function setCustomDate(field, value) {
+    setFilters((current) => ({
+      ...current,
+      report_period: "custom",
+      [field]: value,
+      financial_year_id: "",
+      period_id: "",
+    }));
+  }
+
+  return (
+    <section className="rounded-md border border-stone-200 bg-white p-4" aria-label="Report filters">
+      <div className="grid gap-3 md:grid-cols-[minmax(190px,0.8fr)_minmax(160px,1fr)_minmax(160px,1fr)] md:items-end">
+        <div className="space-y-1.5">
+          <Label htmlFor="report-period">Report period</Label>
+          <select
+            id="report-period"
+            value={period}
+            onChange={(event) => selectPeriod(event.target.value)}
+            className="h-9 w-full rounded-md border border-stone-200 bg-white px-3 text-sm shadow-sm"
+          >
+            {REPORT_PERIOD_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="report-date-from">From</Label>
+          <Input
+            id="report-date-from"
+            type="date"
+            value={filters?.date_from || ""}
+            max={filters?.date_to || undefined}
+            onChange={(event) => setCustomDate("date_from", event.target.value)}
+            className="h-9"
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="report-date-to">To</Label>
+          <Input
+            id="report-date-to"
+            type="date"
+            value={filters?.date_to || ""}
+            min={filters?.date_from || undefined}
+            onChange={(event) => setCustomDate("date_to", event.target.value)}
+            className="h-9"
+          />
+        </div>
+      </div>
+      {invalidRange ? <p className="mt-2 text-xs font-semibold text-red-700">The From date must be on or before the To date.</p> : null}
+    </section>
+  );
+}
+
 function useReportPage(workspace, endpoint, filters, page, pageSize, extra = {}) {
   const [data, setData] = useState(() => normalisePaginatedResponse({ page_size: DEFAULT_PAGE_SIZE }));
   const [loading, setLoading] = useState(false);
@@ -7174,20 +7288,33 @@ function VatLazyReport({ workspace, filters }) {
   return <div className="space-y-4">{error ? <p className="text-sm text-red-700">{error}</p> : <div className="grid gap-3 sm:grid-cols-3"><SummaryCard label="Sales VAT" value={formatMoney(summary?.sales?.vat)} tone="blue" /><SummaryCard label="Purchase VAT" value={formatMoney(summary?.purchases?.vat)} tone="amber" /><SummaryCard label="Net VAT" value={formatMoney(summary?.net_vat)} tone="emerald" /></div>}<PaginatedReportPanel workspace={workspace} endpoint="vat/detail" title="VAT detail" filters={filters} columns={[["date", "Date", "date"], ["source_module", "Module"], ["document_number", "Document"], ["vat_code", "VAT code"], ["net", "Net", "money"], ["vat", "VAT", "money"], ["gross", "Gross", "money"]]} empty="No VAT transactions match the selected filters." /></div>;
 }
 
-function LazyReportsWorkspace({ workspace, activeReport, filters }) {
+function LazyReportsWorkspace({ workspace, activeReport, filters, setFilters }) {
   const reportName = activeReport || "Profit and Loss";
-  if (reportName === "Profit and Loss") return <LazyFinancialStatements workspace={workspace} filters={filters} statement="profit_and_loss" />;
-  if (reportName === "Balance Sheet") return <LazyFinancialStatements workspace={workspace} filters={filters} statement="balance_sheet" />;
-  if (reportName === "Management Reports") return <LazyManagementReports workspace={workspace} filters={filters} />;
-  if (reportName === "VAT Reports") return <VatLazyReport workspace={workspace} filters={filters} />;
-  if (reportName === "Sales Reports") return <SalesLazyReports workspace={workspace} filters={filters} />;
-  if (reportName === "Purchase Reports") return <PurchaseLazyReports workspace={workspace} filters={filters} />;
-  if (reportName === "Bank Reports") return <PaginatedReportPanel workspace={workspace} endpoint="banking" title="Bank report" filters={filters} columns={[["transaction_date", "Date", "date"], ["description", "Description"], ["reference", "Reference"], ["money_in", "Money in", "money"], ["money_out", "Money out", "money"], ["status", "Status"]]} empty="No bank report rows found for the selected filters." />;
-  if (reportName === "Custom Reports") return <LazyListReport workspace={workspace} endpoint="custom" title="Custom reports" filters={filters} columns={[["name", "Name"], ["type", "Type"], ["updated_at", "Updated", "date"]]} empty="No custom reports have been saved." />;
-  if (reportName === "Report Scheduler") return <LazyListReport workspace={workspace} endpoint="scheduler" title="Scheduled reports" filters={filters} columns={[["name", "Report"], ["frequency", "Frequency"], ["next_run", "Next run", "date"], ["status", "Status"]]} empty="No scheduled reports have been configured." />;
-  if (reportName === "Exports") return <LazyListReport workspace={workspace} endpoint="exports" title="Report exports" filters={filters} columns={[["created_at", "Created", "date"], ["report", "Report"], ["format", "Format"], ["status", "Status"]]} empty="No report exports have been generated." />;
-  if (reportName === "Settings") return <LazyReportSettings workspace={workspace} filters={filters} />;
-  return <LazyFinancialStatements workspace={workspace} filters={filters} statement="profit_and_loss" />;
+  let report;
+  if (reportName === "Profit and Loss") report = <LazyFinancialStatements workspace={workspace} filters={filters} statement="profit_and_loss" />;
+  else if (reportName === "Balance Sheet") report = <LazyFinancialStatements workspace={workspace} filters={filters} statement="balance_sheet" />;
+  else if (reportName === "Trial Balance") report = <LazyTrialBalanceReport workspace={workspace} filters={filters} />;
+  else if (reportName === "Management Reports") report = <LazyManagementReports workspace={workspace} filters={filters} />;
+  else if (reportName === "VAT Reports") report = <VatLazyReport workspace={workspace} filters={filters} />;
+  else if (reportName === "Sales Reports") report = <SalesLazyReports workspace={workspace} filters={filters} />;
+  else if (reportName === "Purchase Reports") report = <PurchaseLazyReports workspace={workspace} filters={filters} />;
+  else if (reportName === "Bank Reports") report = <PaginatedReportPanel workspace={workspace} endpoint="banking" title="Bank report" filters={filters} columns={[["transaction_date", "Date", "date"], ["description", "Description"], ["reference", "Reference"], ["money_in", "Money in", "money"], ["money_out", "Money out", "money"], ["status", "Status"]]} empty="No bank report rows found for the selected filters." />;
+  else if (reportName === "Custom Reports") report = <LazyListReport workspace={workspace} endpoint="custom" title="Custom reports" filters={filters} columns={[["name", "Name"], ["type", "Type"], ["updated_at", "Updated", "date"]]} empty="No custom reports have been saved." />;
+  else if (reportName === "Report Scheduler") report = <LazyListReport workspace={workspace} endpoint="scheduler" title="Scheduled reports" filters={filters} columns={[["name", "Report"], ["frequency", "Frequency"], ["next_run", "Next run", "date"], ["status", "Status"]]} empty="No scheduled reports have been configured." />;
+  else if (reportName === "Exports") report = <LazyListReport workspace={workspace} endpoint="exports" title="Report exports" filters={filters} columns={[["created_at", "Created", "date"], ["report", "Report"], ["format", "Format"], ["status", "Status"]]} empty="No report exports have been generated." />;
+  else if (reportName === "Settings") report = <LazyReportSettings workspace={workspace} filters={filters} />;
+  else report = <LazyFinancialStatements workspace={workspace} filters={filters} statement="profit_and_loss" />;
+  return <div className="space-y-4"><ReportPeriodFilter filters={filters} setFilters={setFilters} />{report}</div>;
+}
+
+function LazyTrialBalanceReport({ workspace, filters }) {
+  const requestParams = glQueryParams(filters, 1, DEFAULT_PAGE_SIZE);
+  requestParams.set("mode", "as_at");
+  return (
+    <LazyModuleWorkspace workspace={workspace} endpoint={`gl/trial-balance?${requestParams}`} field="reports">
+      {(loaded) => <TrialBalanceReport workspace={loaded} filters={filters} />}
+    </LazyModuleWorkspace>
+  );
 }
 
 function AccountMappingFields({ form, setForm, disabled = false }) {

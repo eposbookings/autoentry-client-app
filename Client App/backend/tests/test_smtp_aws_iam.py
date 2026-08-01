@@ -14,7 +14,10 @@ import base64
 import pytest
 import requests
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://outstanding-items.preview.emergentagent.com").rstrip("/")
+if not os.environ.get("REACT_APP_BACKEND_URL"):
+    pytest.skip("Live SMTP integration test requires REACT_APP_BACKEND_URL.", allow_module_level=True)
+
+BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/")
 ADMIN_EMAIL = "admin@eposaccountancy.co.uk"
 ADMIN_PASSWORD = "12345Sived"
 

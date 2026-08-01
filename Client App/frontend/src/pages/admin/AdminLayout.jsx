@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from "react";
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
 import { EposLogo } from "@/components/Brand";
-import { Users, FileText, Settings, LogOut, ClipboardList, Workflow, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { Users, FileText, Settings, LogOut, ClipboardList, Workflow, PanelLeftClose, PanelLeftOpen, Banknote } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 const linkBase =
@@ -12,6 +12,7 @@ const linkBase =
 export default function AdminLayout() {
   const { user, logout } = useAuth();
   const nav = useNavigate();
+  const location = useLocation();
   const [features, setFeatures] = useState({ document_processing_enabled: true });
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.localStorage.getItem("admin-sidebar-collapsed") === "true");
 
@@ -41,6 +42,11 @@ export default function AdminLayout() {
   const navLinkClass = (isActive) => `${linkBase} ${navLinkLayoutClass} ${isActive ? "admin-nav-link-active" : "text-stone-600 hover:bg-white/80 hover:text-stone-900"}`;
   const permissions = new Set(user?.permissions || []);
   const can = (permission) => permissions.has(permission);
+  const payrollWorkspaceOpen = /^\/admin\/payroll(?:\/[^/]+)?\/?$/.test(location.pathname);
+
+  if (payrollWorkspaceOpen) {
+    return <main className="h-screen min-w-0 overflow-auto bg-white"><Outlet /></main>;
+  }
 
   return (
     <div className="app-shell-bg flex h-screen overflow-hidden text-[14px]" data-testid="admin-shell">
@@ -84,6 +90,11 @@ export default function AdminLayout() {
             className={({isActive}) => navLinkClass(isActive)}>
             <Settings className="h-4 w-4 shrink-0" /> <span className={navLabelClass}>Practice settings</span>
           </NavLink>}
+          <NavLink to="/admin/payroll" data-testid="nav-payroll"
+            title="Payroll"
+            className={({isActive}) => navLinkClass(isActive)}>
+            <Banknote className="h-4 w-4 shrink-0" /> <span className={navLabelClass}>Payroll</span>
+          </NavLink>
         </nav>
 
         <div className="mt-auto shrink-0 px-3 pb-3">

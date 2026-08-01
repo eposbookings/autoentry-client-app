@@ -280,6 +280,109 @@ def test_accounts_production_download_uses_the_ten_page_reference_structure():
     assert "<ix:nonFraction" in rendered
 
 
+def test_accounts_production_ixbrl_is_well_formed_and_uses_standard_entry_point():
+    client = {
+        "business_name": "Example Limited",
+        "company_number": "01234567",
+        "registered_office_address": "1 Example Street",
+    }
+    pack = {
+        "period_from": "2025-05-01",
+        "period_to": "2026-04-30",
+        "comparative_period_from": "2024-05-01",
+        "comparative_period_to": "2025-04-30",
+        "accounts_standard": "FRS_105",
+        "accounts_format": "micro",
+        "company_trading_status": "trading",
+        "audit_exemption": "audit_exempt_small_company",
+        "director_signing_name": "A Director",
+        "board_approval_date": "2026-07-31",
+        "details": {"employee_count": 2, "accounts_taxonomy": "FRC-2026"},
+    }
+    defaults = server.annual_accounts_section_defaults(pack)
+    preview = {
+        "accountants": "Example Accountants",
+        "accounts_standard": "FRS 105",
+        "approval": {"audit_basis": "Audit exempt"},
+        "section_options": [
+            {"id": key, "enabled": value["enabled"], "required": value["required"]}
+            for key, value in defaults.items()
+        ],
+        "profit_and_loss_rows": [
+            {"key": "turnover", "label": "Turnover", "amount": "100", "comparative": "90"},
+            {"key": "profit_after_tax", "label": "Profit", "amount": "-20", "comparative": "10"},
+        ],
+        "balance_sheet_rows": [
+            {"key": "assets", "label": "Assets", "amount": "50", "comparative": "40"},
+            {"key": "equity", "label": "Equity", "amount": "50", "comparative": "40"},
+        ],
+        "detailed_profit_and_loss_rows": [],
+        "notes": [{"number": "1", "title": "Basis", "body": "Prepared under FRS 105."}],
+    }
+
+    rendered = server.annual_accounts_production_preview_html(client, pack, preview)
+    validation = server.annual_accounts_ixbrl_local_validation(rendered, client, pack, preview)
+
+    assert validation["passed"] is True
+    assert validation["checks"]["xml_well_formed"] is True
+    assert validation["checks"]["schema_reference_matches_standard"] is True
+    assert 'sign="-">20</ix:nonFraction>' in rendered
+
+
+def test_ifrs_accounts_use_the_ifrs_taxonomy_entry_point():
+    assert "/IFRS/2026-01-01/IFRS-2026-01-01.xsd" in server.annual_accounts_taxonomy_entry_point({
+        "accounts_standard": "IFRS",
+        "details": {"accounts_taxonomy": "FRC-2026"},
+    })
+
+
+def test_dormant_and_small_filing_copy_defaults_omit_inapplicable_sections():
+    dormant = server.annual_accounts_section_defaults({
+        "accounts_format": "dormant",
+        "company_trading_status": "dormant",
+    })
+    small = server.annual_accounts_section_defaults({
+        "accounts_format": "small_full",
+        "company_trading_status": "trading",
+    })
+
+    assert dormant["balance_sheet"]["enabled"] is True
+    assert dormant["profit_and_loss"]["enabled"] is False
+    assert dormant["directors_report"]["enabled"] is False
+    assert small["directors_report"]["enabled"] is False
+    assert small["detailed_profit_and_loss"]["enabled"] is False
+
+
+def test_local_ixbrl_validation_blocks_unmodelled_full_accounts_disclosures():
+    client = {"business_name": "Example Limited", "company_number": "01234567"}
+    pack = {
+        "period_from": "2025-05-01",
+        "period_to": "2026-04-30",
+        "comparative_period_from": "2024-05-01",
+        "comparative_period_to": "2025-04-30",
+        "accounts_standard": "IFRS",
+        "accounts_format": "full",
+        "company_trading_status": "trading",
+        "details": {"employee_count": 20, "accounts_taxonomy": "FRC-2026"},
+    }
+    defaults = server.annual_accounts_section_defaults(pack)
+    preview = {
+        "section_options": [
+            {"id": key, "enabled": value["enabled"], "required": value["required"]}
+            for key, value in defaults.items()
+        ],
+        "profit_and_loss_rows": [{"key": "turnover", "label": "Turnover", "amount": "100", "comparative": "90"}],
+        "balance_sheet_rows": [{"key": "assets", "label": "Assets", "amount": "50", "comparative": "40"}],
+        "notes": [{"number": "1", "title": "Basis", "body": "IFRS"}],
+    }
+    rendered = server.annual_accounts_production_preview_html(client, pack, preview)
+
+    validation = server.annual_accounts_ixbrl_local_validation(rendered, client, pack, preview)
+
+    assert validation["passed"] is False
+    assert "full_accounts_disclosures_incomplete" in {issue["code"] for issue in validation["issues"]}
+
+
 def test_ct600_form_model_covers_all_twelve_page_subject_areas():
     section_ids = {section["id"] for section in server.CT600_FORM_SECTIONS}
     boxes = {
@@ -451,10 +554,67 @@ def test_year_end_accounts_schema_supports_immutable_outputs_and_receipts():
     pack_columns = set(server.accounting_annual_accounts_packs.c.keys())
     output_columns = set(server.accounting_annual_accounts_outputs.c.keys())
     filing_columns = set(server.accounting_annual_accounts_filings.c.keys())
+    model_columns = set(server.accounting_filing_domain_models.c.keys())
 
     assert {"version_number", "locked_snapshot", "approved_by", "companies_house_submission_status", "hmrc_submission_status"} <= pack_columns
     assert {"snapshot_id", "output_type", "format", "validation_json"} <= output_columns
     assert {"destination", "status", "package_json", "receipt_reference", "receipt_json", "filed_at", "filed_by"} <= filing_columns
+    assert {"snapshot_id", "schema_version", "model_json", "model_hash", "support_level"} <= model_columns
+
+
+def test_ct600_form_is_projected_from_one_filing_domain_model():
+    client = {
+        "id": "client-1",
+        "client_type": "limited_company",
+        "business_name": "Example Limited",
+        "company_number": "12345678",
+        "utr": "1234567890",
+    }
+    pack = {
+        "id": "pack-1",
+        "period_from": "2025-05-01",
+        "period_to": "2026-04-30",
+        "accounts_standard": "FRS_102_1A",
+        "accounts_format": "small_full",
+        "company_trading_status": "trading",
+        "audit_exemption": "audit_exempt_small_company",
+    }
+    form = {"sections": [{"fields": [
+        {"box": "1", "type": "text", "value": "Example Limited", "source": "accounts"},
+        {"box": "2", "type": "text", "value": "12345678", "source": "accounts"},
+        {"box": "35", "type": "date", "value": "2026-04-30", "source": "accounts"},
+        {"box": "145", "type": "money", "value": "100000.00", "source": "accounts"},
+    ]}]}
+    preview = {
+        "profit_and_loss_rows": [
+            {"key": "turnover", "label": "Turnover", "amount": "100000.00", "comparative": "90000.00"},
+        ],
+        "balance_sheet_rows": [
+            {"key": "net_assets", "label": "Net assets", "amount": "50000.00", "comparative": "40000.00"},
+        ],
+    }
+    model = server.build_filing_domain_model(
+        client,
+        pack,
+        "snapshot-1",
+        [{"account_code": "4000", "balance": "-100000.00", "period_kind": "current"}],
+        preview,
+        form,
+        {
+            "accounts": {"selected_id": "frc-2026"},
+            "computations": {"selected_id": "ct-2025"},
+        },
+        "2026-07-30T12:00:00Z",
+    )
+    projected = server.ct600_form_from_filing_model(form, model)
+
+    assert projected["filing_domain_model_id"] == model.model_id
+    assert projected["filing_domain_model_hash"] == model.sha256()
+    assert {
+        field["box"]: field["value"]
+        for field in projected["sections"][0]["fields"]
+    } == {"1": "Example Limited", "2": "12345678", "35": "2026-04-30", "145": "100000.00"}
+    assert server.cross_document_invariants(model)["passed"] is True
 
 
 def test_ct600_model_supports_versioned_form_and_supplementary_pages():

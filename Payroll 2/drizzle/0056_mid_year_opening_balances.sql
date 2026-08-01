@@ -1,0 +1,32 @@
+CREATE TABLE `payroll_opening_balances` (
+  `id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+  `employer_id` integer NOT NULL,
+  `employee_id` integer NOT NULL,
+  `tax_year` text NOT NULL,
+  `first_payflow_period` integer NOT NULL,
+  `gross_pay` real DEFAULT 0 NOT NULL,
+  `taxable_pay` real DEFAULT 0 NOT NULL,
+  `paye_tax` real DEFAULT 0 NOT NULL,
+  `nicable_pay` real DEFAULT 0 NOT NULL,
+  `earnings_at_lel` real DEFAULT 0 NOT NULL,
+  `earnings_lel_to_pt` real DEFAULT 0 NOT NULL,
+  `earnings_pt_to_uel` real DEFAULT 0 NOT NULL,
+  `earnings_above_uel` real DEFAULT 0 NOT NULL,
+  `employee_nic` real DEFAULT 0 NOT NULL,
+  `employer_nic` real DEFAULT 0 NOT NULL,
+  `student_loan` real DEFAULT 0 NOT NULL,
+  `postgraduate_loan` real DEFAULT 0 NOT NULL,
+  `statutory_pay` real DEFAULT 0 NOT NULL,
+  `employee_pension` real DEFAULT 0 NOT NULL,
+  `employer_pension` real DEFAULT 0 NOT NULL,
+  `net_pay` real DEFAULT 0 NOT NULL,
+  `source` text DEFAULT 'prior-payroll-p11' NOT NULL,
+  `notes` text,
+  `payload_checksum` text NOT NULL,
+  `created_at` text DEFAULT 'CURRENT_TIMESTAMP' NOT NULL,
+  `updated_at` text DEFAULT 'CURRENT_TIMESTAMP' NOT NULL,
+  FOREIGN KEY (`employer_id`) REFERENCES `employers`(`id`) ON UPDATE no action ON DELETE no action,
+  FOREIGN KEY (`employee_id`) REFERENCES `employees`(`id`) ON UPDATE no action ON DELETE no action
+);
+CREATE UNIQUE INDEX `payroll_opening_balances_employer_employee_year_unique`
+  ON `payroll_opening_balances` (`employer_id`,`employee_id`,`tax_year`);

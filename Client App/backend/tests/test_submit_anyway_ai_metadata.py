@@ -4,13 +4,14 @@ import asyncio
 
 from httpx import ASGITransport, AsyncClient
 from PIL import Image
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 
 os.environ["JWT_SECRET"] = "test-submit-anyway-secret"
 os.environ["FERNET_KEY"] = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
-os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./test_submit_anyway.db"
+os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
 
-import server  # noqa: E402
+from backend import server  # noqa: E402
 
 
 def make_jpeg() -> bytes:
@@ -20,11 +21,15 @@ def make_jpeg() -> bytes:
     return out.getvalue()
 
 
-def test_submit_anyway_preserves_ai_review_metadata(monkeypatch):
-    asyncio.run(_run_submit_anyway_regression(monkeypatch))
+def test_submit_anyway_preserves_ai_review_metadata(monkeypatch, tmp_path):
+    asyncio.run(_run_submit_anyway_regression(monkeypatch, tmp_path))
 
 
-async def _run_submit_anyway_regression(monkeypatch):
+async def _run_submit_anyway_regression(monkeypatch, tmp_path):
+    isolated_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    monkeypatch.setattr(server, "engine", isolated_engine)
+    monkeypatch.setattr(server, "SessionLocal", async_sessionmaker(isolated_engine, expire_on_commit=False))
+    monkeypatch.setattr(server, "UPLOAD_DIR", tmp_path)
     client_user = {
         "id": "client-submit-anyway",
         "role": "client",
@@ -45,7 +50,7 @@ async def _run_submit_anyway_regression(monkeypatch):
         "coding_fields": {"vendor_name": "Mobile Shop", "total": "12.00", "line_items": []},
     }
 
-    async with server.engine.begin() as conn:
+    async with isolated_engine.begin() as conn:
         await conn.run_sync(server.metadata.drop_all)
         await conn.run_sync(server.metadata.create_all)
         await server.ensure_schema_columns(conn)

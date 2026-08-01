@@ -1,0 +1,11 @@
+ALTER TABLE `attachment_orders` ADD `calculation_rule` text DEFAULT 'manual' NOT NULL;
+ALTER TABLE `attachment_orders` ADD `pay_frequency` text DEFAULT 'monthly' NOT NULL;
+ALTER TABLE `attachment_orders` ADD `priority` integer DEFAULT 50 NOT NULL;
+ALTER TABLE `attachment_orders` ADD `arrears` real DEFAULT 0 NOT NULL;
+ALTER TABLE `attachment_orders` ADD `effective_date` text;
+ALTER TABLE `attachment_order_deductions` ADD `rate` real;
+ALTER TABLE `attachment_order_deductions` ADD `attachable_net_pay` real DEFAULT 0 NOT NULL;
+ALTER TABLE `attachment_order_deductions` ADD `protected_earnings_applied` real DEFAULT 0 NOT NULL;
+ALTER TABLE `attachment_order_deductions` ADD `shortfall` real DEFAULT 0 NOT NULL;
+ALTER TABLE `attachment_order_deductions` ADD `arrears_before` real DEFAULT 0 NOT NULL;
+ALTER TABLE `attachment_order_deductions` ADD `arrears_after` real DEFAULT 0 NOT NULL;
