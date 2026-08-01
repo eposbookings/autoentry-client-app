@@ -11,7 +11,19 @@ if (-not (Test-Path -LiteralPath $cli)) {
     throw "The Payroll 2 runtime is incomplete. Run pnpm install before starting the worker."
 }
 if ([string]::IsNullOrWhiteSpace($env:PAYROLL_INTEGRATION_SECRET) -or $env:PAYROLL_INTEGRATION_SECRET.Length -lt 32) {
-    throw "PAYROLL_INTEGRATION_SECRET must be shared with the EPOS backend."
+    $secretDirectory = Join-Path $env:LOCALAPPDATA "EPOS Accountancy"
+    $secretPath = Join-Path $secretDirectory "payroll-integration-secret.txt"
+    $secret = if (Test-Path -LiteralPath $secretPath) { (Get-Content -Raw -LiteralPath $secretPath).Trim() } else { "" }
+    if ($secret.Length -lt 32) {
+        New-Item -ItemType Directory -Force -Path $secretDirectory | Out-Null
+        $bytes = New-Object byte[] 32
+        $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+        $rng.GetBytes($bytes)
+        $rng.Dispose()
+        $secret = -join ($bytes | ForEach-Object { $_.ToString("x2") })
+        [IO.File]::WriteAllText($secretPath, $secret)
+    }
+    $env:PAYROLL_INTEGRATION_SECRET = $secret
 }
 
 $env:PAYFLOW_NODE_PREVIEW = "1"
